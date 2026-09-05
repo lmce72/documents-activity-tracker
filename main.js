@@ -1,0 +1,5249 @@
+/*
+ * Documents Activity Tracker — Obsidian Plugin v1.0.0
+ * 跟踪每个文档的使用时间，支持按会话记录与时间轴查看。
+ */
+'use strict';
+
+const { Plugin, Modal, Setting, MarkdownView, Notice, FuzzySuggestModal, PluginSettingTab, setIcon } = require('obsidian');
+
+// ============================================================================
+// i18n
+// ============================================================================
+const I18N = {
+    zh: {
+        labelPrefix: '阅览了',
+        pause: '暂停计时', resume: '继续计时', discard: '丢弃本轮阅读记录', excluded: '此文件已被过滤排除',
+        cmdAllRecords: '查看阅读记录', cmdFileRecords: '查看当前文件阅读记录',
+        settingsTitle: 'Documents Activity Tracker 设置',
+        filterMode: '过滤模式', filterModeDesc: '黑名单：匹配规则的路径不追踪；白名单：仅追踪匹配规则的路径',
+        filterModeBlacklist: '黑名单（排除匹配路径）', filterModeWhitelist: '白名单（仅追踪匹配路径）',
+        filterPatterns: '过滤规则', filterPatternsDesc: '每行或逗号分隔一条规则。路径前缀：Templates/   正则：/^Daily\//',
+        filterPickTooltip: '从 Vault 选择路径',
+        idleEnabled: '启用空闲超时', idleEnabledDesc: '关闭后无论是否有交互都持续计时，直至切换标签页或手动舍弃',
+        idleTimeout: '空闲超时（秒）', idleTimeoutDesc: '无交互多少秒后暂停计时，最小 1 秒，默认 20 秒',
+        minRead: '起步阈值（秒）', minReadDesc: '单次会话低于此秒数时不写入记录，0 表示不限制，默认 20 秒',
+        displayMode: '时长显示模式', displayModeDesc: 'compact：满分钟省略秒；precise：精确到秒',
+        displayCompact: '省略秒（5 分钟）', displayPrecise: '精确到秒（5 分 30 秒）',
+        autoStart: '自动计时模式', autoStartDesc: '控制打开文件和切换回来时的计时行为',
+        autoStartAlways: '全程（包括开始时）',
+        autoStartStartOnly: '仅在开始时',
+        autoStartReturnOnly: '不在开始时',
+        autoStartManual: '不自动',
+        useIconize: '读取 Iconize 图标', useIconizeDesc: '开启后，阅读记录列表将显示 Iconize 插件为文件/文件夹配置的自定义图标（需已安装 obsidian-icon-folder 插件）。',
+        sortLastReadDesc: '最近阅读（最新在前）', sortLastReadAsc: '最早阅读（最旧在前）',
+        sortTotalDesc: '阅读时长（最多在前）', sortTotalAsc: '阅读时长（最少在前）',
+        dataPath: '自定义数据文件路径', dataPathDesc: '相对 Vault 根目录的路径（如 60-数据库/rtt-data.json）。留空使用默认 data.json。建议将此路径加入 Obsidian Excluded Files。',
+        searchPlaceholder: '搜索文件名…', noRecords: '暂无阅读记录',
+        thisSession: '本轮阅读: ', total: '总计: ', lastRead: '最后阅读: ',
+        noTimeline: '暂无阅读记录', noDay: '当日无记录',
+        pickerPlaceholder: '搜索有阅读记录的文件…', filterPickerPlaceholder: '选择文件或文件夹路径添加到过滤规则…',
+        today: '今日',
+        startedAt: '开始时间',
+        minute: '分钟',
+        second: '秒',
+        inactiveTab: '标签页未激活',
+        showTodayInWidget: '在计时器显示今日总时长',
+        showTodayInWidgetDesc: '开启后，计时器右侧显示今日累计阅读时长按钮，点击可查看今日所有阅读轮次。',
+        recordsSaved: '阅览记录已完整保存',
+        manualSave: '手动保存阅读记录',
+        manualSaveConfirm: '保存记录时将重置目前所有计时器，确定现在进行手动保存吗？',
+        todaySessions: '今日共 {n} 轮',
+        previousSessions: '之前还有 {n} 轮记录',
+        viewAllRecords: '查看更多历史记录',
+        now: '现在',
+        todayTotalDisplay: '今日总计显示模式',
+        todayTotalDisplayDesc: '空闲/暂停时显示：暂停时第二段显示文档今日总计，第三段显示全库今日总计；始终显示：第三段始终显示全库今日总计；不显示：不显示今日总计。',
+        todayTotalIdle: '空闲/暂停时显示',
+        todayTotalAlways: '始终显示',
+        todayTotalNever: '不显示',
+        fileToday: '文档今日',
+        vaultToday: '全库今日',
+        statsToday: '今日阅读',
+        statsTodayTotal: '今日总时长',
+        statsTodaySessions: '今日轮数',
+        statsWeek: '本周阅读'
+    },
+    en: {
+        labelPrefix: 'Read',
+        pause: 'Pause timer', resume: 'Resume timer', discard: 'Discard this session',
+        cmdAllRecords: 'View reading records', cmdFileRecords: 'View current file reading records',
+        settingsTitle: 'Documents Activity Tracker Settings',
+        filterMode: 'Filter mode', filterModeDesc: 'Blacklist: matched paths excluded; Whitelist: only matched paths tracked',
+        filterModeBlacklist: 'Blacklist (exclude matched paths)', filterModeWhitelist: 'Whitelist (track matched paths only)',
+        filterPatterns: 'Filter rules', filterPatternsDesc: 'One rule per line or comma-separated. Prefix: Templates/   Regex: /^Daily\//',
+        filterPickTooltip: 'Pick from Vault',
+        idleEnabled: 'Enable idle timeout', idleEnabledDesc: 'When off, timer runs continuously until you switch tabs or discard manually',
+        idleTimeout: 'Idle timeout (seconds)', idleTimeoutDesc: 'Pause after N seconds without interaction. Min 1s, default 20s',
+        minRead: 'Min session threshold (seconds)', minReadDesc: 'Sessions shorter than this are not saved. 0 = no limit, default 20s',
+        displayMode: 'Duration display mode', displayModeDesc: 'compact: omit seconds when ≥1 min; precise: always show seconds',
+        displayCompact: 'Compact (5 minutes)', displayPrecise: 'Precise (5 min 30 sec)',
+        autoStart: 'Auto-start mode', autoStartDesc: 'Control timing behavior when opening files and returning to them',
+        autoStartAlways: 'Always (including on open)',
+        autoStartStartOnly: 'Only on open',
+        autoStartReturnOnly: 'Not on open',
+        autoStartManual: 'Manual',
+        useIconize: 'Show Iconize icons', useIconizeDesc: 'When enabled, reading record list shows custom icons configured in obsidian-icon-folder. Requires the Iconize plugin to be installed.',
+        sortLastReadDesc: 'Last read (newest first)', sortLastReadAsc: 'Last read (oldest first)',
+        sortTotalDesc: 'Total time (most first)', sortTotalAsc: 'Total time (least first)',
+        dataPath: 'Custom data file path', dataPathDesc: 'Path relative to Vault root. Leave blank for default data.json. Add to Excluded Files to avoid index rebuilds.',
+        searchPlaceholder: 'Search files…', noRecords: 'No reading records yet',
+        thisSession: 'This session: ', total: 'Total: ', lastRead: 'Last read: ',
+        noTimeline: 'No reading records', noDay: 'No records for this day',
+        pickerPlaceholder: 'Search files with reading records…', filterPickerPlaceholder: 'Pick a file or folder to add as filter rule…',
+        today: 'Today',
+        startedAt: 'Started',
+        minute: 'min',
+        second: 'sec',
+        inactiveTab: 'Tab inactive',
+        showTodayInWidget: 'Show today total in widget',
+        showTodayInWidgetDesc: 'When enabled, widget shows a button with today\'s total reading time. Click to view all sessions.',
+        recordsSaved: 'Reading records saved successfully',
+        manualSave: 'Save reading records',
+        manualSaveConfirm: 'Saving will reset all active timers. Continue?',
+        todaySessions: '{n} sessions today',
+        previousSessions: '{n} more sessions',
+        viewAllRecords: 'View all records',
+        now: 'now',
+        todayTotalDisplay: 'Today Total Display Mode',
+        todayTotalDisplayDesc: 'Idle: When paused, segment 2 shows file today total, segment 3 shows vault today total; Always: segment 3 always shows vault today total; Never: hide today totals.',
+        todayTotalIdle: 'Show when idle/paused',
+        todayTotalAlways: 'Always show',
+        todayTotalNever: 'Never show',
+        fileToday: 'File Today',
+        vaultToday: 'Vault Today',
+        statsToday: '今日阅读',
+        statsTodayTotal: '今日总时长',
+        statsTodaySessions: '今日轮数',
+        statsWeek: '本周阅读'
+    }
+};
+function getLang() {
+    try { const l = (window.moment && window.moment.locale ? window.moment.locale() : undefined) || navigator.language || 'en'; return l.startsWith('zh') ? 'zh' : 'en'; } catch(e) { return 'en'; }
+}
+function t(key) {
+    const langKey = (I18N[getLang()] || I18N.en)[key];
+    return langKey != null ? langKey : (I18N.en[key] != null ? I18N.en[key] : key);
+}
+
+
+// ============================================================================
+// 工具函数
+// ============================================================================
+
+function nowStr() {
+    const now = new Date();
+    const p = n => String(n).padStart(2, '0');
+    return `${now.getFullYear()}-${p(now.getMonth()+1)}-${p(now.getDate())} ${p(now.getHours())}:${p(now.getMinutes())}`;
+}
+
+function todayStr() {
+    return nowStr().split(' ')[0];
+}
+
+/**
+ * 获取本周一的日期字符串（YYYY-MM-DD），基于本地时间
+ * @returns {string}
+ */
+function getWeekStartStr() {
+    const now = new Date();
+    const day = now.getDay(); // 0=Sun, 1=Mon, ..., 6=Sat
+    const diff = day === 0 ? 6 : day - 1; // 距周一的天数
+    const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - diff);
+    const p = n => String(n).padStart(2, '0');
+    return `${monday.getFullYear()}-${p(monday.getMonth() + 1)}-${p(monday.getDate())}`;
+}
+
+/**
+ * 解析会话开始时间字符串为本地时间 Date 对象
+ * 兼容两种格式：
+ *   1. nowStr()/sessionKey: "YYYY-MM-DD HH:mm"（本地时间，无秒）
+ *   2. ISO 8601: "2026-08-21T08:11:59.825Z"（UTC，含秒）
+ * 移动端 iOS Safari 无法解析带空格的非 ISO 格式，需手动拆解
+ * @param {string} str
+ * @returns {Date|null} 解析失败返回 null
+ */
+function parseSessionStartTime(str) {
+    if (!str) return null;
+    const s = String(str);
+    // 优先尝试标准 ISO 格式（含 T/Z 分隔符）
+    if (/[TZ]/.test(s)) {
+        const d = new Date(s);
+        if (!isNaN(d.getTime())) return d;
+    }
+    // 兼容 "YYYY-MM-DD HH:mm"（本地时间，无秒）与 "YYYY-MM-DD HH:mm:ss"（含秒），
+    // 手动拆解避免移动端解析失败；秒组可选，保证推算结束时间的精度
+    const m = s.match(/^(\d{4})-(\d{2})-(\d{2})\s(\d{2}):(\d{2})(?::(\d{2}))?/);
+    if (m) {
+        return new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0));
+    }
+    const d = new Date(s);
+    return isNaN(d.getTime()) ? null : d;
+}
+
+/**
+ * 从会话时间字符串提取本地 HH:mm（兼容 ISO UTC 与本地格式）
+ * @param {string} str
+ * @returns {string}
+ */
+function formatLocalHM(str) {
+    const d = parseSessionStartTime(str);
+    if (!d) return '--:--';
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+/**
+ * 从会话时间字符串提取本地 HH:mm:ss
+ * @param {string} str
+ * @returns {string}
+ */
+function formatLocalHMS(str) {
+    const d = parseSessionStartTime(str);
+    if (!d) return '--:--:--';
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
+}
+
+/**
+ * 从会话时间字符串提取本地 YYYY-MM-DD（兼容 ISO UTC 与本地格式）
+ * @param {string} str
+ * @returns {string}
+ */
+function formatLocalDate(str) {
+    const d = parseSessionStartTime(str);
+    if (!d) return '--';
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+/**
+ * ISO/时间字符串 → 本地分钟粒度 key（YYYY-MM-DD HH:mm）
+ * 用于备份恢复时生成本地格式的 sessionKey，避免把 ISO 时间写入 key
+ * @param {string} str
+ * @returns {string|null}
+ */
+function toLocalKeyStr(str) {
+    const d = parseSessionStartTime(str);
+    if (!d) return null;
+    const p = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+/**
+ * Date 对象 → 本地完整格式 "YYYY-MM-DD HH:mm:ss"
+ * @param {Date} date
+ * @returns {string}
+ */
+function formatLocalFull(date) {
+    if (!date || isNaN(date.getTime())) return '';
+    const p = n => String(n).padStart(2, '0');
+    return `${date.getFullYear()}-${p(date.getMonth() + 1)}-${p(date.getDate())} ${p(date.getHours())}:${p(date.getMinutes())}:${p(date.getSeconds())}`;
+}
+
+/**
+ * 当前本地时间完整格式 "YYYY-MM-DD HH:mm:ss"
+ * @returns {string}
+ */
+function nowFullStr() {
+    return formatLocalFull(new Date());
+}
+
+/**
+ * 格式化秒数为可读字符串
+ * @param {number} seconds
+ * @param {'compact'|'precise'} mode
+ */
+function formatReadTime(seconds, mode = 'compact') {
+    if (!seconds || seconds <= 0) return '0 秒';
+    // ✅ 修复：小于60秒时显示秒数，而不是 "0 分钟"
+    if (seconds < 60) return `${Math.floor(seconds)} 秒`;
+    const totalMinutes = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    if (totalMinutes < 60) {
+        if (mode === 'precise' && secs > 0) return `${totalMinutes} 分 ${secs} 秒`;
+        return `${totalMinutes} 分钟`;
+    }
+    const hours = Math.floor(totalMinutes / 60);
+    const mins = totalMinutes % 60;
+    if (mode === 'precise' && secs > 0) {
+        return mins > 0 ? `${hours} 小时 ${mins} 分 ${secs} 秒` : `${hours} 小时 ${secs} 秒`;
+    }
+    return mins > 0 ? `${hours} 小时 ${mins} 分钟` : `${hours} 小时`;
+}
+
+/**
+ * 规范化 readTimeLine 条目为统一的 SessionDetail 格式
+ * @param {string} key - sessionKey
+ * @param {number | object} value - 原始值（旧格式为 number，新格式为 SessionDetail）
+ * @returns {object} SessionDetail 对象
+ */
+function normalizeSessionEntry(key, value) {
+    if (typeof value === 'number') {
+        // 旧格式：自动转换，计算 endTime
+        // key 格式: "YYYY-MM-DD HH:mm"，需要作为本地时间解析
+        const parts = key.match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})$/);
+        if (!parts) {
+            // 格式不匹配，回退到直接解析
+            console.warn('[normalizeSessionEntry] 无法解析时间格式:', key);
+            return {
+                totalSeconds: value,
+                activeSeconds: value,
+                startTime: key,
+                endTime: null,
+                pausedRanges: []
+            };
+        }
+
+        // 使用本地时区构造 Date 对象
+        const [, year, month, day, hour, minute] = parts;
+        const startTime = new Date(+year, +month - 1, +day, +hour, +minute, 0);
+        const endTime = new Date(startTime.getTime() + value * 1000);
+
+        // 格式化为本地时间字符串 "YYYY-MM-DD HH:mm:ss"
+        const formatLocalTime = (date) => {
+            const y = date.getFullYear();
+            const m = String(date.getMonth() + 1).padStart(2, '0');
+            const d = String(date.getDate()).padStart(2, '0');
+            const h = String(date.getHours()).padStart(2, '0');
+            const min = String(date.getMinutes()).padStart(2, '0');
+            const s = String(date.getSeconds()).padStart(2, '0');
+            return `${y}-${m}-${d} ${h}:${min}:${s}`;
+        };
+
+        return {
+            totalSeconds: value,
+            activeSeconds: value,  // 假设无暂停
+            startTime: formatLocalTime(startTime),
+            endTime: formatLocalTime(endTime),
+            pausedRanges: []
+        };
+    }
+    // 新格式：直接返回（防御性复制）
+    return {
+        totalSeconds: value.totalSeconds || 0,
+        activeSeconds: value.activeSeconds || 0,
+        startTime: value.startTime || key,
+        endTime: value.endTime || null,
+        pausedRanges: value.pausedRanges || []
+    };
+}
+
+/**
+ * 判断文件路径是否应被追踪
+ * 黑名单：匹配规则则不追踪；白名单：匹配规则才追踪
+ * 规则支持路径前缀（Templates/）和正则（/pattern/flags）
+ */
+function shouldTrackFile(filePath, settings) {
+    const raw = (settings.filterPatterns || settings.excludePatterns || '').trim();
+    const mode = settings.filterMode || 'blacklist';
+    if (!raw) return mode !== 'whitelist';
+    const patterns = raw.split(/[,，\n]/).map(s => s.trim()).filter(s => s.length > 0);
+    const matches = (pattern) => {
+        try {
+            const reMatch = pattern.match(/^\/(.+)\/([gimsuy]*)$/);
+            if (reMatch) return new RegExp(reMatch[1], reMatch[2]).test(filePath);
+            const prefix = (pattern.indexOf('.') < 0 && !pattern.endsWith('/')) ? pattern + '/' : pattern;
+            return filePath.startsWith(prefix) || filePath === pattern;
+        } catch (e) { return false; }
+    };
+    const matched = patterns.some(p => matches(p));
+    return mode === 'whitelist' ? matched : !matched;
+}
+
+/**
+ * 计算单次会话的活跃时长（仅 tracking 时段）
+ * @param {Object} sessionObj - SessionObject { timestamp: state }
+ * @returns {number} 活跃秒数
+ */
+function calculateSessionDuration(sessionObj) {
+    const timestamps = Object.keys(sessionObj).sort();
+    let activeSeconds = 0;
+
+    for (let i = 0; i < timestamps.length - 1; i++) {
+        const currentState = sessionObj[timestamps[i]];
+        const currentTime = new Date(timestamps[i]);
+        const nextTime = new Date(timestamps[i + 1]);
+        const duration = (nextTime - currentTime) / 1000;
+
+        if (currentState === "tracking") {
+            activeSeconds += duration;
+        }
+    }
+
+    return activeSeconds;
+}
+
+/**
+ * 计算单次会话的总时长（含暂停）
+ * @param {Object} sessionObj - SessionObject { timestamp: state }
+ * @returns {number} 总秒数
+ */
+function calculateSessionTotalDuration(sessionObj) {
+    const timestamps = Object.keys(sessionObj).sort();
+    if (timestamps.length < 2) return 0;
+    const startTime = new Date(timestamps[0]);
+    const endTime = new Date(timestamps[timestamps.length - 1]);
+    return (endTime - startTime) / 1000;
+}
+
+/**
+ * 验证 SessionObject 的状态转换合法性
+ * @param {Object} session - SessionObject
+ * @throws {Error} 如果验证失败
+ */
+function validateSessionObject(session) {
+    const timestamps = Object.keys(session).sort();
+    const states = timestamps.map(ts => session[ts]);
+
+    if (timestamps.length < 2) {
+        throw new Error("Session must have at least 2 timestamps");
+    }
+
+    if (states[states.length - 1] !== "saved") {
+        throw new Error("Last state must be 'saved'");
+    }
+
+    const validTransitions = {
+        "tracking": ["pausing", "saved"],
+        "pausing": ["tracking", "saved"]
+    };
+
+    for (let i = 1; i < states.length; i++) {
+        const prev = states[i - 1];
+        const curr = states[i];
+        if (!validTransitions[prev] || !validTransitions[prev].includes(curr)) {
+            throw new Error(`Invalid transition: ${prev} -> ${curr}`);
+        }
+    }
+}
+
+/**
+ * 格式化时长为包含秒的字符串
+ * @param {number} seconds - 秒数
+ * @returns {string} 如 "5分30秒"
+ */
+function formatDurationWithSeconds(seconds) {
+    if (!seconds || seconds <= 0) return '0秒';
+
+    const s = Math.floor(seconds % 60);
+    const totalMinutes = Math.floor(seconds / 60);
+
+    if (totalMinutes === 0) return `${s}秒`;
+
+    const mins = totalMinutes % 60;
+    const hours = Math.floor(totalMinutes / 60);
+
+    if (hours === 0) return `${mins}分${s}秒`;
+
+    return `${hours}小时${mins}分${s}秒`;
+}
+
+// ============================================================================
+// ReadTimeStore — 数据持久化层
+// @typedef {{fileName:string, lastReadAt:string, readTimeLine:Array, currentSession:Object|null}} RecordEntry
+// ============================================================================
+
+class ReadTimeStore {
+    /**
+     * @param {import('obsidian').Plugin} plugin
+     * @param {object} settings
+     */
+    constructor(plugin, settings) {
+        this.plugin = plugin;
+        this.settings = settings;
+        /** @type {{records: Object.<string, RecordEntry>, settings: object}|null} */
+        this._cache = null;
+        /** @type {Promise<void>} 写入队列，串行化磁盘 I/O 防止竞态 */
+        this._writeQueue = Promise.resolve();
+        /** @type {Map<string, Array>} 日期索引 { "YYYY-MM-DD" => [sessions] } */
+        this._dateIndex = new Map();
+        /** @type {Map<string, RecordEntry>} 文件索引 { filePath => record } */
+        this._fileIndex = new Map();
+    }
+
+    /** 加载全量数据到缓存 */
+    async load() {
+        try {
+            const customPath = (this.settings.dataFilePath ? this.settings.dataFilePath.trim() : "");
+            if (customPath) {
+                const raw = await this.plugin.app.vault.adapter.read(customPath);
+                this._cache = JSON.parse(raw);
+            } else {
+                this._cache = await this.plugin.loadData();
+            }
+        } catch (e) {
+            this._cache = null;
+        }
+        if (!this._cache || typeof this._cache !== 'object') {
+            this._cache = { records: {}, settings: {} };
+        }
+        if (!this._cache.records) this._cache.records = {};
+
+        // ✅ 检测并删除旧格式数据（readTimeLine 是对象而非数组）
+        for (const [filePath, record] of Object.entries(this._cache.records)) {
+            if (record.readTimeLine && !Array.isArray(record.readTimeLine)) {
+                console.warn(`[ReadTimeTracker] 检测到旧格式数据: ${filePath}，已跳过（不兼容）`);
+                delete this._cache.records[filePath];
+            }
+        }
+
+        // ✅ 构建内存索引
+        this._rebuildIndex();
+
+        return this._cache;
+    }
+
+    /** 持久化缓存到磁盘（通过写入队列串行化，防止并发 I/O 竞态） */
+    async save() {
+        if (!this._cache) return;
+        // 将本次写入排入队列，等待前一次完成后执行
+        const pending = this._writeQueue.then(async () => {
+            try {
+                const customPath = (this.settings.dataFilePath ? this.settings.dataFilePath.trim() : "");
+                const json = JSON.stringify(this._cache, null, 2);
+                if (customPath) {
+                    await this.plugin.app.vault.adapter.write(customPath, json);
+                } else {
+                    await this.plugin.saveData(this._cache);
+                }
+            } catch (e) {
+                console.error('[ReadTimeTracker] 数据写入失败:', e);
+            }
+        });
+        // 更新队列：始终吞掉内部错误，保证后续写入仍可排队执行
+        this._writeQueue = pending.catch(() => {});
+        // 不向外抛出：内部已 try-catch，此处 await 仅用于同步等待完成
+        await pending.catch(() => {});
+
+        // ✅ 保存后重建索引
+        this._rebuildIndex();
+    }
+
+    /**
+     * 获取单条记录
+     * @param {string} filePath
+     * @returns {RecordEntry|null}
+     */
+    getRecord(filePath) {
+        const records = (this._cache && this._cache.records ? this._cache.records : {});
+        return records[filePath] != null ? records[filePath] : null;
+    }
+
+    /**
+     * 获取所有记录
+     * @returns {Object.<string, RecordEntry>}
+     */
+    getAllRecords() {
+        const records = (this._cache && this._cache.records ? this._cache.records : {});
+        return records != null ? records : {};
+    }
+
+    /**
+     * 插入或更新记录（内存+磁盘）
+     * @param {string} filePath
+     * @param {RecordEntry} data
+     */
+    async upsertRecord(filePath, data) {
+        if (!this._cache) await this.load();
+        this._cache.records[filePath] = { ...this._cache.records[filePath], ...data };
+        await this.save();
+    }
+
+    /**
+     * 重建内存索引（日期索引 + 文件索引）
+     */
+    _rebuildIndex() {
+        this._dateIndex.clear();
+        this._fileIndex.clear();
+
+        for (const [filePath, record] of Object.entries((this._cache && this._cache.records ? this._cache.records : {}) || {})) {
+            this._fileIndex.set(filePath, record);
+
+            for (const session of record.readTimeLine || []) {
+                const timestamps = Object.keys(session).sort();
+                if (timestamps.length === 0) continue;
+                const date = timestamps[0].split(' ')[0]; // "YYYY-MM-DD"
+
+                if (!this._dateIndex.has(date)) {
+                    this._dateIndex.set(date, []);
+                }
+
+                this._dateIndex.get(date).push({
+                    filePath,
+                    fileName: record.fileName,
+                    session
+                });
+            }
+        }
+    }
+
+    /**
+     * 获取指定日期的所有会话
+     * @param {string} date - "YYYY-MM-DD"
+     * @returns {Array} [{ filePath, fileName, session }]
+     */
+    getSessionsByDate(date) {
+        return this._dateIndex.get(date) || [];
+    }
+}
+
+// ============================================================================
+// ReadTimeEngine — 计时引擎
+// ============================================================================
+
+class ReadTimeEngine {
+    /**
+     * @param {import('obsidian').App} app
+     * @param {ReadTimeStore} store
+     * @param {object} settings
+     * @param {import('obsidian').Plugin} plugin - 插件实例，用于访问 settingTab
+     * @param {Function} onTickCallback - (filePath, seconds, todaySeconds, sessionStartTime, sessionCount, isRunning) => void
+     * @param {Function} onStateCallback - (filePath, isRunning) => void
+     */
+    constructor(app, store, settings, plugin, onTickCallback, onStateCallback, onExcludedCallback) {
+        this.app = app;
+        this.store = store;
+        this.settings = settings;
+        this.plugin = plugin;  // ✅ 保存 plugin 引用
+        this.onTickCallback = onTickCallback;
+        this.onStateCallback = onStateCallback;
+        this.onExcludedCallback = onExcludedCallback;
+
+        this.currentPath = null;
+        this.activeFilePath = null;
+        this.sessionStartTime = null;
+        this.readingMap = new Map(); // Map<filePath, {seconds, todaySeconds, sessionKey, lastActive}>
+        this.lastEventTime = Date.now();
+        this.flushingPath = null;
+        this.tickerId = null;
+        this.currentBoundEl = null;
+        this.isWindowFocused = true;
+        this.isPaused = false;
+        this._leafChangeSeq = 0;  // 防止并发 active-leaf-change 竞争
+        this._leafStates = new Map(); // Map<string, {filePath, sessionKey, isPaused}> 每个叶子的会话状态，键为 leaf.id
+        this.activeLeaf = null;       // 当前激活的叶子
+
+        // ✅ 新数据结构：内存维护当前会话
+        this._currentSession = null;        // 当前会话对象 { "timestamp": "state" }
+        this._currentFilePath = null;       // 当前文件路径
+        this._activeSecondsCache = 0;       // 当前会话活跃时长（秒，不写入JSON）
+        this._lastTickTime = null;          // 上次tick时间
+        this._allowWrite = false;           // 写入权限控制
+
+        this._openWindows = new Set();
+        this._eventRefs = [];
+        this._lastCheckDay = todayStr(); // 跨日检测：今日日期字符串
+        this._isCheckingDayRollover = false; // ✅ 防重入锁：防止跨日检测并发执行
+        this._bindSeq = 0; // 异步 bindToFile 竞态保护
+        this.onLayoutCleanupCallback = null; // ✅ layout-change 后清理已销毁视图的回调
+
+        this._onWindowFocus = () => {
+            this.isWindowFocused = true;
+            // 恢复焦点时重置 idle 计时起点，避免窗口切回后立即触发超时
+            this.lastEventTime = Date.now();
+        };
+        this._onWindowBlur = () => { this.isWindowFocused = false; };
+        this.onUserActivity = this.onUserActivity.bind(this);
+        this.tick = this.tick.bind(this);
+    }
+
+    init() {
+        // ✅ 启动时恢复未完成的会话
+        this._recoverUnfinishedSessions();
+
+        window.addEventListener('focus', this._onWindowFocus);
+        window.addEventListener('blur', this._onWindowBlur);
+
+        // 移动端适配：监听 window-blur 事件（用户切换到其他应用或锁屏）
+        if (this.app.isMobile) {
+            console.log('[ReadTimeTracker] 移动端模式：监听 visibilitychange 事件');
+            this._onMobileVisibilityChange = () => {
+                if (document.visibilityState === 'hidden') {
+                    console.log('[ReadTimeTracker] 移动端应用进入后台，触发刷盘');
+                    this.flushAll().catch(e => console.error('[ReadTimeTracker] 移动端刷盘失败:', e));
+                } else {
+                    console.log('[ReadTimeTracker] 移动端应用恢复前台');
+                }
+            };
+            document.addEventListener('visibilitychange', this._onMobileVisibilityChange);
+        }
+
+        // ✅ window-open 首参为 WorkspaceWindow（非 DOM Window），需用第二参数获取原生 window
+        const refWinOpen = this.app.workspace.on('window-open', (workspaceWindow, win) => {
+            win.addEventListener('focus', this._onWindowFocus);
+            win.addEventListener('blur', this._onWindowBlur);
+            // 新窗口获得焦点时视为用户活跃
+            win.addEventListener('focus', () => { this.lastEventTime = Date.now(); });
+            this._openWindows.add(win);
+        });
+        const refWinClose = this.app.workspace.on('window-close', (workspaceWindow, win) => {
+            win.removeEventListener('focus', this._onWindowFocus);
+            win.removeEventListener('blur', this._onWindowBlur);
+            this._openWindows.delete(win);
+        });
+        this._eventRefs.push(refWinOpen, refWinClose);
+
+        const refLeaf = this.app.workspace.on('active-leaf-change', (leaf) => {
+            this.activeFilePath = (leaf && leaf.view && leaf.view.file ? leaf.view.file.path : null);
+            this._onActiveLeafChange(leaf);
+        });
+        this._eventRefs.push(refLeaf);
+
+        // 检测标签页关闭 → 刷盘该叶子的会话
+        const refLayout = this.app.workspace.on('layout-change', () => {
+            this._onLayoutChange().catch(e => console.warn('[ReadTimeTracker] layout-change 处理失败:', e));
+        });
+        this._eventRefs.push(refLayout);
+
+        const refQuit = this.app.workspace.on('quit', () => this._onAppQuit());
+        this._eventRefs.push(refQuit);
+
+        const initLeaf = this.app.workspace.activeLeaf;
+        const activeFile = this.app.workspace.getActiveFile();
+        if (activeFile && initLeaf) {
+            this.activeLeaf = initLeaf;
+            this.activeFilePath = activeFile.path;
+            this._bindToFile(activeFile.path, initLeaf).catch(e => {
+                console.error('[ReadTimeTracker] init _bindToFile 失败:', e);
+            });
+        }
+
+        this._restoreBackup();
+        this._startTicker();
+        console.log('[ReadTimeTracker] ✅ 计时引擎已启动');
+    }
+
+    /** 检测关闭的标签页，刷盘其会话；若所有被追踪文件均已关闭则额外全量刷盘 */
+    async _onLayoutChange() {
+        if (this._leafStates.size === 0) return;
+        const openLeaves = new Set();
+        try { this.app.workspace.iterateAllLeaves(l => openLeaves.add(l)); } catch (e) { return; }
+        const closed = [];
+        for (const [leafId, state] of this._leafStates.entries()) {
+            const leaf = Array.from(openLeaves).find(l => l.id === leafId);
+            if (!leaf) closed.push({leafId, state});
+        }
+        for (const {leafId, state} of closed) {
+            try {
+                await this._flushFileSilent(state.filePath, state.sessionKey);
+            } catch (e) {
+                console.warn('[ReadTimeTracker] 标签关闭刷盘失败:', e);
+            }
+            this._leafStates.delete(leafId);
+        }
+        // 若有标签刚关闭，检查 readingMap 中是否还有未被任何叶子追踪但仍有积累秒数的文件
+        // 场景：被排除文件不进 _leafStates，但同叶子内切换可能留下残余 seconds；
+        //       或者所有记录文件都已关闭，触发一次保底全量刷盘
+        if (closed.length > 0) {
+            const trackedPaths = new Set(
+                Array.from(this._leafStates.values()).map(s => s.filePath)
+            );
+            if (this.currentPath) trackedPaths.add(this.currentPath);
+            const orphanFiles = [];
+            for (const [filePath, record] of this.readingMap.entries()) {
+                if (record.seconds > 0 && !trackedPaths.has(filePath)) {
+                    orphanFiles.push(filePath);
+                }
+            }
+            if (orphanFiles.length > 0) {
+                console.log('[ReadTimeTracker] 检测到孤立计时数据，仅刷盘孤立文件:', orphanFiles);
+                for (const filePath of orphanFiles) {
+                    const record = this.readingMap.get(filePath);
+                    if (record && record.seconds > 0) {
+                        await this._flushFileSilent(filePath, record.sessionKey || nowStr());
+                    }
+                }
+                new Notice(t('recordsSaved'));
+            }
+        }
+
+        // ✅ 通知 widget 清理已销毁视图的条目，防止内存泄漏
+        try { (this.onLayoutCleanupCallback ? this.onLayoutCleanupCallback() : undefined); } catch (e) { console.warn('[ReadTimeTracker] widget 清理失败:', e); }
+    }
+
+    async destroy() {
+        this._stopTicker();
+        this._unbindDomEvents();
+        window.removeEventListener('focus', this._onWindowFocus);
+        window.removeEventListener('blur', this._onWindowBlur);
+        // ✅ 移除移动端 visibilitychange 监听器，防止内存泄漏
+        if (this._onMobileVisibilityChange) {
+            document.removeEventListener('visibilitychange', this._onMobileVisibilityChange);
+            this._onMobileVisibilityChange = null;
+        }
+        for (const win of this._openWindows) {
+            win.removeEventListener('focus', this._onWindowFocus);
+            win.removeEventListener('blur', this._onWindowBlur);
+        }
+        this._openWindows.clear();
+        this._leafStates.clear();
+        this.activeLeaf = null;
+        for (const ref of this._eventRefs) {
+            this.app.workspace.offref(ref);
+        }
+        this._eventRefs = [];
+        await this.flushAll();
+        this.readingMap.clear();
+        console.log('[ReadTimeTracker] ⏹ 计时引擎已停止');
+    }
+
+    async _bindToFile(filePath, leaf) {
+        const bindSeq = ++this._bindSeq;
+        this._unbindDomEvents();
+
+        if (!shouldTrackFile(filePath, this.settings)) {
+            // ✅ 竞态检查：确保这是最新的 bind
+            if (bindSeq !== this._bindSeq) return;
+
+            this.currentPath = null;
+            // 被排除的文件不写入叶子状态，其他叶子上同文件的积累秒数不受影响
+            if (leaf) this._leafStates.delete(leaf.id);
+            if (this.onExcludedCallback) this.onExcludedCallback(filePath);
+            return;
+        }
+
+        // 检查此叶子是否有可恢复的同文件会话
+        const existingState = leaf ? this._leafStates.get(leaf.id) : null;
+        let sessionKey;
+
+        if (existingState && existingState.filePath === filePath) {
+            // ✅ 恢复路径也需要竞态检查
+            if (bindSeq !== this._bindSeq) {
+                console.log(`[ReadTimeTracker] 竞态丢弃(恢复): ${filePath}`);
+                return;
+            }
+
+            // 恢复：同叶子同文件（从其他 tab 切回来），沿用原 sessionKey 和积累的 seconds
+            sessionKey = existingState.sessionKey;
+            // 恢复该叶子上次保存的暂停状态，避免全局 isPaused 污染已计时文件的恢复
+            // ✅ 使用新的枚举配置
+            let config = { resumeOnReturn: false };
+            if (this.plugin && this.plugin.getAutoStartConfig) {
+                config = this.plugin.getAutoStartConfig(this.settings.autoStartMode);
+            }
+            this.isPaused = (existingState.isPaused != null ? existingState.isPaused : !config.resumeOnReturn);
+            console.log(`[ReadTimeTracker] ▶ 恢复: ${filePath} (会话: ${sessionKey}, 暂停: ${this.isPaused})`);
+        } else {
+            // 新会话：叶子第一次显示此文件，或文件在此叶子内发生了变化
+            sessionKey = nowStr();
+
+            // ✅ 新会话的初始暂停状态：使用新的枚举配置
+            let config = { startOnOpen: false };
+            if (this.plugin && this.plugin.getAutoStartConfig) {
+                config = this.plugin.getAutoStartConfig(this.settings.autoStartMode);
+            }
+            const initPaused = !config.startOnOpen;
+
+            // 初始化 readingMap：从 store 读取 todaySeconds
+            if (!this.readingMap.has(filePath)) {
+                try {
+                    const existingRecord = await this.store.getRecord(filePath);
+
+                    // ✅ 从 readTimeLine 重新计算今天的总时间（而非直接用 readTimeToday）
+                    let todaySeconds = 0;
+                    if (existingRecord && existingRecord.readTimeLine && Array.isArray(existingRecord.readTimeLine)) {
+                        const today = todayStr();
+                        // 修复：readTimeLine 是数组，遍历每个 session 对象
+                        for (const session of existingRecord.readTimeLine) {
+                            const timestamps = Object.keys(session).sort();
+                            if (timestamps.length > 0 && timestamps[0].startsWith(today)) {
+                                todaySeconds += calculateSessionDuration(session);
+                            }
+                        }
+                    }
+
+                    console.log(`[ReadTimeTracker] 🔍 初始化 ${filePath}:`, {
+                        hasStoreRecord: !!existingRecord,
+                        todaySeconds,
+                        readTimeToday: (existingRecord && existingRecord.readTimeToday),
+                        totalReadTime: (existingRecord && existingRecord.totalReadTime)
+                    });
+
+                    // ✅ 竞态检查：如果已有更新的 bind，丢弃此次结果
+                    if (bindSeq !== this._bindSeq) {
+                        console.log(`[ReadTimeTracker] 竞态丢弃(异步读取): ${filePath}`);
+                        return;
+                    }
+
+                    this.readingMap.set(filePath, {
+                        seconds: 0,
+                        todaySeconds,
+                        sessionKey,
+                        lastActive: Date.now(),
+                        sessionStartTime: new Date().toISOString(), // ✅ 会话开始时间
+                        currentPauseStart: initPaused ? new Date().toISOString() : null, // ✅ 暂停起始时间
+                        pausedRanges: []  // ✅ 暂停时段列表
+                    });
+                } catch (e) {
+                    console.error('[ReadTimeTracker] 读取 todaySeconds 失败:', e);
+
+                    // ✅ 错误恢复路径也需要竞态检查
+                    if (bindSeq !== this._bindSeq) return;
+
+                    this.readingMap.set(filePath, {
+                        seconds: 0,
+                        todaySeconds: 0,
+                        sessionKey,
+                        lastActive: Date.now(),
+                        sessionStartTime: new Date().toISOString(), // ✅ 会话开始时间
+                        currentPauseStart: initPaused ? new Date().toISOString() : null, // ✅ 暂停起始时间
+                        pausedRanges: []  // ✅ 暂停时段列表
+                    });
+                }
+            } else {
+                // ✅ 已有 readingMap entry
+                const existing = this.readingMap.get(filePath);
+                // 是否有其他叶子仍在追踪该文件（分屏共享场景）
+                const otherTracked = Array.from(this._leafStates.values()).some(s => s.filePath === filePath);
+                if (otherTracked) {
+                    // ✅ 分屏共享：其他叶子在计时，复用现有会话
+                    console.log(`[ReadTimeTracker] 🔄 复用已有 entry ${filePath}:`, {
+                        seconds: existing.seconds,
+                        todaySeconds: existing.todaySeconds,
+                        sessionKey: existing.sessionKey
+                    });
+                    // ✅ 不更新 sessionKey！保持原有会话，避免"停止并进入下一轮"
+                    sessionKey = existing.sessionKey;
+                } else {
+                    // ✅ 无其他叶子追踪：开启新一轮（旧会话已刷盘保存）
+                    sessionKey = nowStr();
+                    existing.sessionKey = sessionKey;
+                    existing.sessionStartTime = new Date().toISOString();
+                    console.log(`[ReadTimeTracker] 🔄 开启新一轮(复用分支): ${filePath} (会话: ${sessionKey})`);
+                }
+            }
+
+            // 不重置已有秒数：若另一个叶子已在计时同文件，保留其积累值
+            if (leaf) this._leafStates.set(leaf.id, { filePath, sessionKey, isPaused: initPaused });
+            this.isPaused = initPaused;
+            console.log(`[ReadTimeTracker] 📄 新建叶子绑定: ${filePath} (会话: ${sessionKey}, 暂停: ${initPaused})`);
+        }
+
+        // ✅ 最终竞态检查：在设置全局状态前确保这是最新的 bind
+        if (bindSeq !== this._bindSeq) {
+            console.log(`[ReadTimeTracker] 竞态丢弃(最终): ${filePath}`);
+            return;
+        }
+
+        this.currentPath = filePath;
+        this.sessionStartTime = sessionKey;
+        this.lastEventTime = Date.now();
+
+        // ✅ 创建或恢复 _currentSession（新数据结构）
+        // 检查 store 中是否有未完成的 currentSession
+        const record = this.store.getRecord(filePath);
+        if (record && record.currentSession) {
+            // 恢复未完成的会话
+            this._currentSession = record.currentSession;
+            this._currentFilePath = filePath;
+            this._activeSecondsCache = calculateSessionDuration(record.currentSession);
+            this._lastTickTime = Date.now();
+            console.log(`[ReadTimeTracker] 📥 恢复未完成会话: ${filePath}`);
+        } else {
+            // 创建新会话
+            await this._startNewSession(filePath);
+        }
+
+        const view = this._getActiveMarkdownView();
+        if ((view && view.contentEl)) this._bindDomEvents(view.contentEl);
+        this._startTicker();
+    }
+
+    _getActiveMarkdownView() {
+        try {
+            return (this.app.workspace.getActiveViewOfType(MarkdownView) != null ? this.app.workspace.getActiveViewOfType(MarkdownView) : null);
+        } catch (e) {
+            const leaf = this.app.workspace.activeLeaf;
+            return ((leaf && leaf.view && leaf.view.getViewType ? leaf.view.getViewType() : null) === 'markdown') ? leaf.view : null;
+        }
+    }
+
+    _bindDomEvents(el) {
+        if (!el) return;
+        this.currentBoundEl = el;
+        if (!this._passiveOpt) this._passiveOpt = { passive: true };
+        el.addEventListener('scroll', this.onUserActivity, this._passiveOpt);
+        el.addEventListener('click', this.onUserActivity, this._passiveOpt);
+        el.addEventListener('keydown', this.onUserActivity, this._passiveOpt);
+        el.addEventListener('touchmove', this.onUserActivity, this._passiveOpt);
+    }
+
+    _unbindDomEvents() {
+        if (!this.currentBoundEl) return;
+        const opt = this._passiveOpt || { passive: true };
+        this.currentBoundEl.removeEventListener('scroll', this.onUserActivity, opt);
+        this.currentBoundEl.removeEventListener('click', this.onUserActivity, opt);
+        this.currentBoundEl.removeEventListener('keydown', this.onUserActivity, opt);
+        this.currentBoundEl.removeEventListener('touchmove', this.onUserActivity, opt);
+        this.currentBoundEl = null;
+    }
+
+    onUserActivity() { this.lastEventTime = Date.now(); }
+
+    async _onActiveLeafChange(leaf) {
+        const seq = ++this._leafChangeSeq;
+        const viewType = (leaf && leaf.view && leaf.view.getViewType ? leaf.view.getViewType() : null);
+        const prevLeaf = this.activeLeaf;
+        this.activeLeaf = leaf;
+
+        // 非 markdown 视图（设置页、canvas、dataview 面板等）：
+        // 不清空 currentPath，让 tick 的 activeFilePath 检查自然暂停计时
+        // 这样使用 DataviewJS 工具面板时不会打断当前 markdown 文件的会话
+        if (viewType !== 'markdown') return;
+
+        const newFilePath = (leaf && leaf.view && leaf.view.file ? leaf.view.file.path : null);
+
+        // 同叶子内文件发生了变化（tab 内导航、模式切换等）
+        // ✅ 用 leaf.id 比较替代对象引用比较（模式切换时 Obsidian 可能创建新对象引用）
+        const sameLeaf = leaf && prevLeaf && leaf.id === prevLeaf.id;
+        if (sameLeaf) {
+            const prevState = this._leafStates.get(leaf.id);
+
+            // ✅ 同叶子同文件：需额外检查 DOM 是否仍有效（切到非 Markdown 再切回时 DOM 已重建）
+            if (prevState && prevState.filePath === newFilePath) {
+                const view = this._getActiveMarkdownView();
+                const domOk = (view && view.contentEl) && this.currentBoundEl && this.currentBoundEl.isConnected;
+                if (domOk) {
+                    console.log(`[ReadTimeTracker] 🔒 去重阻止: ${newFilePath} (叶子: ${leaf.id})`);
+                    return;
+                }
+                // DOM 已失效，仅重绑事件，不重启会话
+                console.log(`[ReadTimeTracker] 🔄 DOM 重绑(同叶同文): ${newFilePath}`);
+                if ((view && view.contentEl)) this._bindDomEvents(view.contentEl);
+                return;
+            }
+
+            // 真正的文件切换：旧文件实际离开了这个叶子，需要立即刷盘保存
+            if (prevState && prevState.filePath !== newFilePath) {
+                console.log(`[ReadTimeTracker] 🔄 同叶子文件切换: ${prevState.filePath} → ${newFilePath}`);
+                // ✅ 改为非阻塞刷盘，避免 UI 卡顿
+                this._flushFileSilent(prevState.filePath, prevState.sessionKey)
+                    .catch(e => console.warn('[ReadTimeTracker] 同叶子切换刷盘失败:', e));
+                // ✅ 不删除 _leafStates，让 _bindToFile 自然覆盖
+            }
+        }
+
+        if (seq !== this._leafChangeSeq) return; // 期间有更新的切换事件，本次已过期
+
+        if (!newFilePath) {
+            this.currentPath = null;
+            this._unbindDomEvents();
+            return;
+        }
+
+        // ✅ 最终去重检查：如果当前正在计时的就是这个文件，且叶子相同（用 ID 比较）
+        if (this.currentPath === newFilePath && (this.activeLeaf ? this.activeLeaf.id : null) === (leaf ? leaf.id : null)) {
+            const view = this._getActiveMarkdownView();
+            const domOk = (view && view.contentEl) && this.currentBoundEl && this.currentBoundEl.isConnected;
+            if (domOk) {
+                console.log(`[ReadTimeTracker] 🔒 最终去重阻止: ${newFilePath} (已在计时中)`);
+                return;
+            }
+            // DOM 已失效（视图重建），仅重绑 DOM 事件，不重启会话
+            console.log(`[ReadTimeTracker] 🔄 DOM 重绑: ${newFilePath}`);
+            if ((view && view.contentEl)) this._bindDomEvents(view.contentEl);
+            return;
+        }
+
+        // 🔍 诊断日志：检查为什么去重没有生效
+        if (this.currentPath === newFilePath) {
+            console.log(`[ReadTimeTracker] ⚠️ 同文件但叶子不同: ${newFilePath}`, {
+                activeLeafId: (this.activeLeaf ? this.activeLeaf.id : null),
+                newLeafId: (leaf ? leaf.id : null),
+                leafEqual: this.activeLeaf === leaf
+            });
+        }
+
+        this._bindToFile(newFilePath, leaf);
+    }
+
+    _onAppQuit() {
+        try {
+            const dump = JSON.stringify(Array.from(this.readingMap.entries())
+                .map(([p, r]) => ({
+                    p,
+                    s: r.seconds,
+                    la: r.lastActive,
+                    st: r.sessionStartTime, // ✅ 备份会话开始时间
+                    pr: r.pausedRanges // ✅ 备份暂停历史
+                })));
+            localStorage.setItem('__rttBackup', dump);
+        } catch (e) { console.warn('[ReadTimeTracker] localStorage 备份失败:', (e && e.message ? e.message : String(e))); }
+        this.flushAll()
+            .then(() => localStorage.removeItem('__rttBackup'))
+            .catch(e => console.warn('[ReadTimeTracker] flushAll 未完成:', (e && e.message ? e.message : String(e))));
+    }
+
+    _restoreBackup() {
+        try {
+            const raw = localStorage.getItem('__rttBackup');
+            if (!raw) return;
+            const backup = JSON.parse(raw);
+            for (const item of backup) {
+                if (!this.readingMap.has(item.p)) {
+                    // ✅ 恢复时必须包含完整的 entry 结构（todaySeconds 和 sessionKey）
+                    this.readingMap.set(item.p, {
+                        seconds: item.s || 0,
+                        todaySeconds: 0, // ✅ 热重载后 todaySeconds 从 store 读取，先初始化为 0
+                        sessionKey: toLocalKeyStr(item.st) || nowStr(), // ✅ 备份时间为本地 key 格式，避免 ISO 时间被写入 key
+                        lastActive: item.la || Date.now(),
+                        sessionStartTime: item.st || new Date().toISOString(), // ✅ 会话开始时间
+                        currentPauseStart: null, // ✅ 热重载后暂停状态重置
+                        pausedRanges: item.pr || []  // ✅ 恢复暂停历史
+                    });
+                } else {
+                    const r = this.readingMap.get(item.p);
+                    r.seconds += (item.s || 0);
+                    r.lastActive = Math.max(r.lastActive, item.la || 0);
+                }
+                if (item.st) this.sessionStartTime = item.st;
+            }
+            localStorage.removeItem('__rttBackup');
+            this.flushAll().catch(e => console.warn('[ReadTimeTracker] 备份恢复刷盘失败:', e));
+        } catch (e) { console.warn('[ReadTimeTracker] 备份恢复失败:', (e && e.message ? e.message : String(e))); }
+    }
+
+    _startTicker() {
+        if (this.tickerId !== null) return;
+        this.tickerId = setInterval(this.tick, 1000);
+    }
+
+    _stopTicker() {
+        if (this.tickerId !== null) { clearInterval(this.tickerId); this.tickerId = null; }
+    }
+
+    async tick() {
+        if (!this._currentFilePath) { this._stopTicker(); return; }
+
+        // ✅ 每秒检测 widget DOM 是否仍连接
+        if (this.onWidgetHealthCheck) this.onWidgetHealthCheck();
+
+        // ✅ 跨日检测
+        this._checkCrossDay();
+
+        const shouldCount =
+            !this.isPaused &&
+            this.activeFilePath === this._currentFilePath &&
+            this.isWindowFocused &&
+            document.hasFocus() &&
+            (this.settings.idleTimeoutEnabled === false ||
+                (Date.now() - this.lastEventTime) <= Math.max(1, parseInt(this.settings.idleTimeout) || 20) * 1000);
+
+        // 通知 widget 当前是否在计时
+        (this.onStateCallback ? this.onStateCallback(this._currentFilePath, shouldCount) : undefined);
+
+        if (!shouldCount || !this._currentSession) return;
+
+        // ✅ 累加活跃秒数到缓存
+        const now = Date.now();
+        if (this._lastTickTime) {
+            const elapsed = (now - this._lastTickTime) / 1000;
+            this._activeSecondsCache += elapsed;
+        }
+        this._lastTickTime = now;
+
+        // 计算今日轮次数
+        const sessionCount = this._getTodaySessionCount(this._currentFilePath);
+
+        // 计算今日总时长
+        const record = this.store.getRecord(this._currentFilePath);
+        let todaySeconds = this._activeSecondsCache; // 当前会话
+        if ((record ? record.readTimeLine : null)) {
+            const today = todayStr();
+            for (const session of record.readTimeLine) {
+                const timestamps = Object.keys(session).sort();
+                if (timestamps.length > 0 && timestamps[0].startsWith(today)) {
+                    todaySeconds += calculateSessionDuration(session);
+                }
+            }
+        }
+
+        if (this.onTickCallback) {
+            this.onTickCallback(
+                this._currentFilePath,
+                this._activeSecondsCache,
+                todaySeconds,
+                Object.keys(this._currentSession).sort()[0],
+                sessionCount,
+                shouldCount
+            );
+        }
+    }
+
+    /** 跨日检测：清空所有文件的 todaySeconds 缓存 */
+    async _checkDayRollover() {
+        // ✅ 防重入：如果已有跨日检测在执行，直接返回
+        if (this._isCheckingDayRollover) {
+            return;
+        }
+
+        const today = todayStr();
+        if (this._lastCheckDay !== today) {
+            this._isCheckingDayRollover = true; // ✅ 加锁
+            try {
+                console.log(`[ReadTimeTracker] 🌅 日期变更检测: ${this._lastCheckDay} → ${today}`);
+
+                // ✅ 1. 先重置跨日相关字段（防止 _flushFileSilent 用昨日数据污染今日缓存）
+                for (const record of this.readingMap.values()) {
+                    record.todaySeconds = 0;
+                    record.currentPauseStart = null; // ✅ 清除昨日的暂停时间戳，防止跨日后计算出错误的暂停时长
+                    record.pausedRanges = []; // ✅ 清空昨日的暂停记录，防止数据污染
+                }
+
+                // ✅ 2. 刷盘所有有积累的文件（昨日数据）
+                const filesToFlush = [];
+                for (const [filePath, record] of this.readingMap.entries()) {
+                    if (record.seconds > 0) {
+                        filesToFlush.push({
+                            filePath,
+                            sessionKey: record.sessionKey || nowStr(),
+                            seconds: record.seconds
+                        });
+                    }
+                }
+
+                if (filesToFlush.length > 0) {
+                    console.log(`[ReadTimeTracker] 跨日刷盘: ${filesToFlush.length} 个文件`);
+                    for (const {filePath, sessionKey} of filesToFlush) {
+                        try {
+                            await this._flushFileSilent(filePath, sessionKey);
+                        } catch (e) {
+                            console.error(`[ReadTimeTracker] 跨日刷盘失败 ${filePath}:`, e);
+                        }
+                    }
+                }
+
+                // ✅ 注意：seconds 由 _flushFileSilent 在每个文件刷盘时同步清零，
+                //    避免 blanket reset 抹除异步刷盘期间 tick() 新积累的秒数
+
+                // ✅ 跨日后：当前阅读中的文件开启新一轮（开始时间更新为新的一天）
+                if (this.currentPath) {
+                    await this._startNewSession(this.currentPath);
+                }
+
+                this._lastCheckDay = today;
+
+                // ✅ 3. 通知 widget 更新（显示新的一天的 todaySeconds = 0）
+                if (this.currentPath && this.onTickCallback) {
+                    const record = this.readingMap.get(this.currentPath);
+                    if (record) {
+                        const sessionCount = this._getTodaySessionCount(this.currentPath);
+                        this.onTickCallback(
+                            this.currentPath,
+                            record.seconds,
+                            record.todaySeconds,
+                            this.sessionStartTime,
+                            sessionCount,
+                            !this.isPaused
+                        );
+                    }
+                }
+
+                // ✅ 4. 通知用户
+                new Notice('已进入新的一天，计时已重置');
+            } catch (e) {
+                console.error('[ReadTimeTracker] 跨日检测异常:', e);
+            } finally {
+                this._isCheckingDayRollover = false; // ✅ 释放锁（finally 保证）
+            }
+        }
+    }
+
+    /** 获取今日该文件的会话轮次数 */
+    _getTodaySessionCount(filePath) {
+        try {
+            const record = this.store.getRecord(filePath);
+            const today = todayStr();
+            let todaySessionCount = 0;
+
+            // 统计 readTimeLine 中今日已保存的会话数
+            if (record && Array.isArray(record.readTimeLine)) {
+                for (const session of record.readTimeLine) {
+                    const timestamps = Object.keys(session).sort();
+                    if (timestamps.length > 0 && timestamps[0].startsWith(today)) {
+                        todaySessionCount++;
+                    }
+                }
+            }
+
+            // ✅ 修复：只有当前文件正在活跃计时时才 +1
+            // 如果 _currentSession 存在且 filePath 匹配，说明正在进行新一轮
+            if (this._currentSession && this._currentFilePath === filePath) {
+                const timestamps = Object.keys(this._currentSession).sort();
+                const lastState = this._currentSession[timestamps[timestamps.length - 1]];
+                // 只有未保存的会话（tracking/pausing）才算作"第n+1轮"
+                if (lastState !== "saved") {
+                    todaySessionCount++;
+                }
+            }
+
+            // 至少返回 1（避免显示"第0轮"）
+            return Math.max(todaySessionCount, 1);
+        } catch (e) {
+            console.error('[ReadTimeTracker] _getTodaySessionCount 失败:', e);
+            return 1;
+        }
+    }
+
+    /**
+     * 从 readTimeLine 重新计算 totalReadTime / readTimeToday（兼容新旧格式）
+     * @param {Array} readTimeLine - 会话数组
+     * @returns {{ totalReadTime: number, readTimeToday: number }}
+     */
+    _recalcAggregates(readTimeLine) {
+        const today = todayStr();
+        let totalReadTime = 0;
+        let readTimeToday = 0;
+
+        // 修复：readTimeLine 是数组，遍历每个 session
+        if (Array.isArray(readTimeLine)) {
+            for (const session of readTimeLine) {
+                const activeSec = calculateSessionDuration(session);
+                totalReadTime += activeSec;
+
+                // 检查是否为今日会话
+                const timestamps = Object.keys(session).sort();
+                if (timestamps.length > 0 && timestamps[0].startsWith(today)) {
+                    readTimeToday += activeSec;
+                }
+            }
+        }
+
+        return { totalReadTime, readTimeToday };
+    }
+
+    /** 获取所有文档的今日总计时间（秒） - 实时计算 */
+    getAllTodaySeconds() {
+        // ✅ 移除缓存，每次都实时计算
+        const allRecords = this.store.getAllRecords();
+        let total = 0;
+        const today = todayStr();
+
+        // 遍历所有文档，累加今日时间
+        for (const [path, record] of Object.entries(allRecords)) {
+            let fileToday = 0;
+
+            // 从 readTimeLine 数组计算今日已保存的会话
+            if (record.readTimeLine && Array.isArray(record.readTimeLine)) {
+                for (const session of record.readTimeLine) {
+                    const timestamps = Object.keys(session).sort();
+                    if (timestamps.length > 0 && timestamps[0].startsWith(today)) {
+                        const duration = calculateSessionDuration(session);
+                        fileToday += duration;
+                    }
+                }
+            }
+
+            // ✅ 如果是当前正在计时的文件，使用缓存的活跃时长（每秒在 tick 中更新）
+            if (path === this._currentFilePath && this._currentSession) {
+                fileToday += this._activeSecondsCache;
+            }
+
+            total += fileToday;
+        }
+
+        return total;
+    }
+
+    async flushCurrent() {
+        if (!this._currentSession || !this._currentFilePath) {
+            console.warn('[ReadTimeTracker] flushCurrent: 无当前会话');
+            return false; // ✅ 返回 false 表示未保存
+        }
+
+        try {
+            const filePath = this._currentFilePath;
+
+            // ✅ 检查会话时长是否达到 minSessionThreshold
+            const sessionDuration = this._activeSecondsCache; // 当前会话的活跃秒数
+            const minSec = Math.max(0, parseInt(this.settings.minReadSeconds) || 0);
+
+            if (minSec > 0 && sessionDuration < minSec) {
+                console.log(`[ReadTimeTracker] ⚠️ 会话时长不足，未保存: ${sessionDuration}s < ${minSec}s`);
+                new Notice(`⚠️ 会话时长不足 ${minSec} 秒，无法保存`);
+                return false; // ✅ 返回 false 表示未保存
+            }
+
+            const timestamp = nowFullStr();
+
+            // ✅ 调试：打印当前会话状态
+            console.log('[ReadTimeTracker] flushCurrent - 当前会话状态:', JSON.stringify(this._currentSession, null, 2));
+
+            // ✅ 添加 saved 状态（标记会话结束）
+            this._currentSession[timestamp] = "saved";
+
+            console.log('[ReadTimeTracker] flushCurrent - 添加 saved 后:', JSON.stringify(this._currentSession, null, 2));
+
+            // ✅ 验证会话对象的状态转换是否合法
+            try {
+                validateSessionObject(this._currentSession);
+            } catch (err) {
+                console.error('[ReadTimeTracker] 会话状态转换非法:', this._currentSession, err.message);
+                new Notice('⚠️ 会话数据异常，保存失败');
+                return;
+            }
+
+            // ✅ 获取或创建记录
+            let record = this.store.getRecord(filePath);
+            if (!record) {
+                record = {
+                    fileName: filePath.split('/').pop().replace(/\.md$/, ''),
+                    lastReadAt: nowStr(),
+                    readTimeLine: [],
+                    currentSession: null
+                };
+            }
+
+            // ✅ 将 currentSession 移入 readTimeLine
+            if (!Array.isArray(record.readTimeLine)) {
+                record.readTimeLine = [];
+            }
+            record.readTimeLine.push(this._currentSession);
+            record.lastReadAt = nowStr();
+            record.currentSession = null;
+
+            // ✅ 写入磁盘
+            await this.store.upsertRecord(filePath, record);
+
+            console.log(`[ReadTimeTracker] ✅ 会话已保存: ${filePath}, 活跃时长: ${this._activeSecondsCache}s`);
+
+            // ✅ 保存成功后开启新一轮
+            await this._startNewSession(filePath);
+
+            // ✅ 立即触发 widget 更新，显示新的轮数
+            if (this.onTickCallback) {
+                const sessionCount = this._getTodaySessionCount(filePath);
+                const record = this.store.getRecord(filePath);
+
+                // ✅ 计算文档今日总时长（遍历 readTimeLine 中今日所有已保存会话）
+                let todaySeconds = 0;
+                if (record && Array.isArray(record.readTimeLine)) {
+                    const today = todayStr();
+                    for (const session of record.readTimeLine) {
+                        const timestamps = Object.keys(session).sort();
+                        if (timestamps.length > 0 && timestamps[0].startsWith(today)) {
+                            todaySeconds += calculateSessionDuration(session);
+                        }
+                    }
+                }
+
+                // ✅ 新会话刚开始，本轮时长为 0
+                this.onTickCallback(
+                    filePath,
+                    0,  // 新会话的本轮秒数
+                    todaySeconds,  // 文档今日总秒数
+                    Object.keys(this._currentSession).sort()[0],  // 新会话开始时间
+                    sessionCount,  // 新的轮数
+                    !this.isPaused  // 运行状态
+                );
+            }
+
+            // ✅ 刷新所有 widget 的 Vault Today 值
+            if (this.onRefreshAllCallback) {
+                this.onRefreshAllCallback();
+            }
+
+            return true; // ✅ 返回 true 表示保存成功
+
+        } catch (e) {
+            console.error('[ReadTimeTracker] flushCurrent 失败:', e);
+            throw e;
+        }
+    }
+
+    /** 开启新一轮会话：更新该文件的 sessionKey 与开始时间 */
+    async _startNewSession(filePath) {
+        try {
+            // ✅ 创建新的 currentSession
+            const timestamp = nowFullStr();
+            this._currentSession = {
+                [timestamp]: "tracking"
+            };
+            this._currentFilePath = filePath;
+            this._activeSecondsCache = 0;
+            this._lastTickTime = Date.now();
+            this.isPaused = false;
+
+            console.log(`[ReadTimeTracker] 🔄 开启新会话: ${filePath}`);
+        } catch (e) {
+            console.error('[ReadTimeTracker] 开启新会话失败:', e);
+        }
+    }
+
+    /**
+     * 纠正闭合同一文件的上一时段（readTimeLine 中 key 早于 newKey 的最后一条）
+     * 仅处理 endTime 为 null 的遗留条目（旧版本不闭合结束时间，导致"进行中"不合理）：
+     *   - 按 startTime + totalSeconds 推算真实结束时间
+     *   - 若推算结果晚于当前时段开始时间，则截断到当前时段开始时间（不把空闲算入上一时段）
+     * @param {string} filePath
+     * @param {string} newKey - 当前新时段 sessionKey
+     */
+    async _closePreviousSession(filePath, newKey) {
+        try {
+            const existing = await this.store.getRecord(filePath);
+            if (!existing || !existing.readTimeLine) return;
+            const readTimeLine = { ...existing.readTimeLine };
+
+            // 上一时段：key 早于 newKey 且为对象格式的最后一条（key 字典序即时间序）
+            const prevKey = Object.keys(readTimeLine)
+                .filter(k => k < newKey && typeof readTimeLine[k] === 'object')
+                .sort()
+                .pop();
+            if (!prevKey) return;
+
+            const value = readTimeLine[prevKey];
+            if (value.endTime) return; // 已闭合（flush 已写入结束时间），无需纠正
+
+            const start = parseSessionStartTime(value.startTime || prevKey);
+            if (!start) return;
+            const totalSec = value.totalSeconds || 0;
+
+            // 推算结束时间 = startTime + 已累计时长；含暂停段（最后一段暂停的结束时刻若更晚）；
+            // 不晚于当前时段开始时间（不把空闲鸿沟算入上一时段）
+            let endMs = start.getTime() + totalSec * 1000;
+            const lastPauseEndMs = (value.pausedRanges || [])
+                .map(r => {
+                    const endTime = parseSessionStartTime(r.end);
+                    return endTime ? endTime.getTime() : null;
+                })
+                .filter(Boolean)
+                .sort((a, b) => a - b)
+                .pop();
+            if (lastPauseEndMs) endMs = Math.max(endMs, lastPauseEndMs);
+            const newStartTime = parseSessionStartTime(newKey);
+            const newStartMs = newStartTime ? newStartTime.getTime() : null;
+            if (newStartMs && endMs > newStartMs) endMs = newStartMs;
+            value.endTime = formatLocalFull(new Date(endMs));
+
+            // ✅ 使用共用方法重算汇总值
+            const { totalReadTime, readTimeToday } = this._recalcAggregates(readTimeLine);
+
+            await this.store.upsertRecord(filePath, {
+                fileName: filePath.split('/').pop().replace(/\.md$/, ''),
+                totalReadTime, readTimeToday,
+                lastReadAt: nowStr(),
+                readTimeLine
+            });
+
+            console.log(`[ReadTimeTracker] ✅ 纠正闭合上一时段: ${filePath} ${prevKey} → ${value.endTime}`);
+        } catch (e) {
+            console.error(`[ReadTimeTracker] 闭合上一时段失败 (${filePath}):`, e);
+        }
+    }
+
+    /** 将指定文件的积累秒数写盘，使用给定的 sessionKey */
+    async _flushFileSilent(filePath, sessionKey) {
+        const record = this.readingMap.get(filePath);
+        if (!record || record.seconds <= 0) return;
+        const delta = record.seconds;
+        const minSec = Math.max(0, parseInt(this.settings.minReadSeconds) || 0);
+        if (minSec > 0 && delta < minSec) {
+            // ✅ 检查文件是否仍有活跃叶子或正在前台阅读（非孤立状态）
+            const isOrphan = this.currentPath !== filePath
+                && !Array.from(this._leafStates.values()).some(s => s.filePath === filePath);
+
+            if (isOrphan) {
+                // 孤立文件：彻底关闭且未达标，丢弃并清理
+                record.seconds = 0;
+                record.todaySeconds = Math.max(0, record.todaySeconds - delta);
+                this.readingMap.delete(filePath);
+                console.log(`[ReadTimeTracker] 🗑 未达标丢弃: ${filePath} (${delta}s < ${minSec}s)`);
+            }
+            // 活跃文件：保留 record.seconds 继续累加，下次刷盘时合并
+            return;
+        }
+        this.flushingPath = filePath;
+        record.seconds = 0;
+
+        // ✅ 备份 todaySeconds 用于错误回滚
+        const oldTodaySeconds = record.todaySeconds;
+
+        try {
+            const existing = this.store.getRecord(filePath) || {};
+            const readTimeLine = { ...(existing.readTimeLine || {}) };
+
+            // ✅ 构建 SessionDetail 对象（新格式）
+            const existingSession = readTimeLine[sessionKey];
+            let sessionDetail;
+
+            // ✅ 统一计算墙上时钟秒数（含暂停）：从会话开始到此刻
+            // wallClockSec = now - sessionStartTime，已自然包含所有暂停时长
+            const startTimeStr = (typeof existingSession === 'object' && (existingSession ? existingSession.startTime : null))
+                || record.sessionStartTime
+                || sessionKey;
+            const sessionStartMs = (parseSessionStartTime(startTimeStr) ? parseSessionStartTime(startTimeStr).getTime() : null);
+            const nowMs = Date.now();
+            const wallClockSec = sessionStartMs
+                ? Math.max(delta, Math.floor((nowMs - sessionStartMs) / 1000))
+                : delta;
+
+            if (typeof existingSession === 'number') {
+                // 旧格式自动升级
+                sessionDetail = {
+                    totalSeconds: wallClockSec,
+                    activeSeconds: existingSession + delta,
+                    startTime: startTimeStr,
+                    endTime: nowFullStr(), // ✅ 停止计时时刻闭合，杜绝"进行中"
+                    pausedRanges: [...record.pausedRanges]
+                };
+            } else if (existingSession && typeof existingSession === 'object') {
+                // 新格式累加
+                sessionDetail = {
+                    totalSeconds: wallClockSec,
+                    activeSeconds: (existingSession.activeSeconds || 0) + delta,
+                    startTime: existingSession.startTime || record.sessionStartTime || sessionKey,
+                    endTime: nowFullStr(), // ✅ 停止计时时刻闭合，杜绝"进行中"
+                    pausedRanges: [...(existingSession.pausedRanges || []), ...record.pausedRanges]
+                };
+            } else {
+                // 全新会话
+                sessionDetail = {
+                    totalSeconds: wallClockSec,
+                    activeSeconds: delta,
+                    startTime: record.sessionStartTime || sessionKey,
+                    endTime: nowFullStr(), // ✅ 停止计时时刻闭合，杜绝"进行中"
+                    pausedRanges: [...record.pausedRanges]
+                };
+            }
+
+            // ✅ 如果当前处于暂停状态，追加未完成的暂停段
+            if (record.currentPauseStart) {
+                sessionDetail.pausedRanges.push({
+                    start: record.currentPauseStart,
+                    end: new Date().toISOString()
+                });
+            }
+
+            readTimeLine[sessionKey] = sessionDetail;
+
+            // ✅ 使用共用方法重算汇总值
+            const { totalReadTime, readTimeToday } = this._recalcAggregates(readTimeLine);
+
+            await this.store.upsertRecord(filePath, {
+                fileName: filePath.split('/').pop().replace(/\.md$/, ''),
+                totalReadTime, readTimeToday,
+                lastReadAt: nowStr(), readTimeLine
+            });
+
+            // 刷盘后更新 todaySeconds 缓存（保持与 store 一致）
+            record.todaySeconds = readTimeToday;
+
+            // ✅ 清空已保存的暂停历史（避免重复写入）
+            record.pausedRanges = [];
+            // ✅ 清除未完成的暂停起点（已随 pausedRanges 写入磁盘）
+            record.currentPauseStart = null;
+
+            console.log(`[ReadTimeTracker] 💾 ${filePath}: +${delta}s (key: ${sessionKey}), 暂停段: ${sessionDetail.pausedRanges.length}`);
+        } catch (err) {
+            console.error(`[ReadTimeTracker] _flushFileSilent 失败 (${filePath}):`, err);
+            // ✅ 回滚 seconds 和 todaySeconds
+            record.seconds += delta;
+            record.todaySeconds = oldTodaySeconds;
+        } finally {
+            this.flushingPath = null;
+        }
+    }
+
+    async flushAll() {
+        const errors = []; // ✅ 收集错误，确保所有文件都尝试刷盘
+
+        for (const [filePath, record] of this.readingMap.entries()) {
+            if (record.seconds <= 0) continue;
+
+            // 优先从 _leafStates 中找到该文件的 sessionKey
+            let sessionKey = null;
+            if (filePath === this.currentPath) {
+                sessionKey = this.sessionStartTime;
+            } else {
+                for (const state of this._leafStates.values()) {
+                    if (state.filePath === filePath) { sessionKey = state.sessionKey; break; }
+                }
+            }
+            if (!sessionKey) sessionKey = nowStr(); // 兜底
+
+            try {
+                await this._flushFileSilent(filePath, sessionKey);
+            } catch (e) {
+                console.error(`[ReadTimeTracker] flushAll 失败 ${filePath}:`, e);
+                errors.push({ filePath, error: e });
+            }
+        }
+
+        // ✅ 如果有失败，汇总报告给用户
+        if (errors.length > 0) {
+            console.error(`[ReadTimeTracker] flushAll 完成，${errors.length} 个文件失败`);
+            new Notice(`保存计时记录时遇到 ${errors.length} 个错误，请检查控制台`);
+        }
+    }
+
+    async discardCurrentSession(filePath) {
+        // ✅ 调试：打印详细状态
+        console.log(`[ReadTimeTracker] discardCurrentSession 调用:`, {
+            传入filePath: filePath,
+            当前_currentFilePath: this._currentFilePath,
+            _currentSession存在: !!this._currentSession,
+            匹配: filePath === this._currentFilePath
+        });
+
+        // ✅ 修复：如果没有传入 filePath，使用当前激活的 _currentFilePath
+        if (!filePath) {
+            filePath = this._currentFilePath;
+        }
+
+        if (!this._currentSession || !this._currentFilePath) {
+            console.warn(`[ReadTimeTracker] 弃用失败：无当前会话`);
+            return;
+        }
+
+        // ✅ 修复：允许弃用当前文件（即使 filePath 参数不完全匹配）
+        // 多标签页场景下，widget 的 filePath 可能与 engine 的 _currentFilePath 不同步
+        // 但只要当前有会话，就允许弃用
+        if (filePath && filePath !== this._currentFilePath) {
+            console.warn(`[ReadTimeTracker] 弃用警告：传入文件 ${filePath} 与当前文件 ${this._currentFilePath} 不匹配，使用当前文件`);
+            filePath = this._currentFilePath;
+        }
+
+        console.log(`[ReadTimeTracker] 🗑️ 弃用当前会话: ${filePath}`);
+
+        // ✅ 1. 清空内存中的会话状态
+        this._currentSession = null;
+        this._currentFilePath = null;
+        this._activeSecondsCache = 0;
+        this._lastTickTime = null;
+
+        // ✅ 2. 同步清空 store 中的 currentSession（关键修复：防止下次 bind 时错误恢复）
+        const record = this.store.getRecord(filePath);
+        if (record) {
+            record.currentSession = null;
+            await this.store.upsertRecord(filePath, record);
+        }
+
+        // ✅ 3. 立即开启新会话（而非等待下次 bind）
+        this._startNewSession(filePath);
+
+        // 丢弃后设置为暂停状态
+        let config = { startOnOpen: false };
+        if (this.plugin && this.plugin.getAutoStartConfig) {
+            config = this.plugin.getAutoStartConfig(this.settings.autoStartMode);
+        }
+        const shouldPause = !config.startOnOpen;
+        this.isPaused = shouldPause;
+
+        // 同步回当前叶子状态
+        if (this.activeLeaf) {
+            const state = this._leafStates.get(this.activeLeaf.id);
+            if (state) state.isPaused = shouldPause;
+        }
+
+        // ✅ 4. 计算今日时长（不含已弃用的会话）
+        let todaySeconds = 0;
+        if (record && Array.isArray(record.readTimeLine)) {
+            const today = todayStr();
+            for (const session of record.readTimeLine) {
+                const timestamps = Object.keys(session).sort();
+                if (timestamps.length > 0 && timestamps[0].startsWith(today)) {
+                    todaySeconds += calculateSessionDuration(session);
+                }
+            }
+        }
+
+        // ✅ 5. 通知 widget 更新为暂停状态
+        if (this.onTickCallback) {
+            this.onTickCallback(
+                filePath,
+                0,  // 新会话秒数为 0
+                todaySeconds,
+                null,
+                this._getTodaySessionCount(filePath),  // 显示新的轮数
+                false  // 暂停状态
+            );
+        }
+
+        // ✅ 刷新所有 widget 的 Vault Today 值
+        if (this.onRefreshAllCallback) {
+            this.onRefreshAllCallback();
+        }
+    }
+
+    /** 手动切换暂停/继续，返回最新 isPaused 状态 */
+    togglePause() {
+        if (!this._currentSession || !this._currentFilePath) return;
+
+        // ✅ 检查当前会话是否已结束（最后状态是 saved）
+        const timestamps = Object.keys(this._currentSession).sort();
+        const lastState = this._currentSession[timestamps[timestamps.length - 1]];
+        if (lastState === "saved") {
+            console.warn('[ReadTimeTracker] 当前会话已结束，无法暂停/恢复');
+            return;
+        }
+
+        const now = new Date();
+        const timestamp = nowFullStr();
+
+        // ✅ 防抖：如果同一秒内已有状态（时间戳键已存在），忽略重复操作
+        if (this._currentSession.hasOwnProperty(timestamp)) {
+            console.warn(`[ReadTimeTracker] ⚠️ 忽略重复操作：时间戳冲突 ${timestamp}`);
+            return;
+        }
+
+        if (this.isPaused) {
+            // 恢复计时：pausing → tracking
+            this._currentSession[timestamp] = "tracking";
+            this.isPaused = false;
+            this._lastTickTime = Date.now(); // 重置 tick 起点
+            this.lastEventTime = Date.now(); // 重置 idle 计时
+            console.log(`[ReadTimeTracker] ▶ 恢复计时: ${this._currentFilePath}`);
+        } else {
+            // 暂停计时：tracking → pausing
+            this._currentSession[timestamp] = "pausing";
+            this.isPaused = true;
+            this._lastTickTime = null; // 清空，避免恢复时计算错误
+            console.log(`[ReadTimeTracker] ⏸ 暂停计时: ${this._currentFilePath}`);
+        }
+
+        // 同步叶子状态
+        if (this.activeLeaf) {
+            const state = this._leafStates.get(this.activeLeaf.id);
+            if (state) state.isPaused = this.isPaused;
+        }
+
+        // 立即触发 widget 更新
+        if (this._currentFilePath) {
+            const sessionCount = this._getTodaySessionCount(this._currentFilePath);
+            const record = this.store.getRecord(this._currentFilePath);
+            let todaySeconds = this._activeSecondsCache;
+            if ((record ? record.readTimeLine : null)) {
+                const today = todayStr();
+                for (const session of record.readTimeLine) {
+                    const timestamps = Object.keys(session).sort();
+                    if (timestamps.length > 0 && timestamps[0].startsWith(today)) {
+                        todaySeconds += calculateSessionDuration(session);
+                    }
+                }
+            }
+
+            if (this.onTickCallback) {
+                this.onTickCallback(
+                    this._currentFilePath,
+                    this._activeSecondsCache,
+                    todaySeconds,
+                    Object.keys(this._currentSession).sort()[0],
+                    sessionCount,
+                    !this.isPaused
+                );
+            }
+            if (this.onStateCallback) {
+                this.onStateCallback(this._currentFilePath, !this.isPaused);
+            }
+
+            // ✅ 刷新所有 widget 的 Vault Today 值
+            if (this.onRefreshAllCallback) {
+                this.onRefreshAllCallback();
+            }
+        }
+
+        return this.isPaused;
+    }
+
+    getCurrentSeconds(filePath) {
+        const entry = this.readingMap.get(filePath);
+        const seconds = entry ? entry.seconds : 0;
+        return seconds != null ? seconds : 0;
+    }
+
+    getTodaySeconds(filePath) {
+        const entry = this.readingMap.get(filePath);
+        const todaySeconds = entry ? entry.todaySeconds : 0;
+        return todaySeconds != null ? todaySeconds : 0;
+    }
+
+    /**
+     * ✅ 新增：恢复未完成的会话（启动时调用）
+     */
+    async _recoverUnfinishedSessions() {
+        const records = this.store.getAllRecords();
+        let hasDirty = false;
+
+        for (const [filePath, record] of Object.entries(records)) {
+            if (record.currentSession && Object.keys(record.currentSession).length > 0) {
+                const timestamps = Object.keys(record.currentSession).sort();
+                const lastTimestamp = timestamps[timestamps.length - 1];
+
+                // 添加 saved 状态（时间戳为最后一个状态的时间）
+                record.currentSession[lastTimestamp] = "saved";
+
+                // 移入 readTimeLine
+                if (!Array.isArray(record.readTimeLine)) {
+                    record.readTimeLine = [];
+                }
+                record.readTimeLine.push(record.currentSession);
+                record.currentSession = null;
+                hasDirty = true;
+
+                console.log(`[ReadTimeTracker] 已恢复未完成会话: ${filePath}`);
+            }
+        }
+
+        if (hasDirty) {
+            this._allowWrite = true;
+            try {
+                await this.store.save();
+                console.log('[ReadTimeTracker] 启动时恢复会话完成');
+            } finally {
+                this._allowWrite = false;
+            }
+        }
+    }
+
+    /**
+     * ✅ 新增：检查跨日（每分钟检查一次）
+     */
+    _checkCrossDay() {
+        if (!this._currentSession || !this._currentFilePath) return;
+
+        const now = new Date();
+        const today = todayStr();
+        const sessionTimestamps = Object.keys(this._currentSession).sort();
+        const sessionStartDate = sessionTimestamps[0].split(' ')[0];
+
+        if (sessionStartDate !== today) {
+            const nowTimestamp = nowFullStr();
+            this._currentSession[nowTimestamp] = "saved";
+
+            const record = this.store.getRecord(this._currentFilePath);
+            if (!record) return;
+
+            if (!Array.isArray(record.readTimeLine)) {
+                record.readTimeLine = [];
+            }
+            record.readTimeLine.push(this._currentSession);
+            record.currentSession = null;
+
+            new Notice("新的一天开始了，已将会话切换至新的一天");
+
+            // 如果是 tracking 状态，自动开启新会话
+            if (!this.isPaused) {
+                this._currentSession = {
+                    [nowFullStr()]: "tracking"
+                };
+                this._activeSecondsCache = 0;
+                this._lastTickTime = Date.now();
+            } else {
+                this._currentSession = null;
+            }
+
+            this._allowWrite = true;
+            this.store.save().finally(() => {
+                this._allowWrite = false;
+            });
+        }
+    }
+}
+
+// ============================================================================
+// IconizeLoader — Iconize 插件适配器
+// ============================================================================
+
+/**
+ * @class IconizeLoader
+ * @description 读取和渲染 Iconize 插件的自定义文件图标
+ */
+class IconizeLoader {
+    constructor(app) {
+        this.app = app;
+        this.iconData = {};
+        this.svgCache = new Map();
+        this.loaded = false;
+    }
+
+    async load() {
+        const { adapter } = this.app.vault;
+        const configDir = this.app.vault.configDir || '.obsidian';
+        const dataPath = `${configDir}/plugins/obsidian-icon-folder/data.json`;
+
+        try {
+            // ✅ 使用 adapter API 读取 .obsidian 配置（vault 索引不覆盖隐藏目录）
+            const exists = await adapter.exists(dataPath);
+            if (!exists) {
+                console.log('[IconizeLoader] Iconize 插件未安装或配置文件不存在');
+                return false;
+            }
+
+            const content = await adapter.read(dataPath);
+            const data = JSON.parse(content);
+
+            // ✅ 兼容不同版本的数据结构
+            this.iconData = data.data || data;
+
+            // ✅ 过滤掉 settings 等非路径键
+            if (this.iconData.settings) {
+                delete this.iconData.settings;
+            }
+
+            this.loaded = true;
+            console.log(`[IconizeLoader] 成功加载 ${Object.keys(this.iconData).length} 个图标配置`);
+            return true;
+        } catch (e) {
+            console.warn('[IconizeLoader] 配置加载失败:', e);
+            return false;
+        }
+    }
+
+    resolveIcon(filePath) {
+        if (!this.loaded) return null;
+
+        // 1. 精确匹配文件路径
+        if (this.iconData[filePath]) {
+            return this._normalizeIconConfig(this.iconData[filePath]);
+        }
+
+        // 2. 文件夹继承：向上查找父文件夹的图标配置
+        let currentPath = filePath;
+        while (currentPath.includes('/')) {
+            currentPath = currentPath.substring(0, currentPath.lastIndexOf('/'));
+            if (this.iconData[currentPath]) {
+                return this._normalizeIconConfig(this.iconData[currentPath]);
+            }
+        }
+
+        return null;
+    }
+
+    async preloadSvgs(iconNames) {
+        const { getIcon } = require('obsidian');
+        for (const name of iconNames) {
+            if (!this.svgCache.has(name)) {
+                try {
+                    const svg = getIcon(name);
+                    if (svg) this.svgCache.set(name, svg);
+                } catch (e) {
+                    console.warn(`[IconizeLoader] 预加载图标失败: ${name}`, e);
+                }
+            }
+        }
+    }
+
+    renderIconTo(containerEl, iconName, iconColor) {
+        const svg = this.svgCache.get(iconName);
+        if (!svg) return false;
+
+        try {
+            const cloned = svg.cloneNode(true);
+            containerEl.empty();
+            containerEl.appendChild(cloned);
+
+            // ✅ 应用颜色到容器（SVG 通过 currentColor 继承）
+            if (iconColor) {
+                containerEl.style.color = iconColor;
+            }
+
+            return true;
+        } catch (e) {
+            console.warn(`[IconizeLoader] 渲染图标失败: ${iconName}`, e);
+            return false;
+        }
+    }
+
+    _normalizeIconConfig(value) {
+        if (typeof value === 'string') {
+            return { iconName: value, iconColor: null };
+        }
+        return { iconName: value.iconName, iconColor: value.iconColor || null };
+    }
+
+    /**
+     * ✅ 清理缓存，防止内存泄漏
+     */
+    cleanup() {
+        this.svgCache.clear();
+        this.iconData = {};
+        this.loaded = false;
+    }
+}
+
+// ============================================================================
+// HeaderWidget — view-header 嵌入式计时组件
+// ============================================================================
+
+class HeaderWidget {
+    /**
+     * @param {import('obsidian').App} app
+     * @param {ReadTimeEngine} engine
+     * @param {object} settings
+     */
+    constructor(app, engine, settings) {
+        this.app = app;
+        this.engine = engine;
+        this.settings = settings;
+        /**
+         * Key: MarkdownView 实例，Value: {el, timeEl, pauseBtn, discardBtn, excludedEl, isExcluded, filePath}
+         * 以 view 为 key 确保同 tab 内文件切换时能正确更新 filePath，避免旧路径残留导致的显示错误
+         */
+        this._viewWidgets = new Map();
+    }
+
+    /** 对指定 MarkdownView 注入组件（幂等，支持同 tab 内文件切换更新） */
+    mountToView(view) {
+        if (!view || !view.headerEl) return;
+        const currentFilePath = (view.file ? view.file.path : null);
+
+        console.log('[ReadTimeTracker] mountToView 调用 - view:', view.getViewType(), 'file:', currentFilePath, '_viewWidgets size:', this._viewWidgets.size);
+
+        const leaf = view.leaf;
+
+        // ✅ 清理非当前叶子的旧桌面端 widget（切换标签页后旧条目变成废弃引用）
+        if (leaf) {
+            for (const [oldView, oldWd] of this._viewWidgets.entries()) {
+                if (oldView === view) continue;
+                if (oldWd.isMobile) continue;
+                if (oldView.leaf === leaf) {
+                    // 同叶子不同 view → 转移 widget 给新 view
+                    this._viewWidgets.delete(oldView);
+                    this._viewWidgets.set(view, oldWd);
+                    break;
+                }
+                // 不同叶子 → 清理旧条目
+                if (oldView.leaf && oldView.leaf !== leaf) {
+                    this._unbindWidgetListeners(oldWd);
+                    this._viewWidgets.delete(oldView);
+                }
+            }
+        }
+
+        const existing = this._viewWidgets.get(view);
+
+        if (existing) {
+            // ✅ 模式切换后 header DOM 被替换，需要重建
+            // isConnected 不够：Obsidian 可能保留旧 header 的 DOM 引用
+            // 用 headerEl.contains() 确认 widget 仍在当前 view 的 header 中
+            const widgetInHeader = existing.el && view.headerEl && view.headerEl.contains(existing.el);
+            if (!widgetInHeader && !existing.isMobile) {
+                this._unbindWidgetListeners(existing);
+                this._viewWidgets.delete(view);
+                // fall through to create new widget below
+            } else {
+                // widget DOM 仍然有效：正常更新逻辑
+                // ✅ 移动端：同步 toggleIcon 到全局 widget 显示状态
+                if (existing.isMobile && existing.toggleIcon && existing.el) {
+                    const isWidgetVisible = !existing.el.hasClass('rtt-widget-hidden');
+                    if (isWidgetVisible) {
+                        existing.toggleIcon.addClass('rtt-toggle-active');
+                    } else {
+                        existing.toggleIcon.removeClass('rtt-toggle-active');
+                    }
+                }
+
+                // ✅ 移动端：即使 filePath 相同也强制刷新数据（单例 widget 共享场景）
+                if (existing.isMobile && existing.filePath === currentFilePath && currentFilePath) {
+                    const record = this.engine.readingMap.get(currentFilePath);
+                    if (record) {
+                        const sessionCount = (this.engine._getTodaySessionCount ? this.engine._getTodaySessionCount(currentFilePath) : undefined) || 1;
+                        const sessionStartTime = this.engine.sessionStartTime || '';
+                        const isRunning = !this.engine.isPaused && this.engine.activeFilePath === currentFilePath;
+                        this.update(currentFilePath, record.seconds, record.todaySeconds || 0, sessionStartTime, sessionCount, isRunning);
+                    }
+                }
+
+                // 同 view 内文件发生了变化（同 tab 内导航）：重置显示状态并重新评估是否被排除
+                if (existing.filePath !== currentFilePath) {
+                    existing.filePath = currentFilePath;
+                    existing.isExcluded = false;
+                    existing.sessionValue.textContent = '0 ' + t('second');
+                    existing.todayValue.textContent = '0 ' + t('second');
+                    existing.startTime.textContent = '--:--';
+                    if (existing.collapsedTimeValue) existing.collapsedTimeValue.textContent = '0 ' + t('second');
+                    existing.sessionValue.style.display = '';
+                    existing.todayValue.style.display = '';
+                    existing.saveBtn.style.display = '';
+                    existing.detailBtn.style.display = '';
+                    existing.pauseBtn.style.display = '';
+                    existing.discardBtn.style.display = '';
+                    if (existing.excludedEl) existing.excludedEl.style.display = 'none';
+
+                    // 立即评估新文件是否被排除
+                    if (currentFilePath && !shouldTrackFile(currentFilePath, this.engine.settings)) {
+                        this._applyExcluded(existing);
+                        return;
+                    }
+
+                    // ✅ 移动端：从排除文件切换到正常文件时，确保 widget 可见
+                    if (existing.isMobile && existing.el) {
+                        existing.el.removeClass('rtt-widget-hidden');
+                        if (existing.toggleIcon) existing.toggleIcon.addClass('rtt-toggle-active');
+                    }
+
+                    // ✅ 主动读取新文件的数据
+                    if (currentFilePath) {
+                        const record = this.engine.readingMap.get(currentFilePath);
+                        if (record) {
+                            const sessionCount = (this.engine._getTodaySessionCount ? this.engine._getTodaySessionCount(currentFilePath) : undefined) || 1;
+                            const sessionStartTime = this.engine.sessionStartTime || '';
+                            const isRunning = !this.engine.isPaused && this.engine.activeFilePath === currentFilePath;
+                            this.update(currentFilePath, record.seconds, record.todaySeconds || 0, sessionStartTime, sessionCount, isRunning);
+                        } else {
+                            (async () => {
+                                try {
+                                    const storeRecord = await this.engine.store.getRecord(currentFilePath);
+                                    let todaySeconds = 0;
+                                    if ((storeRecord ? storeRecord.readTimeLine : null)) {
+                                        const today = todayStr();
+                                        for (const [key, value] of Object.entries(storeRecord.readTimeLine)) {
+                                            if (key.startsWith(today)) {
+                                                const activeSec = typeof value === 'number' ? value : (value.activeSeconds || 0);
+                                                todaySeconds += activeSec;
+                                            }
+                                        }
+                                    }
+                                    const wd = this._viewWidgets.get(view);
+                                    if (!wd || wd.filePath !== currentFilePath) return;
+                                    const sessionCount = (this.engine._getTodaySessionCount ? this.engine._getTodaySessionCount(currentFilePath) : undefined) || 1;
+                                    this.update(currentFilePath, 0, todaySeconds, '', sessionCount, false);
+                                } catch (e) {
+                                    console.error('[ReadTimeTracker] mountToView 读取失败:', e);
+                                    const wd = this._viewWidgets.get(view);
+                                    if (!wd || wd.filePath !== currentFilePath) return;
+                                    this.update(currentFilePath, 0, 0, '', 1, false);
+                                }
+                            })();
+                        }
+                    }
+                }
+                return;
+            }
+        }
+
+        // 此 view 尚无 widget：创建 DOM 并注入
+        // ✅ 检查 DOM 中是否有孤立 widget（不被 _viewWidgets 追踪），有则移除
+        const staleWidget = view.headerEl.querySelector('.rtt-widget');
+        if (staleWidget) {
+            let isTracked = false;
+            for (const wd of this._viewWidgets.values()) {
+                if (wd.el === staleWidget) { isTracked = true; break; }
+            }
+            if (!isTracked) {
+                staleWidget.remove();
+                console.log('[ReadTimeTracker] 🧹 移除孤立 widget DOM');
+            } else {
+                return; // 已被追踪，不重复注入
+            }
+        }
+
+        const widget = createDiv({ cls: 'rtt-widget' });
+
+        // ✅ 全尺寸布局容器（收缩时隐藏）
+        const fullContent = widget.createDiv({ cls: 'rtt-full-content' });
+
+        // 第一段：开始时间
+        const startSection = fullContent.createDiv({ cls: 'rtt-section' });
+        startSection.createDiv({ cls: 'rtt-section-label', text: t('startedAt') });
+        const startTime = startSection.createDiv({ cls: 'rtt-section-value', text: '--:--' });
+
+        // 第二段：今日第n轮
+        const sessionSection = fullContent.createDiv({ cls: 'rtt-section' });
+        sessionSection.createDiv({ cls: 'rtt-section-label', text: '今日第1轮' }); // 轮次标签（动态更新）
+        const sessionValue = sessionSection.createDiv({ cls: 'rtt-section-value', text: '0 ' + t('second') });
+
+        // 第三段：今日总计
+        const todaySection = fullContent.createDiv({ cls: 'rtt-section' });
+        const todayLabel = todaySection.createDiv({ cls: 'rtt-section-label', text: '今日总计' });
+        const todayValue = todaySection.createDiv({ cls: 'rtt-section-value', text: '0 ' + t('second') });
+
+        // 第四段：按钮组
+        const buttonSection = fullContent.createDiv({ cls: 'rtt-section rtt-section-buttons' });
+
+        // ✅ 修复内存泄漏：将监听器函数存储为引用，便于后续移除
+        const listeners = {
+            pause: (e) => {
+                try {
+                    e.stopPropagation();
+                    this.engine.togglePause();
+                } catch (err) {
+                    console.error('[ReadTimeTracker] pause handler error:', err);
+                }
+            },
+            discard: async (e) => {
+                try {
+                    e.stopPropagation();
+                    const wd = this._viewWidgets.get(view);
+                    if (wd && !wd.isExcluded && wd.filePath) {
+                        await this.engine.discardCurrentSession(wd.filePath);
+                        this.engine.isPaused = true;
+                        if (this.engine.activeLeaf) {
+                            const state = this.engine._leafStates.get(this.engine.activeLeaf.id);
+                            if (state) state.isPaused = true;
+                        }
+                    }
+                } catch (err) {
+                    console.error('[ReadTimeTracker] discard handler error:', err);
+                }
+            },
+            save: async (e) => {
+                try {
+                    e.stopPropagation();
+                    const wd = this._viewWidgets.get(view);
+                    if (wd && !wd.isExcluded && wd.filePath) {
+                        const filePath = wd.filePath;
+                        const saved = await this.engine.flushCurrent(); // ✅ 获取保存结果
+
+                        if (saved) {
+                            // ✅ 保存成功：更新状态
+                            this.engine.isPaused = true;
+                            if (this.engine.activeLeaf) {
+                                const state = this.engine._leafStates.get(this.engine.activeLeaf.id);
+                                if (state) state.isPaused = true;
+                            }
+                            // ✅ 立即更新 widget 按钮状态（不等下一个 tick）
+                            this.updateState(filePath, false);
+                            new Notice('✅ 计时记录已保存');
+                        }
+                        // ✅ 如果 saved 为 false，flushCurrent 已经显示了错误提示
+                    }
+                } catch (err) {
+                    console.error('[ReadTimeTracker] save handler error:', err);
+                    new Notice('❌ 保存失败，请查看控制台');
+                }
+            },
+            detail: (e) => {
+                try {
+                    e.stopPropagation();
+                    const wd = this._viewWidgets.get(view);
+                    if (wd && !wd.isExcluded && wd.filePath) {
+                        this._showSessionDetail(wd.filePath, view);
+                    }
+                } catch (err) {
+                    console.error('[ReadTimeTracker] detail handler error:', err);
+                }
+            }
+        };
+
+        // 暂停/继续按钮：图标由引擎实际运行状态驱动
+        const pauseBtn = buttonSection.createSpan({ cls: 'rtt-pause-btn' });
+        setIcon(pauseBtn, 'pause');
+        pauseBtn.setAttribute('aria-label', t('pause'));
+        pauseBtn.onclick = listeners.pause;
+
+        const discardBtn = buttonSection.createSpan({ cls: 'rtt-discard-btn' });
+        setIcon(discardBtn, 'x');
+        discardBtn.setAttribute('aria-label', t('discard'));
+        discardBtn.onclick = listeners.discard;
+
+        // 保存按钮（第三个）
+        const saveBtn = buttonSection.createSpan({ cls: 'rtt-save-btn' });
+        setIcon(saveBtn, 'save');
+        saveBtn.setAttribute('aria-label', '保存记录');
+        saveBtn.onclick = listeners.save;
+
+        // 数据看板按钮（第四个，最下方）
+        const detailBtn = buttonSection.createSpan({ cls: 'rtt-detail-btn' });
+        setIcon(detailBtn, 'bar-chart-2');
+        detailBtn.setAttribute('aria-label', '查看会话记录');
+        detailBtn.onclick = listeners.detail;
+
+        // ✅ 移动端专用：关闭和拖动按钮（第五段），收缩按钮独立（第六段）
+        let closeBtn = null;
+        let dragHandle = null;
+        let collapseBtn = null;
+
+        let collapsedTimeValue = null;
+        let collapsedPauseBtnRef = null;
+        let collapsedDiscardBtnRef = null;
+        let collapsedSaveBtnRef = null;
+        let collapsedDetailBtnRef = null;
+        let isCollapsed = false;
+
+        if (this.app.isMobile) {
+            // 第五段：关闭和拖动按钮
+            const mobileControlSection = fullContent.createDiv({ cls: 'rtt-section rtt-mobile-controls' });
+
+            // 关闭按钮
+            closeBtn = mobileControlSection.createSpan({ cls: 'rtt-mobile-close' });
+            setIcon(closeBtn, 'x-circle');
+            closeBtn.setAttribute('aria-label', '关闭计时组件');
+
+            // 拖动手柄
+            dragHandle = mobileControlSection.createSpan({ cls: 'rtt-mobile-drag' });
+            setIcon(dragHandle, 'grip-vertical');
+            dragHandle.setAttribute('aria-label', '拖动组件');
+
+            // 第六段：收缩按钮（独立）
+            const collapseSection = fullContent.createDiv({ cls: 'rtt-section rtt-collapse-section' });
+            collapseBtn = collapseSection.createSpan({ cls: 'rtt-mobile-collapse' });
+            setIcon(collapseBtn, 'minimize-2');
+            collapseBtn.setAttribute('aria-label', '收缩组件');
+
+            // ✅ 独立收缩容器：收缩状态时显示，包含简化内容（计时 + 按钮 + 关闭 + 收缩）
+            const collapsedContent = widget.createDiv({ cls: 'rtt-collapsed-content' });
+            collapsedContent.style.display = 'none';
+            // 收缩态：计时值（显示"今日第n轮"的本轮时长）
+            const collapsedTime = collapsedContent.createDiv({ cls: 'rtt-section' });
+            collapsedTime.createDiv({ cls: 'rtt-section-label', text: '计时' });
+            collapsedTimeValue = collapsedTime.createDiv({ cls: 'rtt-section-value', text: '0 ' + t('second') });
+            // 收缩态：独立按钮（共用事件处理器，不移动 DOM）
+            const collapsedBtns = collapsedContent.createDiv({ cls: 'rtt-section rtt-section-buttons' });
+            collapsedPauseBtnRef = collapsedBtns.createSpan({ cls: 'rtt-pause-btn' });
+            setIcon(collapsedPauseBtnRef, 'pause');
+            collapsedPauseBtnRef.onclick = listeners.pause;
+            collapsedDiscardBtnRef = collapsedBtns.createSpan({ cls: 'rtt-discard-btn' });
+            setIcon(collapsedDiscardBtnRef, 'x');
+            collapsedDiscardBtnRef.onclick = listeners.discard;
+            collapsedSaveBtnRef = collapsedBtns.createSpan({ cls: 'rtt-save-btn' });
+            setIcon(collapsedSaveBtnRef, 'save');
+            collapsedSaveBtnRef.onclick = listeners.save;
+            collapsedDetailBtnRef = collapsedBtns.createSpan({ cls: 'rtt-detail-btn' });
+            setIcon(collapsedDetailBtnRef, 'bar-chart-2');
+            collapsedDetailBtnRef.onclick = listeners.detail;
+            // 收缩态：关闭 + 展开
+            const collapsedControls = collapsedContent.createDiv({ cls: 'rtt-section rtt-mobile-controls' });
+            const collapsedCloseBtn = collapsedControls.createSpan({ cls: 'rtt-mobile-close' });
+            setIcon(collapsedCloseBtn, 'x-circle');
+            collapsedCloseBtn.setAttribute('aria-label', '关闭计时组件');
+            const collapsedCollapseBtn = collapsedControls.createSpan({ cls: 'rtt-mobile-collapse' });
+            setIcon(collapsedCollapseBtn, 'maximize-2');
+            collapsedCollapseBtn.setAttribute('aria-label', '展开组件');
+
+            // ✅ 将监听器存储到对象中，便于清理
+            const collapsedCloseHandler = () => {
+                widget.addClass('rtt-widget-hidden');
+                if (toggleIcon) toggleIcon.removeClass('rtt-toggle-active');
+            };
+            const collapsedExpandHandler = (e) => {
+                e.stopPropagation();
+                isCollapsed = false;
+                collapsedContent.style.display = 'none';
+                fullContent.style.display = '';
+                widget.removeClass('rtt-widget-collapsed');
+            };
+            const collapseHandler = (e) => {
+                e.stopPropagation();
+                isCollapsed = true;
+                fullContent.style.display = 'none';
+                collapsedContent.style.display = '';
+                widget.addClass('rtt-widget-collapsed');
+            };
+
+            collapsedCloseBtn.addEventListener('click', collapsedCloseHandler);
+            collapsedCollapseBtn.addEventListener('click', collapsedExpandHandler);
+            collapseBtn.addEventListener('click', collapseHandler);
+        }
+
+        // 被排除时显示的橙色圆圈减号图标（初始隐藏）
+        const excludedEl = widget.createSpan({ cls: 'rtt-excluded-icon' });
+        setIcon(excludedEl, 'circle-minus');
+        excludedEl.setAttribute('aria-label', t('excluded'));
+        excludedEl.style.display = 'none';
+
+        // 插入到 .view-actions 之前（标题右侧、操作按钮左侧）
+        // ✅ 移动端与桌面端分支处理
+        let toggleIcon = null;  // ✅ 在外部声明，避免作用域问题
+        let mobileListeners = null;  // ✅ 在外部声明，桌面端为 null
+
+        if (this.app.isMobile) {
+            // ✅ 检查 body 是否已有移动端 widget（防止重复创建）
+            const existingBodyWidget = document.body.querySelector('.rtt-widget-mobile');
+            if (existingBodyWidget) {
+                // ✅ 复用现有 widget：直接从 DOM 查询元素引用（确保引用最新的实际 DOM）
+                console.log('[ReadTimeTracker] 复用现有移动端 widget');
+
+                // 从 _viewWidgets 中找到任意一个引用同一 DOM 的 widgetData，复用其 mobileListeners
+                let srcWd = null;
+                for (const wd of this._viewWidgets.values()) {
+                    if (wd.el === existingBodyWidget) { srcWd = wd; break; }
+                }
+
+                // ✅ 直接从 DOM 查询所有元素引用（而不是从旧 widgetData 复用）
+                const fullContent = existingBodyWidget.querySelector('.rtt-full-content');
+                const collapsedContent = existingBodyWidget.querySelector('.rtt-collapsed-content');
+                const startSection = fullContent ? fullContent.querySelector('.rtt-section:nth-child(1)') : null;
+                const sessionSection = fullContent ? fullContent.querySelector('.rtt-section:nth-child(2)') : null;
+                const todaySection = fullContent ? fullContent.querySelector('.rtt-section:nth-child(3)') : null;
+                const buttonSection = fullContent ? fullContent.querySelector('.rtt-section-buttons') : null;
+
+                // ✅ 为当前 view 重新创建 listeners（不能复用旧的，因为闭包引用了旧 view）
+                const listeners = {
+                    pause: (e) => {
+                        try {
+                            e.stopPropagation();
+                            this.engine.togglePause();
+                        } catch (err) {
+                            console.error('[ReadTimeTracker] pause handler error:', err);
+                        }
+                    },
+                    discard: async (e) => {
+                        try {
+                            e.stopPropagation();
+                            const wd = this._viewWidgets.get(view);
+                            if (wd && !wd.isExcluded && wd.filePath) {
+                                await this.engine.discardCurrentSession(wd.filePath);
+                                this.engine.isPaused = true;
+                                if (this.engine.activeLeaf) {
+                                    const state = this.engine._leafStates.get(this.engine.activeLeaf.id);
+                                    if (state) state.isPaused = true;
+                                }
+                            }
+                        } catch (err) {
+                            console.error('[ReadTimeTracker] discard handler error:', err);
+                        }
+                    },
+                    save: async (e) => {
+                        try {
+                            e.stopPropagation();
+                            const wd = this._viewWidgets.get(view);
+                            if (wd && !wd.isExcluded && wd.filePath) {
+                                const filePath = wd.filePath;
+                                await this.engine.flushCurrent();
+                                this.engine.isPaused = true;
+                                if (this.engine.activeLeaf) {
+                                    const state = this.engine._leafStates.get(this.engine.activeLeaf.id);
+                                    if (state) state.isPaused = true;
+                                }
+                                this.updateState(filePath, false);
+                                new Notice('✅ 计时记录已保存');
+                            }
+                        } catch (err) {
+                            console.error('[ReadTimeTracker] save handler error:', err);
+                            new Notice('❌ 保存失败，请查看控制台');
+                        }
+                    },
+                    detail: (e) => {
+                        try {
+                            e.stopPropagation();
+                            const wd = this._viewWidgets.get(view);
+                            if (wd && !wd.isExcluded && wd.filePath) {
+                                this._showSessionDetail(wd.filePath, view);
+                            }
+                        } catch (err) {
+                            console.error('[ReadTimeTracker] detail handler error:', err);
+                        }
+                    }
+                };
+
+                // ✅ 查询按钮元素并重新绑定事件
+                const pauseBtn = (buttonSection ? buttonSection.querySelector('.rtt-pause-btn') : null);
+                const discardBtn = (buttonSection ? buttonSection.querySelector('.rtt-discard-btn') : null);
+                const saveBtn = (buttonSection ? buttonSection.querySelector('.rtt-save-btn') : null);
+                const detailBtn = (buttonSection ? buttonSection.querySelector('.rtt-detail-btn') : null);
+
+                if (pauseBtn) pauseBtn.onclick = listeners.pause;
+                if (discardBtn) discardBtn.onclick = listeners.discard;
+                if (saveBtn) saveBtn.onclick = listeners.save;
+                if (detailBtn) detailBtn.onclick = listeners.detail;
+
+                // ✅ 收缩态按钮也需要重新绑定
+                const collapsedPauseBtn = (collapsedContent ? collapsedContent.querySelectorAll('.rtt-pause-btn') : [])[0];
+                const collapsedDiscardBtn = (collapsedContent ? collapsedContent.querySelectorAll('.rtt-discard-btn') : [])[0];
+                const collapsedSaveBtn = (collapsedContent ? collapsedContent.querySelectorAll('.rtt-save-btn') : [])[0];
+                const collapsedDetailBtn = (collapsedContent ? collapsedContent.querySelectorAll('.rtt-detail-btn') : [])[0];
+
+                if (collapsedPauseBtn) collapsedPauseBtn.onclick = listeners.pause;
+                if (collapsedDiscardBtn) collapsedDiscardBtn.onclick = listeners.discard;
+                if (collapsedSaveBtn) collapsedSaveBtn.onclick = listeners.save;
+                if (collapsedDetailBtn) collapsedDetailBtn.onclick = listeners.detail;
+
+                const widgetData = {
+                    el: existingBodyWidget,
+                    fullContent: fullContent,
+                    startSection: startSection,
+                    startTime: (startSection ? startSection.querySelector('.rtt-section-value') : null),
+                    sessionSection: sessionSection,
+                    sessionLabel: (sessionSection ? sessionSection.querySelector('.rtt-section-label') : null),
+                    sessionValue: (sessionSection ? sessionSection.querySelector('.rtt-section-value') : null),
+                    todaySection: todaySection,
+                    todayLabel: (todaySection ? todaySection.querySelector('.rtt-section-label') : null),
+                    todayValue: (todaySection ? todaySection.querySelector('.rtt-section-value') : null),
+                    buttonSection: buttonSection,
+                    pauseBtn: pauseBtn,
+                    discardBtn: discardBtn,
+                    saveBtn: saveBtn,
+                    detailBtn: detailBtn,
+                    excludedEl: existingBodyWidget.querySelector('.rtt-excluded-icon'),
+                    isExcluded: false,
+                    filePath: currentFilePath,
+                    listeners: listeners,  // ✅ 使用新创建的 listeners
+                    mobileListeners: (srcWd ? srcWd.mobileListeners : null),  // ✅ 复用拖动相关的 listeners（不依赖 view 闭包）
+                    isMobile: true,
+                    toggleIcon: null,
+                    closeBtn: (fullContent ? fullContent.querySelector('.rtt-mobile-close') : null),
+                    dragHandle: (fullContent ? fullContent.querySelector('.rtt-mobile-drag') : null),
+                    collapseBtn: (fullContent ? fullContent.querySelector('.rtt-mobile-collapse') : null),
+                    collapsedTimeValue: (collapsedContent ? collapsedContent.querySelector('.rtt-section-value') : null),
+                    collapsedPauseBtn: collapsedPauseBtn,
+                    collapsedDiscardBtn: collapsedDiscardBtn,
+                    collapsedSaveBtn: collapsedSaveBtn,
+                    collapsedDetailBtn: collapsedDetailBtn,
+                    collapsedCloseBtn: (collapsedContent ? collapsedContent.querySelector('.rtt-mobile-close') : null),
+                    collapsedCollapseBtn: (collapsedContent ? collapsedContent.querySelector('.rtt-mobile-collapse') : null)
+                };
+
+                // 为当前 view 创建新的 toggleIcon
+                // ✅ 添加 addAction API 安全性检查（修复移动端加载失败）
+                if (typeof view.addAction === 'function') {
+                    toggleIcon = view.addAction(
+                        'clock',
+                        '切换计时显示',
+                        (evt) => {
+                            evt.stopPropagation();
+                            const isVisible = !existingBodyWidget.hasClass('rtt-widget-hidden');
+
+                            if (isVisible) {
+                                existingBodyWidget.addClass('rtt-widget-hidden');
+                                toggleIcon.removeClass('rtt-toggle-active');
+                            } else {
+                                const viewActions = view.headerEl ? view.headerEl.querySelector('.view-actions') : null;
+                                if (viewActions) {
+                                    const rect = viewActions.getBoundingClientRect();
+                                    const topOffset = rect.bottom + 10;
+                                    existingBodyWidget.style.top = topOffset + 'px';
+                                    existingBodyWidget.style.left = '50%';
+                                    existingBodyWidget.style.transform = 'translateX(-50%)';
+                                }
+                                existingBodyWidget.removeClass('rtt-widget-hidden');
+                                toggleIcon.addClass('rtt-toggle-active');
+                            }
+                        }
+                    );
+                    toggleIcon.addClass('rtt-toggle-btn');
+                } else {
+                    console.warn('[ReadTimeTracker] view.addAction 不可用（可能是移动端 API 限制），toggleIcon 已禁用');
+                    toggleIcon = null;
+                }
+                widgetData.toggleIcon = toggleIcon;
+
+                this._viewWidgets.set(view, widgetData);
+
+                // 立即评估新文件是否被排除
+                if (currentFilePath && !shouldTrackFile(currentFilePath, this.engine.settings)) {
+                    this._applyExcluded(widgetData);
+                    return;
+                }
+
+                // ✅ 非排除文件：确保 widget 可见（从排除文件切换过来时需要）
+                existingBodyWidget.removeClass('rtt-widget-hidden');
+                if (toggleIcon) toggleIcon.addClass('rtt-toggle-active');
+
+                // 主动读取新文件的数据并更新
+                if (currentFilePath) {
+                    const record = this.engine.readingMap.get(currentFilePath);
+                    if (record) {
+                        const sessionCount = (this.engine._getTodaySessionCount ? this.engine._getTodaySessionCount(currentFilePath) : undefined) || 1;
+                        const sessionStartTime = this.engine.sessionStartTime || '';
+                        const isRunning = !this.engine.isPaused && this.engine.activeFilePath === currentFilePath;
+                        this.update(currentFilePath, record.seconds, record.todaySeconds || 0, sessionStartTime, sessionCount, isRunning);
+                    } else {
+                        (async () => {
+                            try {
+                                const storeRecord = await this.engine.store.getRecord(currentFilePath);
+                                let todaySeconds = 0;
+                                if ((storeRecord ? storeRecord.readTimeLine : null)) {
+                                    const today = todayStr();
+                                    for (const [key, value] of Object.entries(storeRecord.readTimeLine)) {
+                                        if (key.startsWith(today)) {
+                                            const activeSec = typeof value === 'number' ? value : (value.activeSeconds || 0);
+                                            todaySeconds += activeSec;
+                                        }
+                                    }
+                                }
+                                const wd = this._viewWidgets.get(view);
+                                if (!wd || wd.filePath !== currentFilePath) return;
+                                const sessionCount = (this.engine._getTodaySessionCount ? this.engine._getTodaySessionCount(currentFilePath) : undefined) || 1;
+                                this.update(currentFilePath, 0, todaySeconds, '', sessionCount, false);
+                            } catch (e) {
+                                console.error('[ReadTimeTracker] 复用 widget 读取失败:', e);
+                                const wd = this._viewWidgets.get(view);
+                                if (!wd || wd.filePath !== currentFilePath) return;
+                                this.update(currentFilePath, 0, 0, '', 1, false);
+                            }
+                        })();
+                    }
+                }
+                return;
+            }
+
+            // ✅ 移动端：fixed 定位，挂载到 body
+            widget.addClass('rtt-widget-mobile');
+            widget.addClass('rtt-widget-hidden');  // ✅ 修改：默认隐藏
+            document.body.appendChild(widget);
+
+            // ✅ 拖动和收缩状态变量
+            let isDragging = false;
+            let isCollapsed = false;
+            let isEdgeCollapsed = false;  // ✅ 靠边收缩状态（用于区分手动收缩）
+            let isDragLocked = false;  // ✅ 拖动锁定状态（默认解锁，可自由拖动）
+            let isMouseDown = false;  // ✅ 鼠标拖动状态
+            let startX, startY, initialLeft, initialTop;
+
+            // ========== 统一的拖动处理函数 ==========
+
+            const handleDragStart = (clientX, clientY) => {
+                if (isDragLocked) {
+                    console.log('[RTT拖动] 拖动被锁定');  // ✅ 添加日志
+                    return false;  // ✅ 拖动锁定时返回
+                }
+
+                startX = clientX;
+                startY = clientY;
+
+                const rect = widget.getBoundingClientRect();
+                initialLeft = rect.left;
+                initialTop = rect.top;
+
+                isDragging = false;
+                console.log('[RTT拖动] 开始位置:', { startX, startY, initialLeft, initialTop });  // ✅ 添加日志
+                return true;
+            };
+
+            const handleDragMove = (clientX, clientY) => {
+                if (isDragLocked) return;  // ✅ 拖动锁定时返回
+
+                const deltaX = clientX - startX;
+                const deltaY = clientY - startY;
+
+                // 判断是否为拖拽（移动距离超过 10px）
+                if (Math.abs(deltaX) > 10 || Math.abs(deltaY) > 10) {
+                    if (!isDragging) {
+                        console.log('[RTT拖动] 触发拖动，delta:', { deltaX, deltaY });  // ✅ 添加日志
+                    }
+                    isDragging = true;
+
+                    // 更新位置（实时跟随）
+                    let newLeft = initialLeft + deltaX;
+                    let newTop = initialTop + deltaY;
+
+                    // 边界限制（使用 getBoundingClientRect 回退，避免隐藏态 offsetWidth=0）
+                    const w = widget.offsetWidth || widget.getBoundingClientRect().width || 80;
+                    const h = widget.offsetHeight || widget.getBoundingClientRect().height || 40;
+                    const maxLeft = window.innerWidth - w;
+                    const maxTop = window.innerHeight - h;
+                    newLeft = Math.max(0, Math.min(newLeft, maxLeft));
+                    newTop = Math.max(0, Math.min(newTop, maxTop));
+
+                    widget.style.left = newLeft + 'px';
+                    widget.style.top = newTop + 'px';
+                    widget.style.transform = 'none';
+                }
+            };
+
+            const handleDragEnd = () => {
+                if (isDragLocked || !isDragging) return;
+
+                // 检测是否靠边（距离边缘 ≤30px 时收缩 + 锁定拖动）
+                const rect = widget.getBoundingClientRect();
+                const screenWidth = window.innerWidth;
+                const edgeThreshold = 30;
+
+                if (rect.left <= edgeThreshold || rect.right >= screenWidth - edgeThreshold) {
+                    // 靠边：触发收缩 + 锁定拖动
+                    isCollapsed = true;
+                    isEdgeCollapsed = true;  // ✅ 标记为靠边收缩
+                    widget.addClass('rtt-widget-collapsed');
+                    widget.addClass('rtt-widget-edge-collapsed');  // ✅ 靠边收缩特殊样式
+                    setIcon(collapseBtn, 'maximize-2');
+                    collapseBtn.setAttribute('aria-label', '展开组件');
+
+                    // 自动锁定拖动
+                    isDragLocked = true;
+                    dragHandle.addClass('rtt-drag-locked');  // ✅ 锁定样式
+                    dragHandle.setAttribute('aria-label', '解锁拖动');
+                }
+
+                setTimeout(() => { isDragging = false; }, 100);
+            };
+
+            // ✅ 关闭按钮监听器
+            const closeHandler = (e) => {
+                e.stopPropagation();
+                widget.addClass('rtt-widget-hidden');  // ✅ 修改：使用 class 控制隐藏
+                // 同步 toggleIcon 状态
+                if (toggleIcon) {
+                    toggleIcon.removeClass('rtt-toggle-active');
+                }
+            };
+            if (closeBtn) {
+                closeBtn.addEventListener('click', closeHandler);
+            }
+
+            // ========== 存储所有移动端监听器引用 ==========
+            mobileListeners = {
+                touchstart: (e) => {
+                    const touch = e.touches[0];
+                    handleDragStart(touch.clientX, touch.clientY);
+                },
+                touchmove: (e) => {
+                    if (isDragLocked) return;
+                    const touch = e.touches[0];
+                    handleDragMove(touch.clientX, touch.clientY);
+                    if (isDragging) e.preventDefault();
+                },
+                touchend: () => {
+                    handleDragEnd();
+                },
+                mousedown: (e) => {
+                    if (handleDragStart(e.clientX, e.clientY)) {
+                        isMouseDown = true;
+                        e.preventDefault();
+                    }
+                },
+                mousemove: (e) => {
+                    if (!isMouseDown || isDragLocked) return;
+                    handleDragMove(e.clientX, e.clientY);
+                    if (isDragging) e.preventDefault();
+                },
+                mouseup: () => {
+                    if (isMouseDown) {
+                        isMouseDown = false;
+                        handleDragEnd();
+                    }
+                },
+                collapse: (e) => {
+                    e.stopPropagation();
+                    isCollapsed = !isCollapsed;
+
+                    if (isCollapsed) {
+                        widget.addClass('rtt-widget-collapsed');
+                        isEdgeCollapsed = false;
+                        widget.removeClass('rtt-widget-edge-collapsed');
+                        setIcon(collapseBtn, 'maximize-2');
+                        collapseBtn.setAttribute('aria-label', '展开组件');
+                    } else {
+                        widget.removeClass('rtt-widget-collapsed');
+                        widget.removeClass('rtt-widget-edge-collapsed');
+                        isEdgeCollapsed = false;
+                        setIcon(collapseBtn, 'minimize-2');
+                        collapseBtn.setAttribute('aria-label', '收缩组件');
+
+                        if (isDragLocked && dragHandle) {
+                            isDragLocked = false;
+                            dragHandle.removeClass('rtt-drag-locked');
+                            dragHandle.setAttribute('aria-label', '锁定拖动');
+                        }
+                    }
+                },
+                dragToggle: (e) => {
+                    e.stopPropagation();
+                    isDragLocked = !isDragLocked;
+
+                    if (isDragLocked) {
+                        dragHandle.addClass('rtt-drag-locked');
+                        dragHandle.setAttribute('aria-label', '解锁拖动');
+                    } else {
+                        dragHandle.removeClass('rtt-drag-locked');
+                        dragHandle.setAttribute('aria-label', '锁定拖动');
+                    }
+                },
+                // ✅ 收缩态按钮监听器
+                collapsedClose: collapsedCloseHandler,
+                collapsedExpand: collapsedExpandHandler,
+                fullCollapse: collapseHandler,
+                // ✅ 关闭按钮监听器
+                close: closeHandler
+            };
+
+            // ========== 触摸拖动事件（仅绑定在拖动手柄上） ==========
+            if (dragHandle) {
+                dragHandle.addEventListener('touchstart', mobileListeners.touchstart, { passive: true });
+                dragHandle.addEventListener('mousedown', mobileListeners.mousedown);
+            }
+            // 全局监听 move 和 end（拖动过程中手指可能移出手柄）
+            document.addEventListener('touchmove', mobileListeners.touchmove, { passive: false });
+            document.addEventListener('touchend', mobileListeners.touchend, { passive: true });
+            document.addEventListener('mousemove', mobileListeners.mousemove);
+            document.addEventListener('mouseup', mobileListeners.mouseup);
+
+            // ========== 按钮事件 ==========
+            if (collapseBtn) {
+                collapseBtn.addEventListener('click', mobileListeners.collapse);
+            }
+            if (dragHandle) {
+                dragHandle.addEventListener('click', mobileListeners.dragToggle);
+            }
+
+            // ✅ 添加开关按钮到 view-actions（带安全性检查，修复移动端加载失败）
+            if (typeof view.addAction === 'function') {
+                toggleIcon = view.addAction(
+                    'clock',
+                    '切换计时显示',
+                    (evt) => {
+                        evt.stopPropagation();
+                        const isVisible = !widget.hasClass('rtt-widget-hidden');  // ✅ 修改：使用 class 判断
+
+                        if (isVisible) {
+                            widget.addClass('rtt-widget-hidden');  // ✅ 修改：使用 class 控制
+                            toggleIcon.removeClass('rtt-toggle-active');
+                        } else {
+                            // ✅ 显示时动态计算顶部位置，防止与 view-actions 重叠
+                            const viewActions = view.headerEl ? view.headerEl.querySelector('.view-actions') : null;
+                            if (viewActions) {
+                                const rect = viewActions.getBoundingClientRect();
+                                const topOffset = rect.bottom + 10;  // view-actions 底部 + 10px 间距
+                                widget.style.top = topOffset + 'px';
+                                widget.style.left = '50%';
+                                widget.style.transform = 'translateX(-50%)';
+                            }
+
+                            widget.removeClass('rtt-widget-hidden');  // ✅ 修改：使用 class 控制
+                            toggleIcon.addClass('rtt-toggle-active');
+                        }
+                    }
+                );
+                toggleIcon.addClass('rtt-toggle-btn');
+            } else {
+                console.warn('[ReadTimeTracker] view.addAction 不可用（可能是移动端 API 限制），toggleIcon 已禁用');
+                toggleIcon = null;
+            }
+        } else {
+            // ✅ 桌面端：保持原有逻辑
+            const actionsEl = view.headerEl.querySelector('.view-actions');
+            if (actionsEl) {
+                view.headerEl.insertBefore(widget, actionsEl);
+            } else {
+                view.headerEl.appendChild(widget);
+            }
+        }
+
+        const widgetData = {
+            el: widget,
+            fullContent,
+            startSection,
+            startTime,
+            sessionSection,
+            sessionLabel: sessionSection.querySelector('.rtt-section-label'),
+            sessionValue,
+            todaySection,
+            todayLabel,
+            todayValue,
+            buttonSection,
+            saveBtn,
+            detailBtn,
+            pauseBtn,
+            discardBtn,
+            excludedEl,
+            isExcluded: false,
+            filePath: currentFilePath,
+            listeners,
+            mobileListeners,
+            isMobile: this.app.isMobile,
+            toggleIcon: toggleIcon,
+            closeBtn: closeBtn,
+            collapseBtn: collapseBtn,
+            dragHandle: dragHandle,
+            collapsedTimeValue,
+            collapsedPauseBtn: collapsedPauseBtnRef,
+            collapsedDiscardBtn: collapsedDiscardBtnRef,
+            collapsedSaveBtn: collapsedSaveBtnRef,
+            collapsedDetailBtn: collapsedDetailBtnRef,
+            // ✅ 收缩态按钮元素引用（用于清理监听器）
+            collapsedCloseBtn: this.app.isMobile ? collapsedCloseBtn : null,
+            collapsedCollapseBtn: this.app.isMobile ? collapsedCollapseBtn : null
+        };
+        this._viewWidgets.set(view, widgetData);
+
+        // 新 widget 创建后立即评估是否被排除（处理初始加载时引擎回调已触发但 widget 尚未创建的时序）
+        if (currentFilePath && !shouldTrackFile(currentFilePath, this.engine.settings)) {
+            this._applyExcluded(widgetData);
+            return;
+        }
+
+        // 新 widget 创建后，立即从 engine 读取当前状态并初始化显示
+        if (currentFilePath) {
+            const record = this.engine.readingMap.get(currentFilePath);
+            if (record) {
+                const sessionCount = (this.engine._getTodaySessionCount ? this.engine._getTodaySessionCount(currentFilePath) : undefined) || 1;
+                const sessionStartTime = this.engine.sessionStartTime || '';
+                const isRunning = !this.engine.isPaused && this.engine.activeFilePath === currentFilePath;
+                this.update(currentFilePath, record.seconds, record.todaySeconds || 0, sessionStartTime, sessionCount, isRunning);
+            } else {
+                // 文件尚未开始计时，异步从 store 读取 todaySeconds
+                (async () => {
+                    try {
+                        const storeRecord = await this.engine.store.getRecord(currentFilePath);
+
+                        // ✅ 从 readTimeLine 重新计算今天的总时间（而非直接用 readTimeToday 缓存）
+                        let todaySeconds = 0;
+                        if ((storeRecord ? storeRecord.readTimeLine : null)) {
+                            const today = todayStr();
+                            for (const [key, value] of Object.entries(storeRecord.readTimeLine)) {
+                                if (key.startsWith(today)) {
+                                    const activeSec = typeof value === 'number' ? value : (value.activeSeconds || 0);
+                                    todaySeconds += activeSec;
+                                }
+                            }
+                        }
+
+                        console.log(`[ReadTimeTracker] Widget 初始化 ${currentFilePath}:`, {
+                            hasStoreRecord: !!storeRecord,
+                            calculatedTodaySeconds: todaySeconds,
+                            cachedReadTimeToday: (storeRecord ? storeRecord.readTimeToday : null),
+                            totalReadTime: (storeRecord ? storeRecord.totalReadTime : null)
+                        });
+
+                        // ✅ P1 #9: 竞态检查 - widget 可能已被重用
+                        const wd = this._viewWidgets.get(view);
+                        if (!wd || wd.filePath !== currentFilePath) {
+                            console.log(`[ReadTimeTracker] mountToView 竞态丢弃: ${currentFilePath}`);
+                            return;
+                        }
+
+                        const sessionCount = (this.engine._getTodaySessionCount ? this.engine._getTodaySessionCount(currentFilePath) : undefined) || 1;
+                        this.update(currentFilePath, 0, todaySeconds, '', sessionCount, false);
+                    } catch (e) {
+                        console.error('[ReadTimeTracker] mountToView 读取 todaySeconds 失败:', e);
+
+                        // ✅ 错误路径也需要竞态检查
+                        const wd = this._viewWidgets.get(view);
+                        if (!wd || wd.filePath !== currentFilePath) return;
+
+                        this.update(currentFilePath, 0, 0, '', 1, false);
+                    }
+                })();
+            }
+        }
+    }
+
+    /** 应用排除样式到 widgetData */
+    _applyExcluded(w) {
+        w.isExcluded = true;
+        // 隐藏所有段（开始时间、今日第n轮、今日总计、按钮组）
+        const sections = w.el.querySelectorAll('.rtt-section');
+        sections.forEach(section => section.style.display = 'none');
+        // 只显示圆形减号图标
+        if (w.excludedEl) w.excludedEl.style.display = '';  // ✅ 添加空值检查
+    }
+
+    /**
+     * ✅ 清理已销毁视图的 widget 条目，防止内存泄漏
+     * 当标签页关闭后，view 的 headerEl 会从 DOM 中移除，但 Map 仍持有引用。
+     * 通过检查 headerEl 是否仍在 document 中来判定视图是否已销毁。
+     * 桌面端：headerEl 被移除 → 清理；移动端 body 级 widget：仅在无其他 view 共享时清理。
+     */
+    _cleanupStaleWidgets() {
+        // 收集所有仍存活的 leaf 引用（通过 workspace 遍历，比 DOM 状态更可靠）
+        const liveLeaves = new Set();
+        try { this.app.workspace.iterateAllLeaves(l => liveLeaves.add(l)); } catch (e) { return; }
+
+        for (const [view, wd] of this._viewWidgets.entries()) {
+            // 桌面端：仅在 leaf 真正从 workspace 消失时清理
+            // view.leaf 为 null 时跳过（导航过渡期，不应删除）
+            if (!wd.isMobile && view.leaf && !liveLeaves.has(view.leaf)) {
+                this._unbindWidgetListeners(wd);
+                if (wd.el) wd.el.remove();
+                this._viewWidgets.delete(view);
+                console.log('[ReadTimeTracker] 🧹 清理已关闭视图的 widget');
+                continue;
+            }
+            // 移动端 body 级 widget：检查是否仍有其他 view 引用同一 widget
+            if (wd.isMobile) {
+                let activeRefCount = 0;
+                for (const [otherView, otherWd] of this._viewWidgets.entries()) {
+                    if (otherView !== view && otherWd.el === wd.el) {
+                        activeRefCount++;
+                    }
+                }
+
+                // ✅ 最后一个引用：彻底销毁 DOM 和全局事件
+                if (activeRefCount === 0) {
+                    if (wd.el && wd.el.parentNode) {
+                        wd.el.parentNode.removeChild(wd.el);
+                    }
+                    this._unbindWidgetListeners(wd);
+                }
+
+                // ✅ 无条件移除当前 view 的顶栏按钮
+                if (wd.toggleIcon) {
+                    wd.toggleIcon.remove();
+                }
+
+                // ✅ 关键：无条件删除 view 引用，打破引用死锁
+                this._viewWidgets.delete(view);
+                console.log('[ReadTimeTracker] 🧹 清理已关闭移动端视图的 widget');
+            }
+        }
+    }
+
+    /** 根据 filePath 查找所有匹配的 widgetData（支持多 tab 显示同一文件） */
+    _getWidgetsByPath(filePath) {
+        const results = [];
+        for (const wd of this._viewWidgets.values()) {
+            if (wd.filePath === filePath) results.push(wd);
+        }
+        return results;
+    }
+
+    /** 更新计时显示，并由实际运行状态驱动暂停按钮图标 */
+    update(filePath, seconds, todaySeconds, sessionStartTime, sessionCount, isRunning) {
+        for (const w of this._getWidgetsByPath(filePath)) {
+            // ✅ 强制确保 section 可见（防止 _applyExcluded 后恢复逻辑未触发）
+            const sections = w.el.querySelectorAll('.rtt-section');
+            let needsRestore = w.isExcluded;
+            if (!needsRestore) {
+                // 检查是否有 section 被意外隐藏
+                for (const sec of sections) {
+                    if (sec.style.display === 'none') { needsRestore = true; break; }
+                }
+            }
+            if (needsRestore) {
+                w.isExcluded = false;
+                sections.forEach(section => section.style.display = '');
+                if (w.excludedEl) w.excludedEl.style.display = 'none';
+            }
+
+            // 更新开始时间显示
+            if (isRunning || seconds > 0) {
+                // 正在计时或已计时：显示会话开始时间（固定值，蓝色）
+                // ✅ 修复：兼容 nowStr()"YYYY-MM-DD HH:mm" 与 ISO 两种格式，移动端 Safari 解析失败时优雅降级
+                const startDate = parseSessionStartTime(sessionStartTime);
+                if (startDate) {
+                    const hh = String(startDate.getHours()).padStart(2, '0');
+                    const mm = String(startDate.getMinutes()).padStart(2, '0');
+                    w.startTime.textContent = `${hh}:${mm}`;
+                    w.startTime.style.color = 'var(--text-accent)';  // 蓝色字体（活跃状态）
+                } else {
+                    w.startTime.textContent = '--:--';
+                    w.startTime.style.color = 'var(--text-muted)';
+                }
+            } else {
+                // 未开始计时：显示实时当前时间（灰色提示）
+                const now = new Date();
+                const hh = String(now.getHours()).padStart(2, '0');
+                const mm = String(now.getMinutes()).padStart(2, '0');
+                w.startTime.textContent = `${hh}:${mm}`;
+                w.startTime.style.color = 'var(--text-muted)';  // 灰色字体（等待状态）
+            }
+
+            // 更新今日第n轮标签
+            w.sessionLabel.textContent = `今日第${sessionCount}轮`;
+
+            // 更新本轮时长
+            w.sessionValue.textContent = formatReadTime(seconds, this.settings.timeDisplayMode || 'compact');
+            // ✅ 同步更新收缩态计时值
+            if (w.collapsedTimeValue) {
+                w.collapsedTimeValue.textContent = formatReadTime(seconds, this.settings.timeDisplayMode || 'compact');
+            }
+
+            // ✅ 始终计算全库今日值（所有显示模式共用，避免重复计算）
+            const allTodaySeconds = this.engine.getAllTodaySeconds();
+
+            // 根据 todayTotalDisplay 设置更新显示逻辑
+            const displayMode = this.settings.todayTotalDisplay || 'idle';
+
+            if (displayMode === 'never') {
+                // never 模式：隐藏今日总计段
+                if (w.todaySection) w.todaySection.style.display = 'none';
+            } else if (displayMode === 'always') {
+                // always 模式：第三段始终显示全库今日总计
+                if (w.todaySection) w.todaySection.style.display = '';
+                if (w.todayLabel) w.todayLabel.textContent = t('vaultToday');
+                w.todayValue.textContent = formatReadTime(allTodaySeconds, this.settings.timeDisplayMode || 'compact');
+            } else {
+                // idle 模式（默认）：根据是否运行中动态切换
+                if (w.todaySection) w.todaySection.style.display = '';
+
+                if (isRunning) {
+                    // 运行中：第二段=本轮时长，第三段=全库今日总计
+                    if (w.startSection) w.startSection.style.display = '';
+                    if (w.sessionSection) w.sessionSection.style.display = '';
+                    if (w.buttonSection) w.buttonSection.style.display = '';
+                    if (w.sessionLabel) w.sessionLabel.textContent = `今日第${sessionCount}轮`;
+                    if (w.todayLabel) w.todayLabel.textContent = t('vaultToday');
+                    w.todayValue.textContent = formatReadTime(allTodaySeconds, this.settings.timeDisplayMode || 'compact');
+                } else {
+                    // 暂停/空闲：第二段=文档今日总计，第三段=全库今日总计
+                    if (w.startSection) w.startSection.style.display = '';
+                    if (w.sessionSection) w.sessionSection.style.display = '';
+                    if (w.buttonSection) w.buttonSection.style.display = '';
+                    if (w.sessionLabel) w.sessionLabel.textContent = t('fileToday');
+                    w.sessionValue.textContent = formatReadTime(todaySeconds, this.settings.timeDisplayMode || 'compact');
+                    if (w.todayLabel) w.todayLabel.textContent = t('vaultToday');
+                    w.todayValue.textContent = formatReadTime(allTodaySeconds, this.settings.timeDisplayMode || 'compact');
+                }
+            }
+
+            // 更新按钮状态
+            setIcon(w.pauseBtn, isRunning ? 'pause' : 'play');
+            w.pauseBtn.setAttribute('aria-label', isRunning ? t('pause') : t('resume'));
+            w.pauseBtn.toggleClass('rtt-paused', !isRunning);
+        }
+    }
+
+    /** 刷新所有 widget 的 Vault Today 值（用于保存/弃用/暂停后全局更新） */
+    refreshAllVaultToday() {
+        const allTodaySeconds = this.engine.getAllTodaySeconds();
+        for (const [view, w] of this._viewWidgets.entries()) {
+            if (w.isExcluded) continue;
+
+            // 只更新 Vault Today 显示
+            const displayMode = this.settings.todayTotalDisplay || 'idle';
+            if (displayMode !== 'never' && w.todayValue) {
+                w.todayValue.textContent = formatReadTime(allTodaySeconds, this.settings.timeDisplayMode || 'compact');
+            }
+        }
+    }
+
+    /** 仅刷新按钮状态（不更新计时文字），用于 onStateCallback 无秒数变化时 */
+    updateState(filePath, isRunning) {
+        for (const w of this._getWidgetsByPath(filePath)) {
+            this._applyButtonState(w, isRunning);
+        }
+    }
+
+    /** 更新单个 widget 的按钮状态 */
+    _applyButtonState(w, isRunning) {
+        if (w.isExcluded) {
+            w.isExcluded = false;
+            const sections = w.el.querySelectorAll('.rtt-section');
+            sections.forEach(section => section.style.display = '');
+            if (w.excludedEl) w.excludedEl.style.display = 'none';
+        }
+
+        // ✅ 添加空值检查，防止 DOM 销毁后访问出错
+        if (w.pauseBtn) {
+            setIcon(w.pauseBtn, isRunning ? 'pause' : 'play');
+            w.pauseBtn.setAttribute('aria-label', isRunning ? t('pause') : t('resume'));
+            w.pauseBtn.toggleClass('rtt-paused', !isRunning);
+        }
+
+        // ✅ 同步收缩态暂停按钮
+        if (w.collapsedPauseBtn) {
+            setIcon(w.collapsedPauseBtn, isRunning ? 'pause' : 'play');
+            w.collapsedPauseBtn.toggleClass('rtt-paused', !isRunning);
+        }
+    }
+
+    /** 标记此文件被过滤排除：隐藏计时和按钮，显示橙色 circle-minus */
+    setExcluded(filePath) {
+        for (const w of this._getWidgetsByPath(filePath)) {
+            this._applyExcluded(w);
+        }
+    }
+
+    /** 显示当前会话的详细记录（弹出 Modal） */
+    async _showSessionDetail(filePath, view) {
+        try {
+            const record = await this.engine.store.getRecord(filePath);
+            if (!record || !Array.isArray(record.readTimeLine) || record.readTimeLine.length === 0) {
+                new Notice('此文件暂无阅读记录');
+                return;
+            }
+
+            const modal = new Modal(this.app);
+            modal.titleEl.setText(`📊 ${filePath.split('/').pop().replace(/\.md$/, '')} - 会话记录`);
+
+            const content = modal.contentEl;
+            content.empty();
+
+            const container = content.createDiv({ cls: 'rtt-session-detail' });
+
+            // 今日会话列表
+            const today = todayStr();
+            const todaySessions = record.readTimeLine.filter(session => {
+                const timestamps = Object.keys(session).sort();
+                return timestamps.length > 0 && timestamps[0].startsWith(today);
+            });
+
+            // ✅ 如果有 currentSession 且是今日的，也显示
+            if (record.currentSession) {
+                const timestamps = Object.keys(record.currentSession).sort();
+                if (timestamps.length > 0 && timestamps[0].startsWith(today)) {
+                    todaySessions.push(record.currentSession);
+                }
+            }
+
+            if (todaySessions.length === 0) {
+                container.createDiv({ text: '今日暂无会话记录', cls: 'rtt-empty-hint' });
+            } else {
+                const listEl = container.createDiv({ cls: 'rtt-session-list' });
+
+                for (let index = 0; index < todaySessions.length; index++) {
+                    const session = todaySessions[index];
+                    const timestamps = Object.keys(session).sort();
+
+                    if (timestamps.length === 0) continue;
+
+                    const sessionContainer = listEl.createDiv({ cls: 'rtt-session-block' });
+
+                    // 会话头部：轮次信息
+                    const header = sessionContainer.createDiv({ cls: 'rtt-session-header' });
+                    header.createSpan({ text: `第 ${index + 1} 轮`, cls: 'rtt-session-title' });
+
+                    // 时间段列表（使用 table）
+                    const timelineList = sessionContainer.createEl('table', { cls: 'rtt-timeline-list' });
+
+                    // ✅ 添加表头
+                    const thead = timelineList.createEl('thead');
+                    const headerRow = thead.createEl('tr', { cls: 'rtt-timeline-header' });
+                    headerRow.createEl('th', { text: '状态' });
+                    headerRow.createEl('th', { text: '类型' });
+                    headerRow.createEl('th', { text: '时间轴' });
+                    headerRow.createEl('th', { text: '时长' });
+
+                    const tbody = timelineList.createEl('tbody');
+
+                    let sessionActiveSeconds = 0;
+                    let sessionTotalSeconds = 0;
+
+                    // 遍历时间段
+                    for (let i = 0; i < timestamps.length - 1; i++) {
+                        const currentTs = timestamps[i];
+                        const nextTs = timestamps[i + 1];
+                        const currentState = session[currentTs];
+                        const nextState = session[nextTs];
+
+                        const duration = Math.floor((new Date(nextTs) - new Date(currentTs)) / 1000);
+                        const isActive = currentState === "tracking";
+
+                        if (isActive) sessionActiveSeconds += duration;
+                        sessionTotalSeconds += duration;
+
+                        // 渲染时间段行（使用 table row）
+                        const row = tbody.createEl('tr', { cls: 'rtt-timeline-row' });
+
+                        // 状态图标列
+                        const iconCell = row.createEl('td', { cls: 'rtt-timeline-icon' });
+                        if (currentState === "tracking") {
+                            setIcon(iconCell, "circle-gauge");
+                        } else {
+                            setIcon(iconCell, "pause");
+                        }
+
+                        // 时段类型列（移到图标右侧）
+                        const stateCell = row.createEl('td', { cls: 'rtt-timeline-state' });
+                        stateCell.createSpan({
+                            text: isActive ? '活跃' : '暂停'
+                        });
+
+                        // 时间范围列
+                        const timeCell = row.createEl('td', { cls: 'rtt-timeline-time' });
+                        timeCell.createSpan({
+                            text: `${formatLocalHMS(currentTs)} → ${formatLocalHMS(nextTs)}`
+                        });
+
+                        // 时长列
+                        const durationCell = row.createEl('td', { cls: 'rtt-timeline-duration' });
+                        durationCell.createSpan({
+                            text: formatDurationWithSeconds(duration)
+                        });
+                    }
+
+                    // 结束标记行（saved 或进行中）
+                    const lastState = session[timestamps[timestamps.length - 2]];
+                    const finalState = session[timestamps[timestamps.length - 1]];
+
+                    if (finalState === "saved") {
+                        const savedRow = tbody.createEl('tr', { cls: 'rtt-timeline-row rtt-saved-row' });
+
+                        const savedIconCell = savedRow.createEl('td', { cls: 'rtt-timeline-icon rtt-icon-double' });
+
+                        if (lastState === "tracking") {
+                            // tracking→saved：正常保存
+                            const icon1 = savedIconCell.createSpan({ cls: 'rtt-icon-item' });
+                            setIcon(icon1, "circle-gauge");
+                            const icon2 = savedIconCell.createSpan({ cls: 'rtt-icon-item' });
+                            setIcon(icon2, "save");
+                        } else {
+                            // pausing→saved：暂停中保存
+                            const icon1 = savedIconCell.createSpan({ cls: 'rtt-icon-item' });
+                            setIcon(icon1, "pause");
+                            const icon2 = savedIconCell.createSpan({ cls: 'rtt-icon-item' });
+                            setIcon(icon2, "save");
+                        }
+
+                        // 类型列：显示保存类型（移到图标右侧）
+                        const typeCell = savedRow.createEl('td', { cls: 'rtt-saved-type' });
+                        typeCell.createSpan({
+                            text: lastState === "tracking" ? '正常保存' : '暂停中保存'
+                        });
+
+                        // 时间范围列：显示整个会话的起止时间
+                        const timeCell = savedRow.createEl('td', { cls: 'rtt-timeline-time' });
+                        timeCell.createSpan({
+                            text: `${formatLocalHMS(timestamps[0])} → ${formatLocalHMS(timestamps[timestamps.length - 1])} 保存`
+                        });
+
+                        // 时长列：显示整个会话的总时长
+                        const durationCell = savedRow.createEl('td', { cls: 'rtt-timeline-duration' });
+                        durationCell.createSpan({
+                            text: formatDurationWithSeconds(sessionTotalSeconds)
+                        });
+                    } else {
+                        // 进行中的会话
+                        const ongoingRow = tbody.createEl('tr', { cls: 'rtt-timeline-row rtt-ongoing-row' });
+                        const iconCell = ongoingRow.createEl('td', { cls: 'rtt-timeline-icon' });
+                        setIcon(iconCell, "activity");
+
+                        const textCell = ongoingRow.createEl('td', { cls: 'rtt-ongoing-text', attr: { colspan: '3' } });
+                        textCell.createSpan({ text: '进行中...' });
+                    }
+
+                    // 轮次总计（网格布局：图标+时长）
+                    const summary = sessionContainer.createDiv({ cls: 'rtt-session-summary' });
+
+                    // 计算暂停时长
+                    const sessionPauseSeconds = sessionTotalSeconds - sessionActiveSeconds;
+
+                    // 第1列：活跃时长
+                    const activeCol = summary.createDiv({ cls: 'rtt-summary-col' });
+                    const activeIcon = activeCol.createSpan({ cls: 'rtt-summary-icon' });
+                    setIcon(activeIcon, 'circle-gauge');
+                    activeCol.createSpan({
+                        cls: 'rtt-summary-text',
+                        text: formatDurationWithSeconds(sessionActiveSeconds)
+                    });
+
+                    // 第2列：暂停时长
+                    const pauseCol = summary.createDiv({ cls: 'rtt-summary-col' });
+                    const pauseIcon = pauseCol.createSpan({ cls: 'rtt-summary-icon' });
+                    setIcon(pauseIcon, 'pause');
+                    pauseCol.createSpan({
+                        cls: 'rtt-summary-text',
+                        text: formatDurationWithSeconds(sessionPauseSeconds)
+                    });
+
+                    // 第3列：总时长
+                    const totalCol = summary.createDiv({ cls: 'rtt-summary-col' });
+                    const totalIcon = totalCol.createSpan({ cls: 'rtt-summary-icon' });
+                    setIcon(totalIcon, 'clock');
+                    totalCol.createSpan({
+                        cls: 'rtt-summary-text',
+                        text: formatDurationWithSeconds(sessionTotalSeconds)
+                    });
+                }
+            }
+
+            // 历史汇总（可选展开）
+            const historyBtn = container.createEl('button', { text: '📅 查看历史汇总', cls: 'rtt-history-btn' });
+            const historyEl = container.createDiv({ cls: 'rtt-history-summary' });
+            historyEl.style.display = 'none';
+
+            historyBtn.addEventListener('click', () => {
+                if (historyEl.style.display === 'none') {
+                    historyEl.style.display = '';
+                    historyEl.empty();
+
+                    // 计算总天数和总时长
+                    const daysSet = new Set();
+                    let totalActiveSeconds = 0;
+
+                    for (const session of record.readTimeLine) {
+                        const timestamps = Object.keys(session).sort();
+                        if (timestamps.length > 0) {
+                            daysSet.add(timestamps[0].slice(0, 10));
+                            totalActiveSeconds += calculateSessionDuration(session);
+                        }
+                    }
+
+                    historyEl.createDiv({ text: `累计阅读天数：${daysSet.size} 天`, cls: 'rtt-history-stat' });
+                    historyEl.createDiv({ text: `累计阅读时长：${formatDurationWithSeconds(totalActiveSeconds)}`, cls: 'rtt-history-stat' });
+
+                    historyBtn.setText('📅 收起历史汇总');
+                } else {
+                    historyEl.style.display = 'none';
+                    historyBtn.setText('📅 查看历史汇总');
+                }
+            });
+
+            modal.open();
+        } catch (err) {
+            console.error('[ReadTimeTracker] _showSessionDetail 失败:', err);
+            new Notice('加载会话记录失败，请查看控制台');
+        }
+    }
+
+    /** 刷新所有 widget 显示（Setting 改变时调用） */
+    refreshAll() {
+        for (const [view, w] of this._viewWidgets.entries()) {
+            if (w.isExcluded) continue;
+            const filePath = view.file ? view.file.path : null;
+            if (!filePath) continue;
+            // 从 engine 获取当前状态并重新渲染
+            const record = this.engine.readingMap.get(filePath);
+            if (record) {
+                const sessionCount = (this.engine._getTodaySessionCount ? this.engine._getTodaySessionCount(filePath) : undefined) || 1;
+                const sessionStartTime = this.engine.sessionStartTime || '';
+                const isRunning = !this.engine.isPaused && this.engine.activeFilePath === filePath;
+                this.update(filePath, record.seconds, record.todaySeconds || 0, sessionStartTime, sessionCount, isRunning);
+            }
+        }
+    }
+
+    /** 卸载所有注入的组件 */
+    unmountAll() {
+        for (const wd of this._viewWidgets.values()) {
+            this._unbindWidgetListeners(wd);
+
+            // ✅ 根据挂载位置移除 DOM
+            if (wd.isMobile) {
+                // 移动端：从 body 移除 widget，从 view-actions 移除图标
+                if (wd.el.parentNode) {
+                    document.body.removeChild(wd.el);
+                }
+                if (wd.toggleIcon) {
+                    wd.toggleIcon.remove();
+                }
+            } else {
+                // 桌面端：从 view.headerEl 移除
+                wd.el.remove();
+            }
+        }
+        this._viewWidgets.clear();
+    }
+
+    /**
+     * ✅ 解绑单个 widget 的所有事件监听器（按钮 + 移动端拖拽）
+     * 供 unmountAll() 和 _cleanupStaleWidgets() 复用
+     */
+    _unbindWidgetListeners(wd) {
+        // 按钮事件（使用 onclick 属性绑定，清理时置 null）
+        if (wd.pauseBtn) wd.pauseBtn.onclick = null;
+        if (wd.discardBtn) wd.discardBtn.onclick = null;
+        if (wd.saveBtn) wd.saveBtn.onclick = null;
+        if (wd.detailBtn) wd.detailBtn.onclick = null;
+        // ✅ 收缩态按钮也需清理
+        if (wd.collapsedPauseBtn) wd.collapsedPauseBtn.onclick = null;
+        if (wd.collapsedDiscardBtn) wd.collapsedDiscardBtn.onclick = null;
+        if (wd.collapsedSaveBtn) wd.collapsedSaveBtn.onclick = null;
+        if (wd.collapsedDetailBtn) wd.collapsedDetailBtn.onclick = null;
+
+        // 移动端拖动和交互监听器（含 document 级）
+        if (wd.isMobile && wd.mobileListeners) {
+            const ml = wd.mobileListeners;
+            // ✅ 拖动事件现在绑定在 dragHandle 上，而非 widget 容器
+            if (wd.dragHandle) wd.dragHandle.removeEventListener('touchstart', ml.touchstart);;
+            if (wd.dragHandle) wd.dragHandle.removeEventListener('mousedown', ml.mousedown);;
+            // 全局 move 和 end 事件
+            document.removeEventListener('touchmove', ml.touchmove);
+            document.removeEventListener('touchend', ml.touchend);
+            document.removeEventListener('mousemove', ml.mousemove);
+            document.removeEventListener('mouseup', ml.mouseup);
+            if (wd.collapseBtn) wd.collapseBtn.removeEventListener('click', ml.collapse);;
+            if (wd.dragHandle) wd.dragHandle.removeEventListener('click', ml.dragToggle);;
+            // ✅ 收缩态按钮监听器清理
+            if (wd.collapsedCloseBtn) wd.collapsedCloseBtn.removeEventListener('click', ml.collapsedClose);;
+            if (wd.collapsedCollapseBtn) wd.collapsedCollapseBtn.removeEventListener('click', ml.collapsedExpand);;
+            if (wd.collapseBtn) wd.collapseBtn.removeEventListener('click', ml.fullCollapse);;
+            // ✅ 关闭按钮监听器清理
+            if (wd.closeBtn) wd.closeBtn.removeEventListener('click', ml.close);;
+        }
+    }
+}
+
+// ============================================================================
+// TimelineView — 单文件时间轴（嵌入在 ReadRecordsModal 内）
+// ============================================================================
+
+class TimelineView {
+    /**
+     * @param {HTMLElement} container
+     * @param {RecordEntry} record
+     * @param {object} settings
+     */
+    constructor(container, record, settings) {
+        this.container = container;
+        this.record = record;
+        this.settings = settings;
+
+        // 收集所有日期列表（升序）
+        const days = [...new Set(
+            Object.keys(record.readTimeLine || {}).map(k => k.split(' ')[0])
+        )].sort();
+        this._days = days;
+        this._currentDayIdx = days.length > 0 ? days.length - 1 : 0;
+
+        // ✅ 存储监听器引用，用于清理
+        this._listeners = { prev: null, next: null };
+    }
+
+    render() {
+        this.container.empty();
+        if (this._days.length === 0) {
+            this.container.createDiv({ cls: 'rtt-timeline-empty', text: t('noTimeline') });
+            return;
+        }
+
+        // 日期切换器（居中）
+        const nav = this.container.createDiv({ cls: 'rtt-timeline-nav' });
+        const prevBtn = nav.createEl('button', { cls: 'rtt-nav-btn' });
+        setIcon(prevBtn, 'chevron-left');
+        const dateLabel = nav.createSpan({ cls: 'rtt-nav-date' });
+        const nextBtn = nav.createEl('button', { cls: 'rtt-nav-btn' });
+        setIcon(nextBtn, 'chevron-right');
+
+        // 条形图容器
+        const chart = this.container.createDiv({ cls: 'rtt-chart' });
+
+        const renderDay = (idx) => {
+            this._currentDayIdx = idx;
+            const day = this._days[idx];
+            dateLabel.textContent = day;
+            prevBtn.disabled = idx <= 0;
+            nextBtn.disabled = idx >= this._days.length - 1;
+
+            chart.empty();
+            const entries = Object.entries(this.record.readTimeLine || {})
+                .filter(([k]) => k.startsWith(day))
+                .sort(([a], [b]) => a.localeCompare(b));
+
+            if (entries.length === 0) {
+                chart.createDiv({ cls: 'rtt-chart-empty', text: t('noDay') });
+                return;
+            }
+            // ✅ 兼容新旧格式：提取所有条目的秒数
+            const maxVal = Math.max(...entries.map(([, v]) =>
+                typeof v === 'number' ? v : (v.activeSeconds || 0)
+            ));
+            for (const [key, value] of entries) {
+                const seconds = typeof value === 'number' ? value : (value.activeSeconds || 0);
+                const time = key.split(' ')[1] || key;
+                const row = chart.createDiv({ cls: 'rtt-chart-row' });
+                row.createSpan({ cls: 'rtt-chart-time', text: time });
+                const barWrap = row.createDiv({ cls: 'rtt-chart-bar-wrap' });
+                const bar = barWrap.createDiv({ cls: 'rtt-chart-bar' });
+                const pct = maxVal > 0 ? (seconds / maxVal * 100).toFixed(1) : 0;
+                bar.style.width = `${pct}%`;
+                row.createSpan({
+                    cls: 'rtt-chart-val',
+                    text: formatReadTime(seconds, this.settings.timeDisplayMode || 'compact')
+                });
+            }
+        };
+
+        // ✅ 清理旧监听器
+        if (this._listeners.prev) {
+            prevBtn.removeEventListener('click', this._listeners.prev);
+        }
+        if (this._listeners.next) {
+            nextBtn.removeEventListener('click', this._listeners.next);
+        }
+
+        // ✅ 创建新监听器并存储引用
+        this._listeners.prev = () => {
+            if (this._currentDayIdx > 0) renderDay(this._currentDayIdx - 1);
+        };
+        this._listeners.next = () => {
+            if (this._currentDayIdx < this._days.length - 1) renderDay(this._currentDayIdx + 1);
+        };
+
+        prevBtn.addEventListener('click', this._listeners.prev);
+        nextBtn.addEventListener('click', this._listeners.next);
+
+        renderDay(this._currentDayIdx);
+    }
+}
+
+// ============================================================================
+// HeatmapView — 按小时×分钟分桶的热力图（汇总视图用）
+// ============================================================================
+
+class HeatmapView {
+    /**
+     * @param {HTMLElement} container
+     * @param {Object.<string,number>} timeLine  { 'YYYY-MM-DD HH:mm': seconds }
+     * @param {object} settings
+     * @param {Array<[string,object]>} fileMap - 可选，全局汇总视图传入 [[filePath, record], ...]，用于详情面板显示文件列表
+     * @param {Object} pauseData - 可选，聚合视图的暂停数据 { 'YYYY-MM-DD HH:mm': pausedRanges[] }
+     */
+    constructor(container, timeLine, settings, fileMap = null, pauseData = null) {
+        this.container = container;
+        this.timeLine = timeLine;
+        this.settings = settings;
+        this.fileMap = fileMap; // [[filePath, record], ...]
+        this.pauseData = pauseData; // ✅ 聚合视图的暂停数据
+        const days = [...new Set(
+            Object.keys(timeLine).map(k => k.split(' ')[0]).filter(Boolean)
+        )].sort();
+        this._days = days;
+        this._currentDayIdx = days.length > 0 ? days.length - 1 : 0;
+        this._detailEl = null;
+
+        // ✅ 存储监听器引用，用于清理
+        this._listeners = { closeBtn: null };
+        this._segmentListeners = []; // 存储所有 segment 的监听器
+    }
+
+    render() {
+        this.container.empty();
+        if (this._days.length === 0) {
+            this.container.createDiv({ cls: 'rtt-timeline-empty', text: t('noTimeline') });
+            return;
+        }
+
+        // ✅ 只渲染热力图和详情面板，不再渲染日期切换器（已由外层控制）
+        const gridWrap = this.container.createDiv({ cls: 'rtt-heatmap-wrap' });
+        this._detailEl = this.container.createDiv({ cls: 'rtt-heatmap-detail' });
+        this._detailEl.style.display = 'none';
+
+        // ✅ 渲染当前日期（_days 只有一天的数据）
+        const day = this._days[0];
+        this._detailEl.style.display = 'none';
+
+        // ✅ 清理旧的 segment 监听器
+        this._segmentListeners.length = 0;
+
+        // ✅ 按小时收集分段：segs[h] = [{startM, widthMins, secs, key, origH, origM, origValue}]
+        const segs = {};
+        let hasAny = false;
+        // ✅ 按时间 key 排序，确保 segment 按时间顺序渲染
+        const sortedEntries = Object.entries(this.timeLine).filter(([k]) => k.startsWith(day)).sort(([a], [b]) => a.localeCompare(b));
+        for (const [key, value] of sortedEntries) {
+            const timePart = key.split(' ')[1];
+            if (!timePart) continue;
+                const [hStr, mStr] = timePart.split(':');
+                const startH = parseInt(hStr), startM = parseInt(mStr);
+                if (startH < 0 || startH >= 24 || startM < 0 || startM >= 60) continue;
+
+                // ✅ 兼容多种格式：数字（旧）、{active,wallEndMin}（聚合）、SessionDetail（单文件）
+                let activeSec, endAbsMin;
+                if (typeof value === 'number') {
+                    activeSec = value;
+                    endAbsMin = startH * 60 + startM + Math.max(1 / 60, value / 60);
+                } else if (typeof value === 'object' && 'active' in value) {
+                    // 聚合格式 {active, wallEndMin}
+                    activeSec = value.active || 0;
+                    // ✅ 用 wallEndMin（从 endTime 计算）确定条形结束位置，确保跨小时完整显示
+                    endAbsMin = value.wallEndMin > 0
+                        ? value.wallEndMin
+                        : startH * 60 + startM + Math.max(1 / 60, activeSec / 60);
+                } else {
+                    // SessionDetail 格式
+                    activeSec = value.activeSeconds || 0;
+                    const totalSec = value.totalSeconds || activeSec;
+                    endAbsMin = startH * 60 + startM + Math.max(1 / 60, totalSec / 60);
+                }
+                // 跨小时切分
+                let absMin = startH * 60 + startM;
+                while (absMin < endAbsMin && absMin < 24 * 60) {
+                    const h = Math.floor(absMin / 60);
+                    const mInHour = absMin - h * 60;
+                    const endThisHour = Math.min((h + 1) * 60, endAbsMin, 24 * 60);
+                    const widthMins = endThisHour - absMin;
+                    if (!segs[h]) segs[h] = [];
+                    // ✅ 传递 activeSec 和 origValue
+                    segs[h].push({ startM: mInHour, widthMins, secs: activeSec, key, origH: startH, origM: startM, origValue: value });
+                    hasAny = true;
+                    absMin = (h + 1) * 60;
+                }
+            }
+
+            if (!hasAny) {
+                gridWrap.createDiv({ cls: 'rtt-chart-empty', text: t('noDay') });
+                return;
+            }
+
+            // x 轴刻度行（每 5 分钟一格，标签为纯数字）
+            const xAxisRow = gridWrap.createDiv({ cls: 'rtt-hm-xaxis' });
+            xAxisRow.createDiv({ cls: 'rtt-hm-hlabel' }); // 占位对齐小时标签列
+            const tickWrap = xAxisRow.createDiv({ cls: 'rtt-hm-tick-wrap' });
+            for (let m = 0; m <= 55; m += 5) {
+                const leftPct = (m / 60 * 100).toFixed(2);
+                const tick = tickWrap.createSpan({ cls: 'rtt-hm-tick', text: String(m) });
+                tick.style.left = leftPct + '%';
+                if (m > 0) tick.style.transform = 'translateX(-50%)';
+            }
+
+            // 数据行（只渲染有数据的小时 + 相邻空行折叠）
+            for (let h = 0; h < 24; h++) {
+                if (!segs[h]) continue;
+                const row = gridWrap.createDiv({ cls: 'rtt-hm-row' });
+                row.createSpan({ cls: 'rtt-hm-hlabel', text: String(h).padStart(2, '0') });
+                const bar = row.createDiv({ cls: 'rtt-hm-bar' });
+                for (const seg of segs[h]) {
+                    const el = bar.createDiv({ cls: 'rtt-hm-seg' });
+                    const leftPct = (seg.startM / 60 * 100).toFixed(3);
+                    const widthPct = Math.max(0.4, (seg.widthMins / 60 * 100)).toFixed(3);
+                    el.style.left = leftPct + '%';
+                    el.style.width = widthPct + '%';
+                    el.setAttribute('title', formatReadTime(seg.secs, this.settings.timeDisplayMode));
+
+                    // ✅ 精确渲染暂停时段橙色块
+                    const pauseRanges = this._extractPauseRanges(seg.origValue, seg.key);
+                    if (pauseRanges.length > 0) {
+                        // 会话起始绝对分钟（用于计算暂停段在 seg 内的相对位置）
+                        const sessionStartAbsMin = seg.origH * 60 + seg.origM;
+                        for (const range of pauseRanges) {
+                            const pauseStart = parseSessionStartTime(range.start);
+                            const pauseEnd = parseSessionStartTime(range.end);
+                            if (!pauseStart || !pauseEnd) continue;
+                            const pauseStartAbsMin = pauseStart.getHours() * 60 + pauseStart.getMinutes() + pauseStart.getSeconds() / 60;
+                            const pauseEndAbsMin = pauseEnd.getHours() * 60 + pauseEnd.getMinutes() + pauseEnd.getSeconds() / 60;
+                            // 暂停段在当前小时 bar 中的绝对位置（分钟）
+                            const segBarStartAbsMin = seg.origH * 60 + seg.startM;
+                            const segBarEndAbsMin = segBarStartAbsMin + seg.widthMins;
+                            // 裁剪到当前 seg 覆盖的分钟范围
+                            const clippedStart = Math.max(pauseStartAbsMin, segBarStartAbsMin);
+                            const clippedEnd = Math.min(pauseEndAbsMin, segBarEndAbsMin);
+                            if (clippedStart >= clippedEnd) continue;
+                            // 转换为相对于 seg 元素左边缘的百分比偏移
+                            const leftPct = ((clippedStart - segBarStartAbsMin) / seg.widthMins * 100).toFixed(3);
+                            const widthPct = Math.max(0.4, ((clippedEnd - clippedStart) / seg.widthMins * 100)).toFixed(3);
+                            const pauseBlock = el.createDiv({ cls: 'rtt-hm-pause-block' });
+                            pauseBlock.style.left = leftPct + '%';
+                            pauseBlock.style.width = widthPct + '%';
+                            const pauseDur = Math.floor((clippedEnd - clippedStart) * 60);
+                            pauseBlock.setAttribute('title', `⏸ 暂停 ${formatReadTime(pauseDur, 'compact')}`);
+                        }
+                    }
+
+                    // ✅ 创建监听器并存储引用
+                    const segmentListener = (e) => {
+                        e.stopPropagation();
+                        this._showDetail(seg);
+                    };
+                    this._segmentListeners.push({ element: el, listener: segmentListener });
+                    el.addEventListener('click', segmentListener);
+                }
+            }
+    }
+
+    /**
+     * 从原始时间线条目中提取暂停时段列表
+     * @param {number|object} origValue - 时间线的原始值（旧格式为数字，新格式为 SessionDetail）
+     * @returns {Array<{start:string, end:string}>}
+     */
+    _extractPauseRanges(origValue, key) {
+        // ✅ 优先从 pauseData 取（聚合视图），再从 origValue 取（单文件视图）
+        if (key && this.pauseData?.[key]?.length > 0) return this.pauseData[key];
+        if (!origValue || typeof origValue === 'number') return [];
+        // 聚合格式 {active, total} 没有 pausedRanges
+        if ('active' in origValue) return [];
+        return origValue.pausedRanges || [];
+    }
+
+    _showDetail(seg) {
+        console.log('[HeatmapView] _showDetail called', seg);
+        if (!this._detailEl) {
+            console.warn('[HeatmapView] _detailEl is null');
+            return;
+        }
+        const fmt2 = n => String(Math.floor(n)).padStart(2, '0');
+        this._detailEl.empty();
+        this._detailEl.style.display = 'block';
+        console.log('[HeatmapView] display set to block');
+        // ✅ 从 fileMap 或 origValue 取真实 startTime/endTime
+        let label;
+        let totalDuration = 0;  // ✅ 累计总时长
+        if (this.fileMap && this.fileMap.length > 0) {
+            // 聚合视图：从所有匹配会话中找最早开始和最晚结束
+            let earliest = null, latest = null;
+            const dayPart = seg.key ? seg.key.split(' ')[0] : null;
+
+            for (const [, rec] of this.fileMap) {
+                const sessions = rec.readTimeLine || [];
+                if (!Array.isArray(sessions)) continue;
+
+                // 遍历所有会话
+                for (const session of sessions) {
+                    const timestamps = Object.keys(session).sort();
+                    if (timestamps.length === 0) continue;
+
+                    const firstTs = timestamps[0];
+                    if (!firstTs.startsWith(dayPart)) continue;
+
+                    // 检查会话的起始时间是否在点击的时间段范围内
+                    const [hStr, mStr] = firstTs.split(' ')[1]?.split(':') || [];
+                    const h = parseInt(hStr), m = parseInt(mStr);
+                    if (Math.abs(h * 60 + m - (seg.origH * 60 + seg.origM)) <= 2) {
+                        // 这个会话匹配当前时间段，统计最早和最晚时间戳
+                        const firstTime = new Date(firstTs);
+                        const lastTime = new Date(timestamps[timestamps.length - 1]);
+
+                        if (!earliest || firstTime < earliest) earliest = firstTime;
+                        if (!latest || lastTime > latest) latest = lastTime;
+
+                        // ✅ 累计该会话的总时长
+                        for (let i = 0; i < timestamps.length - 1; i++) {
+                            const duration = Math.floor((new Date(timestamps[i + 1]) - new Date(timestamps[i])) / 1000);
+                            totalDuration += duration;
+                        }
+                    }
+                }
+            }
+
+            if (earliest && latest) {
+                label = `${formatLocalHMS(earliest.toISOString())} – ${formatLocalHMS(latest.toISOString())}`;
+            }
+        }
+        if (!label) {
+            // 单文件视图或回退：使用时间段的开始和结束
+            const totalSec = seg.secs;
+            totalDuration = totalSec;  // ✅ 单文件视图的总时长
+            const endAbsSec = seg.origH * 3600 + seg.origM * 60 + totalSec;
+            const endH = Math.min(23, Math.floor(endAbsSec / 3600));
+            const endM = Math.floor((endAbsSec % 3600) / 60);
+            const endS = Math.floor(endAbsSec % 60);
+            label = `${fmt2(seg.origH)}:${fmt2(seg.origM)}:00 – ${fmt2(endH)}:${fmt2(endM)}:${fmt2(endS)}`;
+        }
+
+        this._detailEl.empty();
+        this._detailEl.style.display = 'block';
+        const header = this._detailEl.createDiv({ cls: 'rtt-heatmap-detail-header' });
+        header.createSpan({ text: `${label} ${formatDurationWithSeconds(totalDuration)}` });
+        const closeBtn = header.createSpan({ cls: 'rtt-heatmap-detail-close' });
+        setIcon(closeBtn, 'x');
+
+        // ✅ 创建监听器并存储引用
+        this._listeners.closeBtn = () => {
+            this._detailEl.style.display = 'none';
+        };
+        closeBtn.addEventListener('click', this._listeners.closeBtn);
+
+        // 全局汇总视图：显示该时间段涉及的文件列表（按时间顺序显示操作时间线）
+        if (this.fileMap && this.fileMap.length > 0) {
+            const fileList = this._detailEl.createEl('table', { cls: 'rtt-heatmap-files' });
+            console.log('[HeatmapView] fileMap length:', this.fileMap.length);
+
+            // ✅ 添加表头行
+            const headerRow = fileList.createEl('thead').createEl('tr', { cls: 'rtt-heatmap-header' });
+            headerRow.createEl('th', { text: '文件名' });
+            headerRow.createEl('th', { text: '状态' });
+            headerRow.createEl('th', { text: '类型' });
+            headerRow.createEl('th', { text: '时间轴' });
+            headerRow.createEl('th', { text: '时长' });
+
+            const tbody = fileList.createEl('tbody');
+
+            for (const [filePath, rec] of this.fileMap) {
+                // ✅ readTimeLine 是数组，需要遍历所有会话
+                const sessions = rec.readTimeLine || [];
+                if (!Array.isArray(sessions)) {
+                    console.warn('[HeatmapView] readTimeLine is not an array for', filePath);
+                    continue;
+                }
+
+                const dayPart = seg.key ? seg.key.split(' ')[0] : null;
+                const matchingSessions = [];
+
+                // 遍历所有会话，找到匹配当前时间段的会话
+                for (const session of sessions) {
+                    const timestamps = Object.keys(session).sort();
+                    if (timestamps.length === 0) continue;
+
+                    const firstTs = timestamps[0];
+                    if (!firstTs.startsWith(dayPart)) continue;
+
+                    // 检查会话的起始时间是否在点击的时间段范围内
+                    const [hStr, mStr] = firstTs.split(' ')[1]?.split(':') || [];
+                    const h = parseInt(hStr), m = parseInt(mStr);
+                    if (Math.abs(h * 60 + m - (seg.origH * 60 + seg.origM)) <= 2) {
+                        matchingSessions.push(session);
+                    }
+                }
+
+                if (matchingSessions.length === 0) continue;
+
+                console.log('[HeatmapView] Found', matchingSessions.length, 'matching sessions for', filePath);
+
+                // ✅ 按照 DATA_STRUCTURE_DESIGN.md 的格式渲染每个会话
+                for (const session of matchingSessions) {
+                    const timestamps = Object.keys(session).sort();
+                    if (timestamps.length < 2) continue;
+
+                    // 渲染会话的每个时间段：[文件名] [状态图标] [时间范围] [状态] [时长]
+                    for (let i = 0; i < timestamps.length - 1; i++) {
+                        const currentTs = timestamps[i];
+                        const nextTs = timestamps[i + 1];
+                        const currentState = session[currentTs];
+
+                        const duration = Math.floor((new Date(nextTs) - new Date(currentTs)) / 1000);
+                        const isActive = currentState === "tracking";
+
+                        // 创建表格行
+                        const row = tbody.createEl('tr', { cls: 'rtt-heatmap-row' });
+
+                        // 文件名列
+                        const nameCell = row.createEl('td', { cls: 'rtt-heatmap-name' });
+                        nameCell.createSpan({ text: `📄 ${rec.fileName || filePath.split('/').pop()}` });
+
+                        // 状态图标列
+                        const iconCell = row.createEl('td', { cls: 'rtt-heatmap-icon' });
+                        if (isActive) {
+                            setIcon(iconCell, 'circle-gauge');
+                        } else {
+                            setIcon(iconCell, 'pause');
+                        }
+
+                        // 类型列
+                        const stateCell = row.createEl('td', { cls: 'rtt-heatmap-state' });
+                        stateCell.createSpan({ text: isActive ? '活跃' : '暂停' });
+
+                        // 时间范围列
+                        const timeCell = row.createEl('td', { cls: 'rtt-heatmap-time' });
+                        timeCell.createSpan({ text: `${formatLocalHMS(currentTs)}→${formatLocalHMS(nextTs)}` });
+
+                        // 时长列
+                        const durationCell = row.createEl('td', { cls: 'rtt-heatmap-duration' });
+                        durationCell.createSpan({ text: formatDurationWithSeconds(duration) });
+                    }
+
+                    // 保存标记行：[文件名] [双图标💾] [保存类型] [时间范围+(保存会话)] [空]
+                    const finalState = session[timestamps[timestamps.length - 1]];
+                    if (finalState === "saved") {
+                        const lastState = session[timestamps[timestamps.length - 2]];
+                        const savedRow = tbody.createEl('tr', { cls: 'rtt-heatmap-row rtt-saved-row' });
+
+                        // 文件名列
+                        const nameCell = savedRow.createEl('td', { cls: 'rtt-heatmap-name' });
+                        nameCell.createSpan({ text: `📄 ${rec.fileName || filePath.split('/').pop()}` });
+
+                        // 双图标列
+                        const iconCell = savedRow.createEl('td', { cls: 'rtt-heatmap-icon rtt-icon-double' });
+                        const icon1 = iconCell.createSpan({ cls: 'rtt-icon-item' });
+                        setIcon(icon1, lastState === "tracking" ? "circle-gauge" : "pause");
+                        const icon2 = iconCell.createSpan({ cls: 'rtt-icon-item' });
+                        setIcon(icon2, "save");
+
+                        // 保存类型列
+                        const typeCell = savedRow.createEl('td', { cls: 'rtt-saved-type' });
+                        typeCell.createSpan({
+                            text: lastState === "tracking" ? '正常保存' : '暂停中保存'
+                        });
+
+                        // 时间范围列：显示"开始时间→结束时间 保存"
+                        const timeCell = savedRow.createEl('td', { cls: 'rtt-heatmap-time' });
+                        timeCell.createSpan({
+                            text: `${formatLocalHMS(timestamps[0])}→${formatLocalHMS(timestamps[timestamps.length - 1])} 保存`
+                        });
+
+                        // 空白列（时长）
+                        savedRow.createEl('td', { cls: 'rtt-heatmap-duration' });
+                    }
+
+                    // 分隔行（空行）
+                    const dividerRow = tbody.createEl('tr', { cls: 'rtt-session-divider' });
+                    dividerRow.createEl('td', { attr: { colspan: '5' } });
+                }
+            }
+        } else {
+            // 单文件视图：显示时长（精确到秒）+ 暂停时段
+            const durRow = this._detailEl.createDiv({ cls: 'rtt-heatmap-detail-row' });
+            durRow.createSpan({ cls: 'rtt-heatmap-detail-time', text: fmt2(seg.origH) + ':' + fmt2(seg.origM) });
+            // ✅ 详情面板始终精确到秒
+            durRow.createSpan({ cls: 'rtt-heatmap-detail-dur',
+                text: formatReadTime(seg.secs, 'precise') });
+            // ✅ 显示暂停时段详情（精确到秒，过滤零时长）
+            const pauseRanges = this._extractPauseRanges(seg.origValue, seg.key);
+            if (pauseRanges.length > 0) {
+                const pauseInfo = this._detailEl.createDiv({ cls: 'rtt-session-pauses' });
+                pauseInfo.style.marginTop = '4px';
+                pauseInfo.style.borderTop = 'none';
+                pauseInfo.createSpan({ text: '⏸ 暂停时段：', cls: 'rtt-pause-label' });
+                const pauseList = pauseInfo.createDiv({ cls: 'rtt-pause-list' });
+                for (const range of pauseRanges) {
+                    const pauseStart = parseSessionStartTime(range.start);
+                    const pauseEnd = parseSessionStartTime(range.end);
+                    if (!pauseStart || !pauseEnd) continue;
+                    const pauseSec = Math.max(0, Math.floor((pauseEnd - pauseStart) / 1000));
+                    if (pauseSec <= 0) continue; // 过滤零时长
+                    const item = pauseList.createDiv({ cls: 'rtt-pause-item' });
+                    item.setText(`${formatLocalHMS(range.start)} – ${formatLocalHMS(range.end)} (${formatReadTime(pauseSec, 'precise')})`);
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
+// ReadFilePickerModal — 有记录文件的模糊搜索选择器
+// ============================================================================
+
+class ReadFilePickerModal extends FuzzySuggestModal {
+    /**
+     * @param {import('obsidian').App} app
+     * @param {ReadTimeStore} store
+     * @param {Function} onChoose - (filePath: string) => void
+     */
+    constructor(app, store, onChoose) {
+        super(app);
+        this.store = store;
+        this.onChoose = onChoose;
+        this.setPlaceholder(t('pickerPlaceholder'));
+    }
+
+    getItems() {
+        return Object.keys(this.store.getAllRecords());
+    }
+
+    getItemText(filePath) {
+        const rec = this.store.getRecord(filePath);
+        return rec ? `${rec.fileName}  ${filePath}` : filePath;
+    }
+
+    onChooseItem(filePath) {
+        this.onChoose(filePath);
+    }
+}
+
+// ============================================================================
+// ReadRecordsModal — 阅读记录列表 Modal
+// ============================================================================
+
+class ReadRecordsModal extends Modal {
+    /**
+     * @param {import('obsidian').App} app
+     * @param {ReadTimeStore} store
+     * @param {string|null} filterPath - null = 显示所有文件
+     * @param {ReadTimeEngine} engine
+     * @param {object} settings
+     */
+    constructor(app, store, filterPath, engine, settings) {
+        super(app);
+        this.store = store;
+        this.filterPath = filterPath;
+        this.engine = engine;
+        this.settings = settings;
+        this._expandedPath = null;
+    }
+
+    async onOpen() {
+        const { contentEl } = this;
+        contentEl.addClass('rtt-modal');
+
+        // 直接覆写 modal 容器的尺寸样式
+        const modalContainer = contentEl.closest('.modal');
+        if (modalContainer) {
+            modalContainer.style.setProperty('width', 'calc(90vw + 192px)', 'important');
+            modalContainer.style.setProperty('max-width', '1400px', 'important');
+            modalContainer.style.setProperty('height', 'calc(85vh + 64px)', 'important');
+            modalContainer.style.setProperty('max-height', '1000px', 'important');
+        }
+        contentEl.empty();
+
+        // 搜索框
+        const searchWrap = contentEl.createDiv({ cls: 'rtt-search-wrap' });
+        const searchInput = searchWrap.createEl('input', {
+            type: 'text',
+            cls: 'rtt-search-input',
+            attr: { placeholder: t('searchPlaceholder') }
+        });
+
+        const records = this.store.getAllRecords();
+        const allEntries = this.filterPath
+            ? (records[this.filterPath] ? [[this.filterPath, records[this.filterPath]]] : [])
+            : Object.entries(records);
+
+        // 排序函数
+        const SORT_FNS = {
+            'lastReadAt-desc': ([, a], [, b]) => (b.lastReadAt || '').localeCompare(a.lastReadAt || ''),
+            'lastReadAt-asc':  ([, a], [, b]) => (a.lastReadAt || '').localeCompare(b.lastReadAt || ''),
+            'total-desc':      ([, a], [, b]) => (b.totalReadTime || 0) - (a.totalReadTime || 0),
+            'total-asc':       ([, a], [, b]) => (a.totalReadTime || 0) - (b.totalReadTime || 0),
+        };
+        let sortKey = 'lastReadAt-desc';
+        let entries = [...allEntries].sort(SORT_FNS[sortKey]);
+
+        // 排序下拉选择器（仅全量视图显示）
+        if (!this.filterPath) {
+            const sortRow = searchWrap.createDiv({ cls: 'rtt-sort-row' });
+            const sortSel = sortRow.createEl('select', { cls: 'rtt-sort-select' });
+            const sortOpts = [
+                ['lastReadAt-desc', t('sortLastReadDesc')],
+                ['lastReadAt-asc',  t('sortLastReadAsc')],
+                ['total-desc',      t('sortTotalDesc')],
+                ['total-asc',       t('sortTotalAsc')],
+            ];
+            for (const [val, lbl] of sortOpts) {
+                const opt = sortSel.createEl('option', { value: val, text: lbl });
+                if (val === sortKey) opt.selected = true;
+            }
+            sortSel.addEventListener('change', () => {
+                sortKey = sortSel.value;
+                entries = [...allEntries].sort(SORT_FNS[sortKey]);
+                renderList(searchInput.value.trim().toLowerCase());
+            });
+        }
+
+        // 聚合所有文件的 readTimeLine（不论搜索过滤）
+        // ✅ 新数据结构：readTimeLine 是数组，每个元素是会话对象 {timestamp: state}
+        // aggregated 存储格式：{ 'YYYY-MM-DD HH:mm': {active, wallEndMin} }
+        const aggregated = {};
+        const aggregatedPauses = {}; // ✅ 保留暂停时段
+        const today = todayStr();
+        const weekStart = getWeekStartStr();
+        let todayTotalSec = 0;
+        let todaySessionCount = 0;
+        let todayWallTimeSec = 0;
+        let weekTotalSec = 0;
+
+        for (const [, rec] of entries) {
+            if (!Array.isArray(rec.readTimeLine)) continue; // ✅ 只处理新格式
+
+            // ✅ 遍历每个会话（数组）
+            for (const session of rec.readTimeLine) {
+                const timestamps = Object.keys(session).sort();
+                if (timestamps.length < 2) continue; // 至少需要开始和结束状态
+
+                const startTs = timestamps[0];
+                const startKey = startTs.slice(0, 16); // 'YYYY-MM-DD HH:mm'
+
+                // ✅ 计算会话活跃时长
+                const activeSec = calculateSessionDuration(session);
+
+                // ✅ 聚合到 aggregated
+                if (!aggregated[startKey]) {
+                    aggregated[startKey] = { active: 0, wallEndMin: 0 };
+                }
+                aggregated[startKey].active += activeSec;
+
+                // ✅ 计算墙上时钟结束时间（用于跨小时分割）
+                const lastTs = timestamps[timestamps.length - 1];
+                const endDt = new Date(lastTs);
+                if (!isNaN(endDt.getTime())) {
+                    const endMin = endDt.getHours() * 60 + endDt.getMinutes() + endDt.getSeconds() / 60;
+                    aggregated[startKey].wallEndMin = Math.max(aggregated[startKey].wallEndMin, endMin);
+                }
+
+                // ✅ 收集暂停时段
+                const pauseRanges = [];
+                for (let i = 0; i < timestamps.length - 1; i++) {
+                    const currentState = session[timestamps[i]];
+                    if (currentState === "pausing") {
+                        pauseRanges.push({
+                            start: timestamps[i],
+                            end: timestamps[i + 1]
+                        });
+                    }
+                }
+                if (pauseRanges.length > 0) {
+                    aggregatedPauses[startKey] = (aggregatedPauses[startKey] || []).concat(pauseRanges);
+                }
+
+                // ✅ 统计当日
+                if (startKey.startsWith(today)) {
+                    todayTotalSec += activeSec;
+                    todaySessionCount++;
+
+                    // 计算总时长（包含暂停时间）
+                    const sessionTotalSec = (new Date(lastTs) - new Date(startTs)) / 1000;
+                    todayWallTimeSec += sessionTotalSec;
+                }
+
+                // ✅ 统计本周
+                if (startKey >= weekStart) {
+                    weekTotalSec += activeSec;
+                }
+            }
+        }
+
+        // ✅ 提取所有可用日期（用于日期切换器）
+        const allDays = [...new Set(
+            Object.keys(aggregated).map(k => k.split(' ')[0]).filter(Boolean)
+        )].sort();
+        let currentDayIdx = allDays.length > 0 ? allDays.length - 1 : 0;
+
+        // ✅ 日期切换器（置于顶部，控制下方所有内容）
+        const nav = contentEl.createDiv({ cls: 'rtt-timeline-nav' });
+        const prevBtn = nav.createEl('button', { cls: 'rtt-nav-btn' });
+        setIcon(prevBtn, 'chevron-left');
+        const dateInput = nav.createEl('input', {
+            cls: 'rtt-nav-date',
+            type: 'date'
+        });
+        const nextBtn = nav.createEl('button', { cls: 'rtt-nav-btn' });
+        setIcon(nextBtn, 'chevron-right');
+
+        // 统计卡片（当日时长 / 当日轮数 / 本周时长）— 日期切换器下方
+        const statsBar = contentEl.createDiv({ cls: 'rtt-stats-bar' });
+
+        // ✅ 创建统计卡片元素（初始为空，由 renderCurrentDay 更新）
+        const todayCard = statsBar.createDiv({ cls: 'rtt-stats-card' });
+        const todayLabel = todayCard.createSpan({ cls: 'rtt-stats-label' });
+        const todayValue = todayCard.createSpan({ cls: 'rtt-stats-value' });
+
+        const totalCard = statsBar.createDiv({ cls: 'rtt-stats-card' });
+        const totalLabel = totalCard.createSpan({ cls: 'rtt-stats-label' });
+        const totalValue = totalCard.createSpan({ cls: 'rtt-stats-value' });
+
+        const sessionsCard = statsBar.createDiv({ cls: 'rtt-stats-card' });
+        const sessionsLabel = sessionsCard.createSpan({ cls: 'rtt-stats-label' });
+        const sessionsValue = sessionsCard.createSpan({ cls: 'rtt-stats-value' });
+
+        const weekCard = statsBar.createDiv({ cls: 'rtt-stats-card' });
+        const weekLabel = weekCard.createSpan({ cls: 'rtt-stats-label', text: t('statsWeek') });
+        const weekValue = weekCard.createSpan({ cls: 'rtt-stats-value', text: formatReadTime(weekTotalSec, this.settings.timeDisplayMode || 'compact') });
+
+        // 汇总条形图（列表上方，始终展示全部文件聚合数据）
+        const summaryEl = contentEl.createDiv({ cls: 'rtt-summary' });
+
+        // 列表区
+        const listEl = contentEl.createDiv({ cls: 'rtt-list' });
+
+        // ✅ 渲染函数：根据当前日期更新热力图、统计卡片和文件列表
+        const renderCurrentDay = () => {
+            if (allDays.length === 0) {
+                dateInput.value = '';
+                dateInput.disabled = true;
+                prevBtn.disabled = true;
+                nextBtn.disabled = true;
+
+                // 清空统计卡片
+                todayLabel.textContent = t('statsToday');
+                todayValue.textContent = '0';
+                totalLabel.textContent = t('statsTodayTotal');
+                totalValue.textContent = '0';
+                sessionsLabel.textContent = t('statsTodaySessions');
+                sessionsValue.textContent = '0';
+
+                summaryEl.empty();
+                summaryEl.createDiv({ cls: 'rtt-chart-empty', text: t('noTimeline') });
+                listEl.empty();
+                return;
+            }
+
+            const currentDay = allDays[currentDayIdx];
+            dateInput.value = currentDay;
+            dateInput.disabled = false;
+            prevBtn.disabled = currentDayIdx <= 0;
+            nextBtn.disabled = currentDayIdx >= allDays.length - 1;
+
+            // ✅ 计算当前选中日期的统计数据
+            const today = todayStr();
+            const isToday = currentDay === today;
+
+            let dayTotalSec = 0;
+            let dayWallTimeSec = 0;
+            let daySessionCount = 0;
+
+            for (const [, rec] of entries) {
+                if (!Array.isArray(rec.readTimeLine)) continue;
+                for (const session of rec.readTimeLine) {
+                    const timestamps = Object.keys(session).sort();
+                    if (timestamps.length === 0 || !timestamps[0].startsWith(currentDay)) continue;
+
+                    daySessionCount++;
+                    const activeSec = calculateSessionDuration(session);
+                    dayTotalSec += activeSec;
+
+                    const startTs = new Date(timestamps[0]);
+                    const endTs = new Date(timestamps[timestamps.length - 1]);
+                    dayWallTimeSec += Math.floor((endTs - startTs) / 1000);
+                }
+            }
+
+            // ✅ 更新统计卡片标签和数值
+            todayLabel.textContent = isToday ? '今日阅读' : `${currentDay} 阅读`;
+            todayValue.textContent = formatReadTime(dayTotalSec, this.settings.timeDisplayMode || 'compact');
+
+            totalLabel.textContent = isToday ? '今日总时长' : `${currentDay} 总时长`;
+            totalValue.textContent = formatReadTime(dayWallTimeSec, this.settings.timeDisplayMode || 'compact');
+
+            sessionsLabel.textContent = isToday ? '今日轮数' : `${currentDay} 轮数`;
+            sessionsValue.textContent = `${daySessionCount}`;
+
+            // ✅ 过滤当天的热力图数据
+            const dayAggregated = {};
+            const dayPauses = {};
+            for (const [key, value] of Object.entries(aggregated)) {
+                if (key.startsWith(currentDay)) {
+                    dayAggregated[key] = value;
+                }
+            }
+            for (const [key, value] of Object.entries(aggregatedPauses)) {
+                if (key.startsWith(currentDay)) {
+                    dayPauses[key] = value;
+                }
+            }
+
+            // ✅ 渲染热力图
+            summaryEl.empty();
+            if (Object.keys(dayAggregated).length > 0) {
+                new HeatmapView(summaryEl, dayAggregated, this.settings, entries, dayPauses).render();
+            } else {
+                summaryEl.createDiv({ cls: 'rtt-chart-empty', text: t('noTimeline') });
+            }
+
+            // ✅ 过滤当天的文件列表
+            const dayEntries = entries.filter(([, rec]) => {
+                if (!Array.isArray(rec.readTimeLine)) return false;
+                return rec.readTimeLine.some(session => {
+                    const timestamps = Object.keys(session).sort();
+                    return timestamps.length > 0 && timestamps[0].startsWith(currentDay);
+                });
+            });
+
+            // ✅ 渲染文件列表（复用原有的 renderList 逻辑）
+            renderList('', dayEntries);
+        };
+
+        // ✅ 日期切换器事件
+        prevBtn.addEventListener('click', () => {
+            if (currentDayIdx > 0) {
+                currentDayIdx--;
+                renderCurrentDay();
+            }
+        });
+
+        nextBtn.addEventListener('click', () => {
+            if (currentDayIdx < allDays.length - 1) {
+                currentDayIdx++;
+                renderCurrentDay();
+            }
+        });
+
+        // ✅ 日期输入框手动输入事件
+        dateInput.addEventListener('change', () => {
+            const inputDate = dateInput.value;
+            const foundIdx = allDays.indexOf(inputDate);
+            if (foundIdx !== -1) {
+                currentDayIdx = foundIdx;
+                renderCurrentDay();
+            } else {
+                // 输入的日期不存在，恢复当前日期
+                dateInput.value = allDays[currentDayIdx] || '';
+            }
+        });
+
+        // ✅ 初始渲染（仅当有数据时才移除原有代码）
+        if (Object.keys(aggregated).length === 0) {
+            summaryEl.createDiv({ cls: 'rtt-chart-empty', text: t('noTimeline') });
+        }
+
+        // 预加载 Iconize 图标（异步批量，完成后再渲染列表避免列表出现前无图标）
+        let iconize = null;
+        if (this.settings.useIconize !== false) {
+            try {
+                iconize = new IconizeLoader(this.app);
+                await iconize.load();
+                const iconNames = entries.map(([fp]) => iconize.resolveIcon(fp)?.iconName).filter(Boolean);
+                await iconize.preloadSvgs(iconNames);
+            } catch (e) {
+                console.warn('[ReadTimeTracker] Iconize 预加载失败:', e);
+                iconize = null;
+            }
+        }
+
+        // ✅ 存储所有监听器引用，用于清理
+        const itemListeners = [];
+
+        const renderList = (query, baseEntries = entries) => {
+            // ✅ 清理旧监听器
+            for (const { element, listener } of itemListeners) {
+                element.removeEventListener('click', listener);
+            }
+            itemListeners.length = 0;
+
+            listEl.empty();
+            const filtered = query
+                ? baseEntries.filter(([p, r]) =>
+                    (r.fileName || '').toLowerCase().includes(query) ||
+                    p.toLowerCase().includes(query))
+                : baseEntries;
+
+            if (filtered.length === 0) {
+                listEl.createDiv({ cls: 'rtt-list-empty', text: t('noRecords') });
+                return;
+            }
+
+            // ✅ 用于跟踪当前展开的 timeline 元素
+            let currentTimelineEl = null;
+            let currentExpandedItem = null;
+
+            for (const [filePath, rec] of filtered) {
+                const item = listEl.createDiv({ cls: 'rtt-list-item' });
+
+                // 图标列：优先显示 Iconize 配置图标，回退到 file-text
+                const iconCol = item.createDiv({ cls: 'rtt-item-icon' });
+                let iconRendered = false;
+                if (iconize) {
+                    const iconInfo = iconize.resolveIcon(filePath);
+                    if (iconInfo) iconRendered = iconize.renderIconTo(iconCol, iconInfo.iconName, iconInfo.iconColor);
+                }
+                if (!iconRendered) setIcon(iconCol, 'file-text');
+
+                // 文字列
+                const textCol = item.createDiv({ cls: 'rtt-item-text' });
+
+                // 文件名行（粗体）+ 路径（灰色），溢出截断
+                const nameRow = textCol.createDiv({ cls: 'rtt-item-name-row' });
+                nameRow.createSpan({ cls: 'rtt-item-name', text: rec.fileName || filePath.split('/').pop() });
+                const folder = filePath.includes('/') ? filePath.substring(0, filePath.lastIndexOf('/')) : '';
+                if (folder) nameRow.createSpan({ cls: 'rtt-item-path', text: '  ' + folder });
+
+                // ✅ 显示当前选中日期的阅读时间（不再是"今日"）
+                let daySeconds = 0;
+                const currentDay = allDays[currentDayIdx];
+                if (Array.isArray(rec.readTimeLine) && currentDay) {
+                    for (const session of rec.readTimeLine) {
+                        const timestamps = Object.keys(session).sort();
+                        if (timestamps.length > 0 && timestamps[0].startsWith(currentDay)) {
+                            daySeconds += calculateSessionDuration(session);
+                        }
+                    }
+                }
+                const sessionRow = textCol.createDiv({ cls: 'rtt-item-session' });
+                // ✅ 根据是否为今日显示不同标签
+                const today = todayStr();
+                const dayLabel = currentDay === today ? '今日' : currentDay;
+                sessionRow.createSpan({ cls: 'rtt-item-session-label', text: dayLabel });
+                sessionRow.createSpan({
+                    cls: 'rtt-item-session-val',
+                    text: formatReadTime(daySeconds, this.settings.timeDisplayMode)
+                });
+
+                // 总计 + 最后阅读
+                const statsRow = textCol.createDiv({ cls: 'rtt-item-stats' });
+                statsRow.createSpan({ text: `总计 ${formatReadTime(rec.totalReadTime || 0, this.settings.timeDisplayMode)}` });
+                statsRow.createSpan({ cls: 'rtt-item-sep', text: '  ·  ' });
+                statsRow.createSpan({ text: `${t('lastRead')}${rec.lastReadAt || '-'}` });
+
+                // ✅ 删除按钮
+                const deleteBtn = item.createDiv({ cls: 'rtt-item-delete' });
+                setIcon(deleteBtn, 'trash-2');
+                deleteBtn.setAttribute('aria-label', '删除记录');
+
+                // ✅ 删除按钮监听器
+                const deleteListener = (e) => {
+                    e.stopPropagation(); // 阻止事件冒泡，避免触发 item 点击
+
+                    // 确认删除
+                    const fileName = rec.fileName || filePath.split('/').pop();
+                    if (confirm(`确定要删除「${fileName}」的所有阅读记录吗？\n此操作无法撤销。`)) {
+                        // 从 store 中删除
+                        this.store.deleteRecord(filePath);
+
+                        // 如果当前展开的是这个 item，清理 timeline
+                        if (currentExpandedItem === item && currentTimelineEl) {
+                            currentTimelineEl.remove();
+                            currentTimelineEl = null;
+                            currentExpandedItem = null;
+                        }
+
+                        // 重新渲染列表
+                        renderList(searchInput.value.trim().toLowerCase(), baseEntries);
+                    }
+                };
+                deleteBtn.addEventListener('click', deleteListener);
+                itemListeners.push({ element: deleteBtn, listener: deleteListener });
+
+                // ✅ item 点击监听器：展开/折叠 timeline
+                const itemListener = () => {
+                    const isCurrentlyExpanded = currentExpandedItem === item;
+
+                    // 清理旧的 timeline
+                    if (currentTimelineEl) {
+                        currentTimelineEl.remove();
+                        currentTimelineEl = null;
+                    }
+                    if (currentExpandedItem) {
+                        currentExpandedItem.removeClass('rtt-item-expanded');
+                        currentExpandedItem = null;
+                    }
+
+                    // 如果点击的是已展开的 item，则折叠
+                    if (isCurrentlyExpanded) {
+                        return;
+                    }
+
+                    // 展开新的 timeline
+                    item.addClass('rtt-item-expanded');
+                    currentExpandedItem = item;
+
+                    // ✅ 在 item 下方插入独立的 timeline 元素
+                    const timelineEl = createDiv({ cls: 'rtt-item-timeline' });
+                    item.insertAdjacentElement('afterend', timelineEl);
+                    currentTimelineEl = timelineEl;
+
+                    // ✅ 将新格式（数组）转换为旧格式（对象）供 HeatmapView 使用
+                    const legacyTimeLine = {};
+                    if (Array.isArray(rec.readTimeLine)) {
+                        for (const session of rec.readTimeLine) {
+                            const timestamps = Object.keys(session).sort();
+                            if (timestamps.length < 2) continue;
+
+                            const startKey = timestamps[0].slice(0, 16); // 'YYYY-MM-DD HH:mm'
+                            const activeSec = calculateSessionDuration(session);
+                            const lastTs = timestamps[timestamps.length - 1];
+
+                            // 构造类似 SessionDetail 的对象
+                            legacyTimeLine[startKey] = {
+                                activeSeconds: activeSec,
+                                totalSeconds: Math.floor((new Date(lastTs) - new Date(timestamps[0])) / 1000),
+                                startTime: timestamps[0],
+                                endTime: lastTs,
+                                pausedRanges: []
+                            };
+
+                            // 提取暂停段
+                            for (let i = 0; i < timestamps.length - 1; i++) {
+                                if (session[timestamps[i]] === "pausing") {
+                                    legacyTimeLine[startKey].pausedRanges.push({
+                                        start: timestamps[i],
+                                        end: timestamps[i + 1]
+                                    });
+                                }
+                            }
+                        }
+                    }
+
+                    new HeatmapView(timelineEl, legacyTimeLine, this.settings).render();
+                };
+
+                item.addEventListener('click', itemListener);
+                itemListeners.push({ element: item, listener: itemListener });
+            }
+        };
+
+        // ✅ 搜索框监听器：基于当前日期过滤后的 entries 进行搜索
+        searchInput.addEventListener('input', () => {
+            const currentDay = allDays[currentDayIdx];
+            if (!currentDay) {
+                renderList(searchInput.value.trim().toLowerCase(), []);
+                return;
+            }
+
+            const dayEntries = entries.filter(([, rec]) => {
+                if (!Array.isArray(rec.readTimeLine)) return false;
+                return rec.readTimeLine.some(session => {
+                    const timestamps = Object.keys(session).sort();
+                    return timestamps.length > 0 && timestamps[0].startsWith(currentDay);
+                });
+            });
+
+            renderList(searchInput.value.trim().toLowerCase(), dayEntries);
+        });
+
+        // ✅ 初始渲染
+        renderCurrentDay();
+    }
+
+    onClose() {
+        // 清理 modal 容器的内联样式
+        const modalContainer = this.contentEl.closest('.modal');
+        if (modalContainer) {
+            modalContainer.style.removeProperty('width');
+            modalContainer.style.removeProperty('max-width');
+            modalContainer.style.removeProperty('height');
+            modalContainer.style.removeProperty('max-height');
+        }
+
+        // ✅ 清理所有存储的监听器引用
+        if (this.itemListeners && Array.isArray(this.itemListeners)) {
+            for (const { element, listener } of this.itemListeners) {
+                if (element && listener) {
+                    element.removeEventListener('click', listener);
+                }
+            }
+            this.itemListeners = [];
+        }
+
+        // ✅ 其他监听器由 contentEl.empty() 自动清理（DOM移除时浏览器会处理）
+        this.contentEl.empty();
+    }
+}
+
+// ============================================================================
+// FilterPathPickerModal — 设置页过滤规则文件/文件夹选择器
+// ============================================================================
+
+class FilterPathPickerModal extends FuzzySuggestModal {
+    constructor(app, onChoose) {
+        super(app);
+        this.onChoose = onChoose;
+        this.setPlaceholder(t('filterPickerPlaceholder'));
+    }
+
+    getItems() {
+        return this.app.vault.getAllLoadedFiles().map(f => f.path);
+    }
+
+    getItemText(path) { return path; }
+
+    onChooseItem(path) { this.onChoose(path); }
+}
+
+// ============================================================================
+// ReadTimeSettingTab — 设置页
+// ============================================================================
+
+class ReadTimeSettingTab extends PluginSettingTab {
+    constructor(app, plugin) {
+        super(app, plugin);
+        this.plugin = plugin;
+    }
+
+    // ✅ 委托给插件主类（避免重复定义）
+    getAutoStartModes() {
+        return this.plugin.getAutoStartModes();
+    }
+
+    getAutoStartConfig(mode) {
+        return this.plugin.getAutoStartConfig(mode);
+    }
+
+    display() {
+        const { containerEl } = this;
+        containerEl.empty();
+        containerEl.createEl('h2', { text: t('settingsTitle') });
+
+        new Setting(containerEl)
+            .setName(t('filterMode'))
+            .setDesc(t('filterModeDesc'))
+            .addDropdown(dd => dd
+                .addOption('blacklist', t('filterModeBlacklist'))
+                .addOption('whitelist', t('filterModeWhitelist'))
+                .setValue(this.plugin.settings.filterMode || 'blacklist')
+                .onChange(async (v) => {
+                    this.plugin.settings.filterMode = v;
+                    await this.plugin.saveSettings();
+                }));
+
+        new Setting(containerEl)
+            .setName(t('filterPatterns'))
+            .setDesc(t('filterPatternsDesc'))
+            .addTextArea(text => {
+                text.setPlaceholder('Templates/\n/^Daily\\/\\d{8}\\.md$/')
+                    .setValue(this.plugin.settings.filterPatterns || '')
+                    .onChange(async (v) => {
+                        this.plugin.settings.filterPatterns = v;
+                        await this.plugin.saveSettings();
+                    });
+                text.inputEl.rows = 5;
+                text.inputEl.style.width = '100%';
+                text.inputEl.style.fontFamily = 'var(--font-monospace)';
+                text.inputEl.style.fontSize = 'var(--font-ui-smaller)';
+                return text;
+            })
+            .addButton(btn => btn
+                .setIcon('folder-open')
+                .setTooltip(t('filterPickTooltip'))
+                .onClick(() => {
+                    new FilterPathPickerModal(this.app, (path) => {
+                        const cur = (this.plugin.settings.filterPatterns || '').trimEnd();
+                        this.plugin.settings.filterPatterns = cur ? cur + '\n' + path : path;
+                        this.plugin.saveSettings();
+                        this.display();
+                    }).open();
+                }));
+
+        new Setting(containerEl)
+            .setName(t('idleEnabled'))
+            .setDesc(t('idleEnabledDesc'))
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.idleTimeoutEnabled !== false)
+                .onChange(async (v) => {
+                    this.plugin.settings.idleTimeoutEnabled = v;
+                    await this.plugin.saveSettings();
+                    this.display();
+                }));
+
+        if (this.plugin.settings.idleTimeoutEnabled !== false) {
+            new Setting(containerEl)
+                .setName(t('idleTimeout'))
+                .setDesc(t('idleTimeoutDesc'))
+                .addText(text => text
+                    .setPlaceholder('20')
+                    .setValue(String(this.plugin.settings.idleTimeout != null ? this.plugin.settings.idleTimeout : 20))
+                    .onChange(async (v) => {
+                        this.plugin.settings.idleTimeout = Math.max(1, parseInt(v) || 20);
+                        await this.plugin.saveSettings();
+                    }));
+        }
+
+        new Setting(containerEl)
+            .setName(t('minRead'))
+            .setDesc(t('minReadDesc'))
+            .addText(text => text
+                .setPlaceholder('20')
+                .setValue(String(this.plugin.settings.minReadSeconds != null ? this.plugin.settings.minReadSeconds : 20))
+                .onChange(async (v) => {
+                    this.plugin.settings.minReadSeconds = Math.max(0, parseInt(v) || 0);
+                    await this.plugin.saveSettings();
+                }));
+
+        new Setting(containerEl)
+            .setName(t('displayMode'))
+            .setDesc(t('displayModeDesc'))
+            .addDropdown(dd => dd
+                .addOption('compact', t('displayCompact'))
+                .addOption('precise', t('displayPrecise'))
+                .setValue(this.plugin.settings.timeDisplayMode || 'compact')
+                .onChange(async (v) => {
+                    this.plugin.settings.timeDisplayMode = v;
+                    await this.plugin.saveSettings();
+                }));
+
+        new Setting(containerEl)
+            .setName(t('autoStart'))
+            .setDesc(t('autoStartDesc'))
+            .addDropdown(dd => {
+                const modes = this.getAutoStartModes();
+                for (const [key, config] of Object.entries(modes)) {
+                    dd.addOption(key, config.label);
+                }
+                dd.setValue(this.plugin.settings.autoStartMode || 'manual');
+                dd.onChange(async (v) => {
+                    this.plugin.settings.autoStartMode = v;
+                    await this.plugin.saveSettings();
+                });
+            });
+
+        new Setting(containerEl)
+            .setName(t('useIconize'))
+            .setDesc(t('useIconizeDesc'))
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.useIconize !== false)
+                .onChange(async (v) => {
+                    this.plugin.settings.useIconize = v;
+                    await this.plugin.saveSettings();
+                }));
+
+        new Setting(containerEl)
+            .setName(t('dataPath'))
+            .setDesc(t('dataPathDesc'))
+            .addText(text => text
+                .setPlaceholder('留空使用默认路径')
+                .setValue(this.plugin.settings.dataFilePath || '')
+                .onChange(async (v) => {
+                    this.plugin.settings.dataFilePath = v.trim();
+                    await this.plugin.saveSettings();
+                }));
+
+        new Setting(containerEl)
+            .setName(t('todayTotalDisplay'))
+            .setDesc(t('todayTotalDisplayDesc'))
+            .addDropdown(dropdown => dropdown
+                .addOption('idle', t('todayTotalIdle'))
+                .addOption('always', t('todayTotalAlways'))
+                .addOption('never', t('todayTotalNever'))
+                .setValue(this.plugin.settings.todayTotalDisplay || 'idle')
+                .onChange(async (v) => {
+                    this.plugin.settings.todayTotalDisplay = v;
+                    await this.plugin.saveSettings();
+                    // 刷新所有 widget 显示
+                    this.plugin.headerWidget.refreshAll();
+                }));
+    }
+}
+
+// ============================================================================
+// ReadTimeTrackerPlugin — 插件主类
+// ============================================================================
+
+const DEFAULT_SETTINGS = {
+    filterMode: 'blacklist',      // 'blacklist' | 'whitelist'
+    filterPatterns: '',           // 逗号/换行分隔，支持路径前缀和正则（/pattern/）
+    idleTimeoutEnabled: true,     // 是否启用空闲超时
+    idleTimeout: 20,
+    minReadSeconds: 20,           // 起步阈值（秒），低于此值不写入记录
+    timeDisplayMode: 'compact',
+    autoStartMode: 'manual',      // 'always' | 'start-only' | 'return-only' | 'manual'
+    useIconize: true,             // 是否读取 Iconize 配置渲染图标
+    dataFilePath: '',
+    todayTotalDisplay: 'idle'     // 'idle' | 'always' | 'never' - 今日总计显示模式
+};
+
+class ReadTimeTrackerPlugin extends Plugin {
+    async onload() {
+        // 加载设置
+        const saved = await this.loadData();
+        this.settings = Object.assign({}, DEFAULT_SETTINGS, (saved ? saved.settings : null) || {});
+
+        // ✅ 迁移旧的布尔配置到新的枚举配置（必须检查原始 saved 而非合并后的 this.settings）
+        if ((saved ? saved.settings : null) && typeof saved.settings.autoStartOnOpen === 'boolean' && !saved.settings.autoStartMode) {
+            this.settings.autoStartMode = saved.settings.autoStartOnOpen ? 'start-only' : 'manual';
+            delete this.settings.autoStartOnOpen;
+            await this.saveSettings();
+            console.log('[ReadTimeTracker] 已迁移 autoStartOnOpen 配置');
+        }
+
+        // 初始化数据层
+        this.store = new ReadTimeStore(this, this.settings);
+        await this.store.load();
+
+        // 初始化计时引擎
+        this.engine = new ReadTimeEngine(
+            this.app, this.store, this.settings, this,  // ✅ 传递 plugin 实例
+            (filePath, seconds, todaySeconds, sessionStartTime, sessionCount, isRunning) => {
+                if (this.widget) {
+                    this.widget.update(filePath, seconds, todaySeconds, sessionStartTime, sessionCount, isRunning);
+                }
+            },
+            (filePath, isRunning) => {
+                // 每 tick 通知 widget 当前实际运行状态，驱动暂停按钮图标
+                if (this.widget) {
+                    this.widget.updateState(filePath, isRunning);
+                }
+            },
+            (filePath) => {
+                // 文件被过滤排除时通知 widget
+                if (this.widget) {
+                    this.widget.setExcluded(filePath);
+                }
+            }
+        );
+        // 初始化嵌入式组件
+        this.widget = new HeaderWidget(this.app, this.engine, this.settings);
+
+        // ✅ 连接引擎 layout-change 清理回调，防止已关闭视图的 widget 条目导致内存泄漏
+        this.engine.onLayoutCleanupCallback = () => this.widget._cleanupStaleWidgets();
+
+        // ✅ 设置刷新所有 widget 的回调
+        this.engine.onRefreshAllCallback = () => {
+            if (this.widget) {
+                this.widget.refreshAllVaultToday();
+            }
+        };
+
+        // ✅ 每秒检测 widget 健康状态
+        this.engine.onWidgetHealthCheck = () => {
+            const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+            if (!view) return;
+
+            // 1. 清理非当前 leaf 的废弃条目
+            const activeLeaf = view.leaf;
+            if (activeLeaf) {
+                for (const [v, wd] of this.widget._viewWidgets.entries()) {
+                    if (v === view || wd.isMobile) continue;
+                    if (v.leaf && v.leaf !== activeLeaf) {
+                        this.widget._unbindWidgetListeners(wd);
+                        this.widget._viewWidgets.delete(v);
+                    }
+                }
+            }
+
+            // 2. 当前 view 的 widget DOM 断开 → 重建
+            const wd = this.widget._viewWidgets.get(view);
+            if (wd && !wd.isMobile && wd.el && !wd.el.isConnected) {
+                this.widget._unbindWidgetListeners(wd);
+                this.widget._viewWidgets.delete(view);
+                this.widget.mountToView(view);
+            }
+
+            // 3. 当前 view 无 widget → 挂载
+            if (!this.widget._viewWidgets.has(view)) {
+                this.widget.mountToView(view);
+            }
+        };
+
+        // 等工作区布局就绪后启动引擎并挂载组件（确保 getActiveFile 不返回 null）
+        this.app.workspace.onLayoutReady(() => {
+            this.engine.init();
+            this.app.workspace.iterateAllLeaves((leaf) => {
+                if (leaf.view instanceof MarkdownView) {
+                    this.widget.mountToView(leaf.view);
+                }
+            });
+        });
+
+        // ✅ 添加 beforeunload 监听器（防止崩溃丢失数据）
+        // 使用 registerDomEvent 确保插件卸载时自动清理
+        this.registerDomEvent(window, 'beforeunload', () => {
+            if (this.engine._currentSession && this.engine._currentFilePath) {
+                try {
+                    const nowTimestamp = nowFullStr();
+                    this.engine._currentSession[nowTimestamp] = "saved";
+
+                    const record = this.store.getRecord(this.engine._currentFilePath);
+                    if (record) {
+                        if (!Array.isArray(record.readTimeLine)) {
+                            record.readTimeLine = [];
+                        }
+                        record.readTimeLine.push(this.engine._currentSession);
+                        record.currentSession = null;
+                    }
+
+                    this.engine._currentSession = null;
+                    console.log('[ReadTimeTracker] beforeunload 已保存当前会话');
+                } catch (err) {
+                    console.error('[ReadTimeTracker] beforeunload 保存失败:', err);
+                }
+            }
+        });
+
+        // 监听新打开的视图
+        this.registerEvent(this.app.workspace.on('active-leaf-change', (leaf) => {
+            if ((leaf ? leaf.view : null) instanceof MarkdownView) {
+                this.widget.mountToView(leaf.view);
+                // ✅ 切换标签页时刷新 Vault Today
+                this.widget.refreshAllVaultToday();
+            }
+        }));
+
+        // ✅ 监听文件打开（新标签页首次加载文件时 active-leaf-change 不一定再触发）
+        this.registerEvent(this.app.workspace.on('file-open', (file) => {
+            if (!file) return;
+            const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+            if (view) {
+                this.widget.mountToView(view);
+                // ✅ 打开文件时刷新 Vault Today
+                this.widget.refreshAllVaultToday();
+            }
+        }));
+
+        // 注册设置页
+        // ✅ 保存 settingTab 引用，供引擎使用
+        this.settingTab = new ReadTimeSettingTab(this.app, this);
+        this.addSettingTab(this.settingTab);
+
+        // 命令1：查看所有阅读记录
+        this.addCommand({
+            id: 'show-all-read-records',
+            name: t('cmdAllRecords'),
+            callback: () => {
+                new ReadRecordsModal(this.app, this.store, null, this.engine, this.settings).open();
+            }
+        });
+
+        // 命令2：查看当前/指定文件阅读记录
+        this.addCommand({
+            id: 'show-file-read-records',
+            name: t('cmdFileRecords'),
+            callback: () => {
+                const file = this.app.workspace.getActiveFile();
+                if (file) {
+                    new ReadRecordsModal(this.app, this.store, file.path, this.engine, this.settings).open();
+                } else {
+                    new ReadFilePickerModal(this.app, this.store, (filePath) => {
+                        new ReadRecordsModal(this.app, this.store, filePath, this.engine, this.settings).open();
+                    }).open();
+                }
+            }
+        });
+
+        // 命令3：手动保存阅读记录
+        this.addCommand({
+            id: 'manual-save-records',
+            name: t('manualSave'),
+            callback: async () => {
+                const confirmed = await new Promise((resolve) => {
+                    const modal = new Modal(this.app);
+                    modal.titleEl.setText(t('manualSave'));
+                    modal.contentEl.createDiv({ text: t('manualSaveConfirm') });
+                    const btnContainer = modal.contentEl.createDiv({ cls: 'modal-button-container' });
+                    btnContainer.createEl('button', { text: '取消' }).addEventListener('click', () => {
+                        modal.close();
+                        resolve(false);
+                    });
+                    btnContainer.createEl('button', { text: '确定', cls: 'mod-cta' }).addEventListener('click', () => {
+                        modal.close();
+                        resolve(true);
+                    });
+                    modal.open();
+                });
+
+                if (confirmed) {
+                    try {
+                        await this.engine.flushAll();
+                        // 清空所有计时器
+                        for (const record of this.engine.readingMap.values()) {
+                            record.seconds = 0;
+                        }
+                        new Notice(t('recordsSaved'));
+                    } catch (e) {
+                        console.error('[ReadTimeTracker] 手动保存失败:', e);
+                        new Notice('保存失败，请查看控制台日志');
+                    }
+                }
+            }
+        });
+
+        // 命令4：修复数据库（重新计算 totalReadTime 和 readTimeToday）
+        this.addCommand({
+            id: 'repair-database',
+            name: '🔧 修复数据库（重新计算时长）',
+            callback: async () => {
+                const confirmed = await new Promise((resolve) => {
+                    const modal = new Modal(this.app);
+                    modal.titleEl.setText('修复数据库');
+                    modal.contentEl.createDiv({ text: '将全面修复所有文件的阅读记录：纠正 totalSeconds（含暂停时长）、闭合缺失的 endTime、重算汇总时长。这可能需要几秒钟。确定继续？' });
+                    const btnContainer = modal.contentEl.createDiv({ cls: 'modal-button-container' });
+                    btnContainer.createEl('button', { text: '取消' }).addEventListener('click', () => {
+                        modal.close();
+                        resolve(false);
+                    });
+                    btnContainer.createEl('button', { text: '确定', cls: 'mod-cta' }).addEventListener('click', () => {
+                        modal.close();
+                        resolve(true);
+                    });
+                    modal.open();
+                });
+
+                if (confirmed) {
+                    try {
+                        const records = this.store.getAllRecords();
+                        let fixedFiles = 0;
+
+                        for (const [filePath, rec] of Object.entries(records)) {
+                            const readTimeLine = { ...(rec.readTimeLine || {}) };
+                            let sessionFixed = false;
+
+                            // ✅ 逐条修复 SessionDetail
+                            for (const [key, value] of Object.entries(readTimeLine)) {
+                                if (typeof value === 'number') continue; // 旧格式跳过，由 normalizeSessionEntry 处理
+
+                                // 1. 闭合缺失的 startTime
+                                if (!value.startTime) {
+                                    value.startTime = key;
+                                    sessionFixed = true;
+                                }
+
+                                // 2. 闭合缺失的 endTime（从 startTime + totalSeconds 推算）
+                                if (!value.endTime) {
+                                    const start = parseSessionStartTime(value.startTime || key);
+                                    if (start) {
+                                        const totalSec = value.totalSeconds || value.activeSeconds || 0;
+                                        let endMs = start.getTime() + totalSec * 1000;
+                                        // 暂停段结束时间若更晚则取之
+                                        const pausedRanges = value.pausedRanges || [];
+                                        const lastPauseEndMs = pausedRanges
+                                            .map(r => {
+                                                const endTime = parseSessionStartTime(r.end);
+                                                return endTime ? endTime.getTime() : null;
+                                            })
+                                            .filter(Boolean)
+                                            .sort((a, b) => a - b)
+                                            .pop();
+                                        if (lastPauseEndMs) endMs = Math.max(endMs, lastPauseEndMs);
+                                        value.endTime = formatLocalFull(new Date(endMs));
+                                        sessionFixed = true;
+                                    }
+                                }
+
+                                // 3. 纠正 totalSeconds：从 startTime 和 endTime 重算（墙上时钟）
+                                if (value.startTime && value.endTime) {
+                                    const startMs = (parseSessionStartTime(value.startTime) ? parseSessionStartTime(value.startTime).getTime() : null);
+                                    const endMs = (parseSessionStartTime(value.endTime) ? parseSessionStartTime(value.endTime).getTime() : null);
+                                    if (startMs && endMs && endMs > startMs) {
+                                        const correctTotal = Math.floor((endMs - startMs) / 1000);
+                                        if (Math.abs(correctTotal - (value.totalSeconds || 0)) > 2) {
+                                            console.log(`[ReadTimeTracker] 修复 totalSeconds ${filePath} ${key}: ${value.totalSeconds} -> ${correctTotal}`);
+                                            value.totalSeconds = correctTotal;
+                                            sessionFixed = true;
+                                        }
+                                    }
+                                }
+                            }
+
+                            // 4. 重算汇总值（使用共用方法）
+                            const { totalReadTime, readTimeToday } = this.engine._recalcAggregates(readTimeLine);
+                            if (rec.totalReadTime !== totalReadTime || rec.readTimeToday !== readTimeToday || sessionFixed) {
+                                await this.store.upsertRecord(filePath, {
+                                    readTimeLine,
+                                    totalReadTime,
+                                    readTimeToday
+                                });
+                                fixedFiles++;
+                                console.log(`[ReadTimeTracker] 修复 ${filePath}: totalReadTime ${rec.totalReadTime} -> ${totalReadTime}, readTimeToday ${rec.readTimeToday} -> ${readTimeToday}`);
+                            }
+                        }
+
+                        new Notice(`✅ 数据库修复完成，已修复 ${fixedFiles}/${Object.keys(records).length} 个文件`);
+                        console.log(`[ReadTimeTracker] 数据库修复完成: ${fixedFiles}/${Object.keys(records).length} 个文件已修复`);
+                    } catch (e) {
+                        console.error('[ReadTimeTracker] 数据库修复失败:', e);
+                        new Notice('❌ 修复失败，请查看控制台日志');
+                    }
+                }
+            }
+        });
+
+        // 命令5：重置（清空）数据库
+        this.addCommand({
+            id: 'reset-database',
+            name: '🗑️ 重置数据库（清空所有阅读记录）',
+            callback: async () => {
+                const confirmed = await new Promise((resolve) => {
+                    const modal = new Modal(this.app);
+                    modal.titleEl.setText('⚠️ 重置数据库');
+                    modal.contentEl.createDiv({ text: '此操作将清空所有文件的阅读记录，包括历史数据和当前计时。操作不可撤销，确定继续？' });
+                    const btnContainer = modal.contentEl.createDiv({ cls: 'modal-button-container' });
+                    btnContainer.createEl('button', { text: '取消' }).addEventListener('click', () => {
+                        modal.close();
+                        resolve(false);
+                    });
+                    const confirmBtn = btnContainer.createEl('button', { text: '确认清空', cls: 'mod-warning' });
+                    confirmBtn.addEventListener('click', () => {
+                        modal.close();
+                        resolve(true);
+                    });
+                    modal.open();
+                });
+
+                if (confirmed) {
+                    try {
+                        // 1. 停止计时引擎，刷盘后清空内存状态
+                        this.engine._stopTicker();
+                        this.engine.currentPath = null;
+                        this.engine.readingMap.clear();
+
+                        // 2. 清空持久化数据
+                        if (!this.store._cache) await this.store.load();
+                        this.store._cache.records = {};
+                        await this.store.save();
+
+                        // 3. 重置引擎状态
+                        this.engine._leafStates.clear();
+
+                        new Notice('✅ 数据库已重置，所有阅读记录已清空');
+                        console.log('[ReadTimeTracker] 数据库已重置');
+                    } catch (e) {
+                        console.error('[ReadTimeTracker] 重置数据库失败:', e);
+                        new Notice('❌ 重置失败，请查看控制台日志');
+                    }
+                }
+            }
+        });
+
+        console.log('[ReadTimeTracker] 插件已加载 v1.0.0 - Documents Activity Tracker');
+    }
+
+    async onunload() {
+        console.log('[ReadTimeTracker] 开始卸载插件...');
+
+        // 1. 停止引擎（保存当前会话、清理定时器）
+        if (this.engine && this.engine.destroy) {
+            await this.engine.destroy();
+        }
+
+        // 2. 卸载所有 widget DOM
+        if (this.widget && this.widget.unmountAll) {
+            this.widget.unmountAll();
+        }
+
+        // 3. 清理定时器（如果 engine.destroy 没有清理）
+        if (this.engine && this.engine._tickInterval) {
+            clearInterval(this.engine._tickInterval);
+            this.engine._tickInterval = null;
+        }
+
+        // 4. 清理事件监听器
+        if (this.engine && this.engine.activeLeaf) {
+            this.engine.activeLeaf = null;
+        }
+
+        console.log('[ReadTimeTracker] 插件已卸载');
+    }
+
+    // ✅ 自动开始模式配置（从 SettingTab 迁移到主类，供引擎直接调用）
+    getAutoStartModes() {
+        return {
+            'always':      { label: t('autoStartAlways'),    startOnOpen: true,  resumeOnReturn: true },
+            'start-only':  { label: t('autoStartStartOnly'), startOnOpen: true,  resumeOnReturn: false },
+            'return-only': { label: t('autoStartReturnOnly'),startOnOpen: false, resumeOnReturn: true },
+            'manual':      { label: t('autoStartManual'),    startOnOpen: false, resumeOnReturn: false }
+        };
+    }
+
+    getAutoStartConfig(mode) {
+        const modes = this.getAutoStartModes();
+        return modes[mode] || modes['manual'];
+    }
+
+    async saveSettings() {
+        const current = (await this.loadData()) || {};
+        current.settings = this.settings;
+        await this.saveData(current);
+    }
+
+    // ── 对外 API（供 DataviewJS 脚本调用）─────────────────────────
+
+    /** 打开指定文件的阅读记录 Modal */
+    showFileRecords(filePath) {
+        new ReadRecordsModal(this.app, this.store, filePath, this.engine, this.settings).open();
+    }
+
+    /** 获取指定文件的阅读记录数据 */
+    getRecord(filePath) {
+        return this.store.getRecord(filePath);
+    }
+
+    /** 获取所有阅读记录 */
+    getAllRecords() {
+        return this.store.getAllRecords();
+    }
+}
+
+module.exports = ReadTimeTrackerPlugin;
+

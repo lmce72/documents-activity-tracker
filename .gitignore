@@ -1,0 +1,24 @@
+# Development files
+*.backup
+*.tmp
+*.log
+
+# Test data
+data.json
+
+# Node modules (if any)
+node_modules/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+dist/
+build/

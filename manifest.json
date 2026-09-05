@@ -1,0 +1,9 @@
+{
+  "id": "documents-activity-tracker",
+  "name": "Documents Activity Tracker",
+  "version": "1.0.1",
+  "minAppVersion": "1.7.2",
+  "description": "跟踪每个文档的使用时间，支持按会话记录与时间轴查看。",
+  "author": "PrimeCore",
+  "isDesktopOnly": false
+}
