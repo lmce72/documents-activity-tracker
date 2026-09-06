@@ -740,13 +740,16 @@
 .rtt-heatmap-detail-dur { color: var(--text-accent); }
 
 /* 热力图详情面板：文件列表 (table 布局) */
+.rtt-heatmap-files-wrap {
+    max-height: 300px;
+    overflow-y: auto;
+    margin-top: 6px;
+}
+
 .rtt-heatmap-files {
     width: 100%;
     border-collapse: collapse;
-    margin-top: 6px;
-    max-height: 300px;
-    overflow-y: auto;
-    display: block;
+    display: table;
     table-layout: auto;  /* 自适应列宽 */
 }
 
@@ -769,7 +772,7 @@
 }
 
 .rtt-heatmap-row td {
-    white-space: nowrap;  /* 单元格内容不换行 */
+    white-space: normal;  /* ✅ 允许内容换行（状态序列分行显示） */
     padding: 8px;
 }
 
@@ -905,24 +908,25 @@
 /* 全尺寸内容容器 - 使用 Grid 两行布局 */
 .rtt-widget-mobile > .rtt-full-content {
     display: grid;
-    grid-template-columns: repeat(3, auto);  /* 前三段：开始时间、计时、今日总计 */
+    grid-template-columns: repeat(4, auto);  /* ✅ 四段：开始时间、今日第n轮、File Today、Vault Today */
     grid-template-rows: auto auto;  /* 两行 */
     gap: 8px 10px;
     align-items: center;
     width: 100%;
 }
 
-/* 第一行：前三个 section */
+/* 第一行：前四个 section（Started、今日第n轮、File Today、Vault Today） */
 .rtt-widget-mobile > .rtt-full-content > .rtt-section:nth-child(1),
 .rtt-widget-mobile > .rtt-full-content > .rtt-section:nth-child(2),
-.rtt-widget-mobile > .rtt-full-content > .rtt-section:nth-child(3) {
+.rtt-widget-mobile > .rtt-full-content > .rtt-section:nth-child(3),
+.rtt-widget-mobile > .rtt-full-content > .rtt-section:nth-child(4) {
     grid-row: 1;
 }
 
 /* 第二行：按钮组、关闭拖动按钮、收缩按钮 */
-.rtt-widget-mobile > .rtt-full-content > .rtt-section:nth-child(4),
 .rtt-widget-mobile > .rtt-full-content > .rtt-section:nth-child(5),
-.rtt-widget-mobile > .rtt-full-content > .rtt-section:nth-child(6) {
+.rtt-widget-mobile > .rtt-full-content > .rtt-section:nth-child(6),
+.rtt-widget-mobile > .rtt-full-content > .rtt-section:nth-child(7) {
     grid-row: 2;
 }
 
@@ -934,33 +938,44 @@
     }
 
     .rtt-widget-mobile > .rtt-full-content {
-        grid-template-columns: repeat(2, 1fr);  /* 改为两列 */
+        grid-template-columns: repeat(2, 1fr);  /* 两列 */
         gap: 6px 8px;
     }
 
-    /* 小屏幕下，前两个在第一行 */
-    .rtt-widget-mobile > .rtt-full-content > .rtt-section:nth-child(1),
-    .rtt-widget-mobile > .rtt-full-content > .rtt-section:nth-child(2) {
+    /* ✅ 第一行：Started 独占 */
+    .rtt-widget-mobile > .rtt-full-content > .rtt-section:nth-child(1) {
         grid-row: 1;
-    }
-
-    /* 第三个独占第二行 */
-    .rtt-widget-mobile > .rtt-full-content > .rtt-section:nth-child(3) {
-        grid-row: 2;
         grid-column: 1 / -1;
     }
 
-    /* 按钮组第三行 */
+    /* ✅ 第二行：今日第n轮 在左，File Today 在右 */
+    .rtt-widget-mobile > .rtt-full-content > .rtt-section:nth-child(2) {
+        grid-row: 2;
+        grid-column: 1;
+    }
+
+    .rtt-widget-mobile > .rtt-full-content > .rtt-section:nth-child(3) {
+        grid-row: 2;
+        grid-column: 2;
+    }
+
+    /* ✅ 第三行：Vault Today 独占 */
     .rtt-widget-mobile > .rtt-full-content > .rtt-section:nth-child(4) {
         grid-row: 3;
+        grid-column: 1 / -1;
+    }
+
+    /* 按钮组第四行 */
+    .rtt-widget-mobile > .rtt-full-content > .rtt-section:nth-child(5) {
+        grid-row: 4;
         grid-column: 1 / -1;
         justify-self: center;
     }
 
-    /* 控制按钮第四行 */
-    .rtt-widget-mobile > .rtt-full-content > .rtt-section:nth-child(5),
-    .rtt-widget-mobile > .rtt-full-content > .rtt-section:nth-child(6) {
-        grid-row: 4;
+    /* 控制按钮第五行 */
+    .rtt-widget-mobile > .rtt-full-content > .rtt-section:nth-child(6),
+    .rtt-widget-mobile > .rtt-full-content > .rtt-section:nth-child(7) {
+        grid-row: 5;
     }
 }
 
@@ -1400,6 +1415,21 @@
     margin-top: 4px;
 }
 
+/* 切换文件行样式（callout 背景色） */
+.rtt-switch-row {
+    background-color: var(--background-secondary);
+    border-left: 3px solid var(--text-accent);
+}
+
+.rtt-switch-row .rtt-timeline-icon {
+    color: var(--text-accent);
+}
+
+.rtt-switch-row .rtt-timeline-state {
+    font-weight: 500;
+    color: var(--text-normal);
+}
+
 .rtt-saved-text {
     color: var(--text-muted);
     font-size: 12px;
@@ -1463,5 +1493,177 @@
     .rtt-timeline-icon svg {
         width: 14px;
         height: 14px;
+    }
+}
+
+/* ============================================================================
+   状态序列样式（全局时间轴 v2）
+   ============================================================================ */
+
+/* 状态序列容器 */
+.rtt-state-sequence {
+    display: flex;
+    flex-direction: column;  /* ✅ 每个状态独占一行 */
+    align-items: flex-start;
+    gap: 4px;
+}
+
+.rtt-state-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.rtt-state-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    color: var(--text-muted);
+}
+
+.rtt-state-icon svg {
+    width: 16px;
+    height: 16px;
+}
+
+.rtt-state-arrow {
+    color: var(--text-muted);
+    font-size: 12px;
+    user-select: none;
+}
+
+/* 热力图详情统计汇总行（4列布局） */
+.rtt-heatmap-summary {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+    padding: 12px 16px;
+    margin-top: 8px;
+    border-top: 2px solid var(--background-modifier-border);
+    background: var(--background-secondary);
+}
+
+.rtt-heatmap-summary .rtt-summary-col {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+}
+
+.rtt-heatmap-summary .rtt-summary-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    color: var(--text-muted);
+}
+
+.rtt-heatmap-summary .rtt-summary-text {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-normal);
+}
+
+/* 移动端适配：状态序列 */
+@media (max-width: 600px) {
+    .rtt-state-sequence {
+        gap: 2px;
+    }
+
+    .rtt-state-icon {
+        width: 14px;
+        height: 14px;
+    }
+
+    .rtt-state-icon svg {
+        width: 14px;
+        height: 14px;
+    }
+
+    .rtt-state-arrow {
+        font-size: 10px;
+    }
+
+    .rtt-heatmap-summary {
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+        padding: 8px 12px;
+    }
+
+    .rtt-heatmap-summary .rtt-summary-text {
+        font-size: 11px;
+    }
+}
+
+/* ========================================
+   状态链路渲染统一样式
+   Unified State Chain Rendering Styles
+   ======================================== */
+
+/* 切换事件高亮样式 - Switch event highlight style */
+.rtt-state-row.rtt-switch-event {
+    background-color: var(--background-modifier-info);
+    border-left: 3px solid var(--interactive-accent);
+    padding-left: 8px;
+    border-radius: 4px;
+    margin: 2px 0;
+}
+
+/* 两图标容器 - Two icons container */
+.rtt-icon-double {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.rtt-icon-item {
+    display: inline-flex;
+}
+
+/* 状态序列预览（detail 弹窗中）- State sequence preview (in detail popup) */
+.rtt-state-preview {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+    padding: 8px 12px;
+    background-color: var(--background-secondary);
+    border-radius: 6px;
+}
+
+.rtt-state-preview-label {
+    font-size: 0.9em;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+
+.rtt-state-preview .rtt-state-sequence {
+    display: flex;
+    flex-direction: row; /* 横向排列 - Horizontal layout */
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.rtt-state-preview .rtt-state-row {
+    margin: 0;
+}
+
+/* 移动端适配：状态预览 - Mobile adaptation: state preview */
+@media (max-width: 600px) {
+    .rtt-state-preview {
+        padding: 6px 10px;
+        gap: 6px;
+        margin-bottom: 10px;
+    }
+
+    .rtt-state-preview-label {
+        font-size: 0.85em;
+    }
+
+    .rtt-state-preview .rtt-state-sequence {
+        gap: 4px;
     }
 }
