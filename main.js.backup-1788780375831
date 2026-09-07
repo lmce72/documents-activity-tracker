@@ -540,15 +540,10 @@ class ReadTimeStore {
      * @param {Array} timeline - 全局时间轴事件数组
      */
     async saveTimeline(timeline) {
-        try {
         if (!this._cache) this._cache = { records: {}, settings: {} };
         this._cache.timeline = timeline;
         this._cache.version = 2;
         await this.save();
-        } catch (error) {
-            console.error("[ReadTimeTracker] saveTimeline 失败:", error);
-            throw error; // Re-throw to allow caller to handle
-        }
     }
 
     /**
@@ -6024,7 +6019,6 @@ class ReadTimeTrackerPlugin extends Plugin {
     }
 
     async onunload() {
-        try {
         console.log('[ReadTimeTracker] 开始卸载插件...');
 
         // ✅ 移除移动端 pagehide 监听器
@@ -6055,9 +6049,6 @@ class ReadTimeTrackerPlugin extends Plugin {
 
         console.log('[ReadTimeTracker] 插件已卸载');
     }
-        } catch (error) {
-            console.error("[ReadTimeTracker] onunload 清理失败:", error);
-        }
 
     // ✅ 自动开始模式配置（从 SettingTab 迁移到主类，供引擎直接调用）
     getAutoStartModes() {
@@ -6075,14 +6066,9 @@ class ReadTimeTrackerPlugin extends Plugin {
     }
 
     async saveSettings() {
-        try {
         const current = (await this.loadData()) || {};
         current.settings = this.settings;
         await this.saveData(current);
-        } catch (error) {
-            console.error("[ReadTimeTracker] saveSettings 失败:", error);
-            new Notice("保存设置失败，请检查控制台");
-        }
     }
 
     // ── 对外 API（供 DataviewJS 脚本调用）─────────────────────────
