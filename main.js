@@ -624,14 +624,14 @@ class ReadTimeStore {
      */
     async upsertRecord(filePath, data) {
         try {
-        if (!this._cache) await this.load();
-        this._cache.records[filePath] = { ...this._cache.records[filePath], ...data };
-        await this.save();
-    }
+            if (!this._cache) await this.load();
+            this._cache.records[filePath] = { ...this._cache.records[filePath], ...data };
+            await this.save();
         } catch (error) {
             console.error(`[ReadTimeTracker] upsertRecord 失败 (${filePath}):`, error);
             throw error; // Re-throw to allow caller to handle
         }
+    }
 
     /**
      * 重建内存索引（日期索引 + 文件索引）
@@ -962,14 +962,13 @@ class ReadTimeEngine {
             await this.flushAll();
             this.readingMap.clear();
             console.log('[ReadTimeTracker] ⏹ 计时引擎已停止');
-    }
         } catch (error) {
             console.error("[ReadTimeTracker] destroy 失败:", error);
             // 继续清理流程，不抛出异常 / Continue cleanup, don't throw
         }
+    }
 
     async _bindToFile(filePath, leaf) {
-        }
         const bindSeq = ++this._bindSeq;
         this._unbindDomEvents();
 
@@ -1316,11 +1315,11 @@ class ReadTimeEngine {
         }
 
         this._bindToFile(newFilePath, leaf);
-    }
         } catch (error) {
             console.error("[ReadTimeTracker] _onActiveLeafChange 失败:", error);
             // 标签页切换失败时保持当前状态 / Keep current state on tab switch failure
         }
+    }
 
     _onAppQuit() {
         try {
@@ -2152,11 +2151,11 @@ class ReadTimeEngine {
         if (this.onRefreshAllCallback) {
             this.onRefreshAllCallback();
         }
-    }
         } catch (error) {
             console.error(`[ReadTimeTracker] discardCurrentSession 失败 (${filePath}):`, error);
             throw error; // Re-throw as discard failure should be handled by caller
         }
+    }
 
     /** 手动切换暂停/继续，返回最新 isPaused 状态 */
     togglePause() {
@@ -2317,10 +2316,10 @@ class ReadTimeEngine {
         // Clear current session state (wait for user to open file)
         this.currentFile = null;
         this.currentState = null;
-    }
         } catch (error) {
             console.error("[ReadTimeTracker] _recoverUnfinishedSessions 失败:", error);
             // 恢复失败不影响新会话启动 / Recovery failure doesn't affect new session start
+    }
         }
 
     /**
@@ -6080,9 +6079,9 @@ class ReadTimeTrackerPlugin extends Plugin {
             }
 
             console.log('[ReadTimeTracker] 插件已卸载');
-    }
         } catch (error) {
             console.error("[ReadTimeTracker] onunload 清理失败:", error);
+    }
         }
 
     // ✅ 自动开始模式配置（从 SettingTab 迁移到主类，供引擎直接调用）
