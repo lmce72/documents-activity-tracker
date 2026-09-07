@@ -938,37 +938,36 @@ class ReadTimeEngine {
     }
 
     async destroy() {
-        try {
-            this._stopTicker();
-            this._unbindDomEvents();
-            window.removeEventListener('focus', this._onWindowFocus);
-            window.removeEventListener('blur', this._onWindowBlur);
-            // ✅ 移除 visibilitychange 监听器，防止内存泄漏
-            if (this._onVisibilityChange) {
+        this._stopTicker();
+        this._unbindDomEvents();
+        window.removeEventListener('focus', this._onWindowFocus);
+        window.removeEventListener('blur', this._onWindowBlur);
+        // ✅ 移除 visibilitychange 监听器，防止内存泄漏
+        if (this._onVisibilityChange) {
             document.removeEventListener('visibilitychange', this._onVisibilityChange);
             this._onVisibilityChange = null;
-            }
-            for (const win of this._openWindows) {
+        }
+        for (const win of this._openWindows) {
             win.removeEventListener('focus', this._onWindowFocus);
             win.removeEventListener('blur', this._onWindowBlur);
-            }
-            this._openWindows.clear();
-            this._leafStates.clear();
-            this.activeLeaf = null;
-            for (const ref of this._eventRefs) {
-            this.app.workspace.offref(ref);
-            }
-            this._eventRefs = [];
-            await this.flushAll();
-            this.readingMap.clear();
-            console.log('[ReadTimeTracker] ⏹ 计时引擎已停止');
-    }
-        } catch (error) {
-            console.error("[ReadTimeTracker] destroy 失败:", error);
-            // 继续清理流程，不抛出异常 / Continue cleanup, don't throw
         }
+        this._openWindows.clear();
+        this._leafStates.clear();
+        this.activeLeaf = null;
+        for (const ref of this._eventRefs) {
+            this.app.workspace.offref(ref);
+        }
+        this._eventRefs = [];
+        await this.flushAll();
+        this.readingMap.clear();
+        console.log('[ReadTimeTracker] ⏹ 计时引擎已停止');
+    }
 
     async _bindToFile(filePath, leaf) {
+        try {
+        } catch (error) {
+            console.error(`[ReadTimeTracker] _bindToFile 失败 (${filePath}):`, error);
+            // 绑定失败不影响其他功能 / Binding failure doesn't affect other features
         }
         const bindSeq = ++this._bindSeq;
         this._unbindDomEvents();
@@ -6051,35 +6050,35 @@ class ReadTimeTrackerPlugin extends Plugin {
 
     async onunload() {
         try {
-            console.log('[ReadTimeTracker] 开始卸载插件...');
+        console.log('[ReadTimeTracker] 开始卸载插件...');
 
-            // ✅ 移除移动端 pagehide 监听器
-            if (this.engine && this.app.isMobile && this.engine._onPageHide) {
+        // ✅ 移除移动端 pagehide 监听器
+        if (this.engine && this.app.isMobile && this.engine._onPageHide) {
             window.removeEventListener('pagehide', this.engine._onPageHide);
-            }
+        }
 
-            // 1. 停止引擎（保存当前会话、清理定时器）
-            if (this.engine && this.engine.destroy) {
+        // 1. 停止引擎（保存当前会话、清理定时器）
+        if (this.engine && this.engine.destroy) {
             await this.engine.destroy();
-            }
+        }
 
-            // 2. 卸载所有 widget DOM
-            if (this.widget && this.widget.unmountAll) {
+        // 2. 卸载所有 widget DOM
+        if (this.widget && this.widget.unmountAll) {
             this.widget.unmountAll();
-            }
+        }
 
-            // 3. 清理定时器（如果 engine.destroy 没有清理）
-            if (this.engine && this.engine._tickInterval) {
+        // 3. 清理定时器（如果 engine.destroy 没有清理）
+        if (this.engine && this.engine._tickInterval) {
             clearInterval(this.engine._tickInterval);
             this.engine._tickInterval = null;
-            }
+        }
 
-            // 4. 清理事件监听器
-            if (this.engine && this.engine.activeLeaf) {
+        // 4. 清理事件监听器
+        if (this.engine && this.engine.activeLeaf) {
             this.engine.activeLeaf = null;
-            }
+        }
 
-            console.log('[ReadTimeTracker] 插件已卸载');
+        console.log('[ReadTimeTracker] 插件已卸载');
     }
         } catch (error) {
             console.error("[ReadTimeTracker] onunload 清理失败:", error);
