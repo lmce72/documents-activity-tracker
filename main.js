@@ -760,11 +760,18 @@ class ReadTimeEngine {
                     // Stop timer accumulation, but don't change currentState
                     this._lastTickTime = null;
                     console.log(`[ReadTimeTracker] 记录 blur 事件: ${this.currentFile}, 状态保持为 ${this.currentState}`);
+
+                    // ✅ 窗口失焦时保存时间轴（防止数据丢失）
+                    // Save timeline when window loses focus (prevent data loss)
+                    this.store.saveTimeline(this.timeline).catch(e =>
+                        console.error('[ReadTimeTracker] 失焦时保存时间轴失败:', e)
+                    );
                 }
 
-                // 移动端：触发刷盘
+                // 移动端额外触发 flushAll（完整保存）
+                // Mobile additionally triggers flushAll (complete save)
                 if (this.app.isMobile) {
-                    console.log('[ReadTimeTracker] 移动端应用进入后台，触发刷盘');
+                    console.log('[ReadTimeTracker] 移动端应用进入后台，触发完整刷盘');
                     this.flushAll().catch(e => console.error('[ReadTimeTracker] 移动端刷盘失败:', e));
                 }
             } else {
@@ -793,6 +800,33 @@ class ReadTimeEngine {
             }
         };
         document.addEventListener('visibilitychange', this._onVisibilityChange);
+
+        // ✅ 移动端额外监听 pagehide 事件（进入多任务/后台时触发）
+        // Mobile additionally listens to pagehide event (triggered when entering multitask/background)
+        if (this.app.isMobile) {
+            this._onPageHide = () => {
+                console.log('[ReadTimeTracker] 移动端 pagehide 触发，保存数据');
+                // 同步保存时间轴和所有会话
+                if (this.currentFile && this.currentState) {
+                    this.timeline.push({
+                        time: nowFullStr(),
+                        type: "blur",
+                        file: this.currentFile,
+                        state: this.currentState,
+                        reason: "mobile-pagehide"
+                    });
+                }
+                // 同步保存，不能用 async
+                try {
+                    this.store.saveTimeline(this.timeline);
+                    this.flushAll();
+                } catch (e) {
+                    console.error('[ReadTimeTracker] pagehide 保存失败:', e);
+                }
+            };
+            window.addEventListener('pagehide', this._onPageHide);
+            console.log('[ReadTimeTracker] 已添加移动端 pagehide 监听器');
+        }
 
         // ✅ window-open 首参为 WorkspaceWindow（非 DOM Window），需用第二参数获取原生 window
         const refWinOpen = this.app.workspace.on('window-open', (workspaceWindow, win) => {
@@ -2157,7 +2191,10 @@ class ReadTimeEngine {
     }
 
     /**
-     * ✅ 新增：恢复未完成的会话（启动时调用）
+     * ✅ 恢复未完成的会话（启动时调用）
+     * ⚠️ 不自动闭合会话，避免同步冲突
+     * Recover unfinished sessions (called on startup)
+     * ⚠️ Do not auto-close sessions to avoid sync conflicts
      */
     async _recoverUnfinishedSessions() {
         // 1. 检查全局时间轴最后一个事件
@@ -2169,26 +2206,17 @@ class ReadTimeEngine {
         if (lastEvent.state !== 'saved' && lastEvent.type !== 'discard') {
             const filePath = lastEvent.file || lastEvent.to;
 
-            // 添加 save 事件闭合未完成会话
-            this.timeline.push({
-                time: nowFullStr(),
-                type: "save",
-                file: filePath,
-                state: "saved"
-            });
-
-            this._allowWrite = true;
-            try {
-                await this.store.saveTimeline(this.timeline);
-                console.log(`[ReadTimeTracker] 已恢复未完成会话: ${filePath}`);
-            } catch (err) {
-                console.error('[ReadTimeTracker] 恢复未完成会话失败:', err);
-            } finally {
-                this._allowWrite = false;
-            }
+            // ⚠️ 不再自动添加 save 事件！
+            // 原因：插件启动时修改历史记录会导致同步冲突
+            // 让用户在打开文件时自然恢复会话
+            // ⚠️ No longer auto-add save event!
+            // Reason: Modifying history on plugin startup causes sync conflicts
+            // Let user naturally recover session when opening the file
+            console.log(`[ReadTimeTracker] 检测到未完成会话: ${filePath}，将在打开文件时恢复`);
         }
 
-        // 3. 清空当前会话状态
+        // 3. 清空当前会话状态（等待用户打开文件）
+        // Clear current session state (wait for user to open file)
         this.currentFile = null;
         this.currentState = null;
     }
@@ -5828,6 +5856,11 @@ class ReadTimeTrackerPlugin extends Plugin {
 
     async onunload() {
         console.log('[ReadTimeTracker] 开始卸载插件...');
+
+        // ✅ 移除移动端 pagehide 监听器
+        if (this.engine && this.app.isMobile && this.engine._onPageHide) {
+            window.removeEventListener('pagehide', this.engine._onPageHide);
+        }
 
         // 1. 停止引擎（保存当前会话、清理定时器）
         if (this.engine && this.engine.destroy) {
