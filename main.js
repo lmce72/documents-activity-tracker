@@ -4658,6 +4658,13 @@ class ReadRecordsModal extends Modal {
         const timeline = this.engine.timeline || [];
         const fileRecords = {};
 
+        if (timeline.length === 0) {
+            console.log('[ReadRecordsModal] 时间轴为空');
+            return fileRecords;
+        }
+
+        console.log(`[ReadRecordsModal] 从时间轴构建记录，事件总数: ${timeline.length}`);
+
         // 按文件分组会话
         const fileSessions = {};
 
@@ -4666,38 +4673,46 @@ class ReadRecordsModal extends Modal {
             const filePath = event.file || event.to;
             if (!filePath) continue;
 
-            if (event.type === 'start' && event.file) {
-                // 开启新会话
-                if (currentSession && currentSession.filePath === filePath) {
-                    // 同一个文件，关闭旧会话（可能是未闭合的）
-                    if (!fileSessions[filePath]) fileSessions[filePath] = [];
-                    fileSessions[filePath].push(currentSession);
+            // ✅ 修复：任何 start 事件都应该开启新会话
+            if (event.type === 'start') {
+                // 如果有未闭合的会话，先保存
+                if (currentSession) {
+                    if (!fileSessions[currentSession.filePath]) fileSessions[currentSession.filePath] = [];
+                    fileSessions[currentSession.filePath].push(currentSession);
                 }
+                // 开启新会话
                 currentSession = {
-                    filePath,
+                    filePath: event.file,
                     events: [event]
                 };
-            } else if (currentSession && (event.file === currentSession.filePath || event.to === currentSession.filePath)) {
+            } else if (currentSession) {
                 // 添加事件到当前会话
-                currentSession.events.push(event);
+                if (event.file === currentSession.filePath || event.to === currentSession.filePath) {
+                    currentSession.events.push(event);
+                }
 
                 // 如果是 save/discard，闭合会话
-                if ((event.type === 'save' || event.type === 'discard') && event.file === currentSession.filePath) {
-                    if (!fileSessions[currentSession.filePath]) fileSessions[currentSession.filePath] = [];
-                    // ✅ 已丢弃的会话不保留在记录中
-                    if (event.type === 'save') {
-                        fileSessions[currentSession.filePath].push(currentSession);
+                if (event.type === 'save' || event.type === 'discard') {
+                    if (event.file === currentSession.filePath) {
+                        if (!fileSessions[currentSession.filePath]) fileSessions[currentSession.filePath] = [];
+                        // ✅ 只保留 save 的会话
+                        if (event.type === 'save') {
+                            fileSessions[currentSession.filePath].push(currentSession);
+                        }
+                        currentSession = null;
                     }
-                    currentSession = null;
                 }
             }
         }
 
-        // 处理未闭合的会话
+        // 处理未闭合的会话（包含当前正在计时的会话）
         if (currentSession) {
             if (!fileSessions[currentSession.filePath]) fileSessions[currentSession.filePath] = [];
             fileSessions[currentSession.filePath].push(currentSession);
+            console.log(`[ReadRecordsModal] 包含未闭合会话: ${currentSession.filePath}`);
         }
+
+        console.log(`[ReadRecordsModal] 文件会话统计:`, Object.keys(fileSessions).map(fp => `${fp}: ${fileSessions[fp].length}个会话`));
 
         // ✅ 为每个文件构建兼容旧格式的记录
         for (const [filePath, sessions] of Object.entries(fileSessions)) {
@@ -4907,6 +4922,11 @@ class ReadRecordsModal extends Modal {
         const nextBtn = nav.createEl('button', { cls: 'rtt-nav-btn' });
         setIcon(nextBtn, 'chevron-right');
 
+        // ✅ 添加刷新按钮（日期控件右侧）
+        const refreshBtn = nav.createEl('button', { cls: 'rtt-nav-btn rtt-refresh-btn' });
+        setIcon(refreshBtn, 'refresh-cw');
+        refreshBtn.setAttribute('title', '刷新数据 / Refresh data');
+
         // 统计卡片（当日时长 / 当日轮数 / 本周时长）— 日期切换器下方
         const statsBar = contentEl.createDiv({ cls: 'rtt-stats-bar' });
 
@@ -5056,6 +5076,16 @@ class ReadRecordsModal extends Modal {
                 // 输入的日期不存在，恢复当前日期
                 dateInput.value = allDays[currentDayIdx] || '';
             }
+        });
+
+        // ✅ 刷新按钮事件：重新获取数据并渲染
+        refreshBtn.addEventListener('click', async () => {
+            console.log('[ReadRecordsModal] 刷新数据...');
+            // 关闭当前 modal 并重新打开
+            this.close();
+            // 延迟 100ms 确保关闭动画完成
+            await new Promise(resolve => setTimeout(resolve, 100));
+            new ReadRecordsModal(this.app, this.store, this.filterPath, this.engine, this.settings).open();
         });
 
         // ✅ 初始渲染（仅当有数据时才移除原有代码）
