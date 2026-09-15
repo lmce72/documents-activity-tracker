@@ -1,0 +1,269 @@
+/* ============================================================
+   移动端浮动组件
+   ============================================================ */
+
+.rtt-widget-mobile {
+    position: fixed !important;
+    top: 130px !important;  /* 初始位置，实际由 JS 动态计算 */
+    left: 50% !important;
+    transform: translateX(-50%) !important;
+    z-index: 50 !important;
+
+    /* 视觉样式 */
+    background: var(--background-primary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 12px;
+    padding: 10px 14px;
+    box-shadow:
+        0 4px 12px rgba(0, 0, 0, 0.1),
+        0 0 0 1px rgba(0, 0, 0, 0.05);
+
+    /* 响应式宽度（完整状态） */
+    width: auto;
+    min-width: min-content;
+    max-width: 95vw;  /* 限制最大宽度为视口 95% */
+
+    /* Flexbox 布局替代 Grid，更灵活 */
+    display: flex !important;
+    flex-wrap: wrap;  /* 允许换行 */
+    gap: 8px 10px;
+    align-items: center;
+    justify-content: flex-start;
+
+    /* 触摸优化 */
+    -webkit-tap-highlight-color: transparent;
+    touch-action: none;  /* 防止浏览器默认触摸行为干扰拖动 */
+
+    /* 过渡动画 */
+    transition: all 0.3s ease;
+}
+
+/* 全尺寸内容容器 - 使用 Grid 两行布局 */
+.rtt-widget-mobile > .rtt-full-content {
+    display: grid;
+    grid-template-columns: repeat(4, auto);  /* ✅ 四段：开始时间、今日第n轮、File Today、Vault Today */
+    grid-template-rows: auto auto;  /* 两行 */
+    gap: 8px 10px;
+    align-items: center;
+    width: 100%;
+}
+
+/* 第一行：前四个 section（Started、今日第n轮、File Today、Vault Today） */
+.rtt-widget-mobile > .rtt-full-content > .rtt-section:nth-child(1),
+.rtt-widget-mobile > .rtt-full-content > .rtt-section:nth-child(2),
+.rtt-widget-mobile > .rtt-full-content > .rtt-section:nth-child(3),
+.rtt-widget-mobile > .rtt-full-content > .rtt-section:nth-child(4) {
+    grid-row: 1;
+}
+
+/* 第二行：按钮组、关闭拖动按钮、收缩按钮 */
+.rtt-widget-mobile > .rtt-full-content > .rtt-section:nth-child(5),
+.rtt-widget-mobile > .rtt-full-content > .rtt-section:nth-child(6),
+.rtt-widget-mobile > .rtt-full-content > .rtt-section:nth-child(7) {
+    grid-row: 2;
+}
+
+/* 小屏幕响应式：单列布局 */
+@media (max-width: 400px) {
+    .rtt-widget-mobile {
+        max-width: 98vw;
+        padding: 8px 10px;
+    }
+
+    .rtt-widget-mobile > .rtt-full-content {
+        grid-template-columns: repeat(2, 1fr);  /* 两列 */
+        gap: 6px 8px;
+    }
+
+    /* ✅ 第一行：Started 独占 */
+    .rtt-widget-mobile > .rtt-full-content > .rtt-section:nth-child(1) {
+        grid-row: 1;
+        grid-column: 1 / -1;
+    }
+
+    /* ✅ 第二行：今日第n轮 在左，File Today 在右 */
+    .rtt-widget-mobile > .rtt-full-content > .rtt-section:nth-child(2) {
+        grid-row: 2;
+        grid-column: 1;
+    }
+
+    .rtt-widget-mobile > .rtt-full-content > .rtt-section:nth-child(3) {
+        grid-row: 2;
+        grid-column: 2;
+    }
+
+    /* ✅ 第三行：Vault Today 独占 */
+    .rtt-widget-mobile > .rtt-full-content > .rtt-section:nth-child(4) {
+        grid-row: 3;
+        grid-column: 1 / -1;
+    }
+
+    /* 按钮组第四行 */
+    .rtt-widget-mobile > .rtt-full-content > .rtt-section:nth-child(5) {
+        grid-row: 4;
+        grid-column: 1 / -1;
+        justify-self: center;
+    }
+
+    /* 控制按钮第五行 */
+    .rtt-widget-mobile > .rtt-full-content > .rtt-section:nth-child(6),
+    .rtt-widget-mobile > .rtt-full-content > .rtt-section:nth-child(7) {
+        grid-row: 5;
+    }
+}
+
+/* ========== 收缩状态布局 ========== */
+
+/* 移动端组件隐藏状态 */
+.rtt-widget-mobile.rtt-widget-hidden {
+    display: none !important;
+}
+
+/* 桌面端全尺寸布局容器 - 横向 flex 布局 */
+.rtt-widget > .rtt-full-content {
+    display: flex;
+    align-items: center;
+    gap: 0;
+}
+
+/* 移动端全尺寸布局容器 - Grid 布局覆盖 */
+.rtt-collapsed-content {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0;
+    width: auto;  /* 改为 auto，让容器宽度适应内容 */
+}
+
+/* 收缩态 section 紧凑间距 */
+.rtt-collapsed-content .rtt-section {
+    padding: 0 8px;
+}
+
+.rtt-collapsed-content .rtt-section:first-child {
+    padding-left: 0;
+}
+
+.rtt-collapsed-content .rtt-section:not(:last-child) {
+    border-right: 1px solid var(--background-modifier-border);
+}
+
+/* 收缩状态：圆角胶囊样式 */
+.rtt-widget-mobile.rtt-widget-collapsed {
+    border-radius: 24px;
+    padding: 8px 12px;
+    width: fit-content;  /* 改为 fit-content，紧贴内容宽度 */
+    min-width: auto;
+}
+
+/* 收缩态按钮放大 */
+.rtt-widget-mobile.rtt-widget-collapsed .rtt-mobile-collapse {
+    width: 32px !important;
+    height: 32px !important;
+    padding: 7px !important;
+}
+
+.rtt-widget-mobile.rtt-widget-collapsed .rtt-mobile-collapse svg {
+    width: 20px !important;
+    height: 20px !important;
+}
+
+/* 小屏幕收缩态优化 */
+@media (max-width: 400px) {
+    .rtt-widget-mobile.rtt-widget-collapsed {
+        padding: 6px 10px;
+    }
+
+    .rtt-collapsed-content .rtt-section {
+        padding: 0 6px;
+    }
+}
+
+/* 移动端各段落优化 */
+.rtt-widget-mobile .rtt-section {
+    padding: 0 10px;
+    gap: 3px;
+}
+
+.rtt-widget-mobile .rtt-section-label {
+    font-size: 8px;
+}
+
+.rtt-widget-mobile .rtt-section-value {
+    font-size: 12px;
+}
+
+/* 移动端按钮优化 */
+.rtt-widget-mobile .rtt-section-buttons {
+    gap: 6px;
+}
+
+.rtt-widget-mobile .rtt-pause-btn,
+.rtt-widget-mobile .rtt-discard-btn,
+.rtt-widget-mobile .rtt-save-btn,
+.rtt-widget-mobile .rtt-detail-btn {
+    width: 20px;
+    height: 20px;
+    padding: 4px;
+}
+
+.rtt-widget-mobile .rtt-pause-btn svg,
+.rtt-widget-mobile .rtt-discard-btn svg,
+.rtt-widget-mobile .rtt-save-btn svg,
+.rtt-widget-mobile .rtt-detail-btn svg {
+    width: 14px;
+    height: 14px;
+}
+
+/* 移动端触摸反馈 */
+.rtt-widget-mobile .rtt-pause-btn:active,
+.rtt-widget-mobile .rtt-discard-btn:active,
+.rtt-widget-mobile .rtt-save-btn:active,
+.rtt-widget-mobile .rtt-detail-btn:active {
+    transform: scale(0.95);
+}
+
+/* 恢复按钮的触摸行为（防止被父容器的 touch-action: none 影响） */
+.rtt-widget-mobile button,
+.rtt-widget-mobile .rtt-mobile-close,
+.rtt-widget-mobile .rtt-mobile-drag,
+.rtt-widget-mobile .rtt-mobile-collapse,
+.rtt-widget-mobile .rtt-pause-btn,
+.rtt-widget-mobile .rtt-discard-btn,
+.rtt-widget-mobile .rtt-save-btn,
+.rtt-widget-mobile .rtt-detail-btn {
+    touch-action: auto;
+}
+
+/* 小屏幕按钮优化 */
+@media (max-width: 400px) {
+    .rtt-widget-mobile .rtt-section {
+        padding: 0 6px;
+    }
+
+    .rtt-widget-mobile .rtt-section-label {
+        font-size: 7px;
+    }
+
+    .rtt-widget-mobile .rtt-section-value {
+        font-size: 11px;
+    }
+
+    .rtt-widget-mobile .rtt-pause-btn,
+    .rtt-widget-mobile .rtt-discard-btn,
+    .rtt-widget-mobile .rtt-save-btn,
+    .rtt-widget-mobile .rtt-detail-btn {
+        width: 18px;
+        height: 18px;
+        padding: 3px;
+    }
+
+    .rtt-widget-mobile .rtt-pause-btn svg,
+    .rtt-widget-mobile .rtt-discard-btn svg,
+    .rtt-widget-mobile .rtt-save-btn svg,
+    .rtt-widget-mobile .rtt-detail-btn svg {
+        width: 12px;
+        height: 12px;
+    }
+}
+

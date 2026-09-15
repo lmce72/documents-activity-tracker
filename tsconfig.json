@@ -1,0 +1,52 @@
+{
+  "compilerOptions": {
+    /* 语言与模块 / Language & modules */
+    "target": "ES2021",
+    "lib": ["ES2021", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "moduleDetection": "force",
+    "types": [],
+
+    /* 严格性 / Strictness
+     * strict 打开，但刻意关闭三项会在迁移期制造噪声、诱使实现者用 `!` 压制的选项。
+     * strict is on; three options are deliberately off because during migration they
+     * create noise unrelated to this refactor and tempt implementers into `!` suppression.
+     */
+    "strict": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+
+    /* 迁移期关闭 / Off during migration (see docs/ARCHITECTURE.md) */
+    "noUncheckedIndexedAccess": false,
+    "exactOptionalPropertyTypes": false,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+
+    /* 关键：Obsidian 插件大量继承 Plugin/Modal 并在构造器里赋值。
+     * 开启此项会让类字段用 Object.defineProperty 覆盖基类属性（Plugin.app 变 undefined）。
+     * Critical: this plugin extends Obsidian's Plugin/Modal and assigns in constructors.
+     * Enabling it makes class fields overwrite base-class properties via defineProperty. */
+    "useDefineForClassFields": false,
+
+    /* 互操作与输出 / Interop & emit */
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "noEmit": true,
+
+    /* 离线类型解析 / Offline type resolution
+     * 不使用 baseUrl：TS 6 已弃用它，paths 现在直接相对本文件解析。
+     * No baseUrl: TS 6 deprecates it; paths now resolve relative to this file. */
+    "paths": {
+      "obsidian": ["./vendor/obsidian/obsidian.d.ts"],
+      "@/*": ["./src/*"]
+    }
+  },
+  "include": ["src/**/*.ts", "tests/**/*.ts", "vendor/**/*.d.ts"],
+  "exclude": ["node_modules", "dist", "backups", "docs"]
+}

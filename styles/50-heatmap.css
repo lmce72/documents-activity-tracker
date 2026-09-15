@@ -1,0 +1,254 @@
+/* ── 热力图 (HeatmapView) ─────────────────────────────────── */
+.rtt-heatmap-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    padding-bottom: 2px;
+}
+
+/* x 轴刻度行 */
+.rtt-hm-xaxis {
+    display: flex;
+    align-items: flex-end;
+    gap: 4px;
+}
+
+.rtt-hm-tick-wrap {
+    flex: 1;
+    position: relative;
+    height: 14px;
+    min-width: 120px;
+}
+
+.rtt-hm-tick {
+    position: absolute;
+    font-size: 9px;
+    color: var(--text-faint);
+    line-height: 1;
+    top: 0;
+    white-space: nowrap;
+}
+
+/* 数据行 */
+.rtt-hm-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.rtt-hm-hlabel {
+    width: 24px;
+    flex-shrink: 0;
+    font-size: 10px;
+    color: var(--text-faint);
+    text-align: right;
+    padding-right: 3px;
+    line-height: 1;
+}
+
+/* 连续分钟横轴容器 */
+.rtt-hm-bar {
+    flex: 1;
+    position: relative;
+    height: 10px;
+    background: var(--background-modifier-border);
+    border-radius: 3px;
+    overflow: hidden;
+    min-width: 120px;
+}
+
+/* session 色段 */
+.rtt-hm-seg {
+    position: absolute;
+    top: 0;
+    height: 100%;
+    background: var(--interactive-accent);
+    opacity: 0.82;
+    cursor: pointer;
+    min-width: 2px;
+    transition: opacity 0.1s;
+}
+
+.rtt-hm-seg:hover { opacity: 1; }
+
+/* 暂停时段橙色块 */
+.rtt-hm-pause-block {
+    position: absolute;
+    top: 0;
+    height: 100%;
+    background: var(--color-orange);
+    opacity: 0.65;
+    pointer-events: none;
+    min-width: 1px;
+    z-index: 1;
+}
+
+/* 详情面板 */
+.rtt-heatmap-detail {
+    margin-top: 8px;
+    padding: 7px 10px;
+    border-radius: 6px;
+    background: var(--background-primary);
+    border: 1px solid var(--background-modifier-border);
+    font-size: var(--font-ui-smaller);
+}
+
+.rtt-heatmap-detail-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 5px;
+    font-weight: 500;
+    color: var(--text-normal);
+}
+
+.rtt-heatmap-detail-close {
+    cursor: pointer;
+    color: var(--text-faint);
+    display: inline-flex;
+    align-items: center;
+}
+
+.rtt-heatmap-detail-close:hover { color: var(--text-error); }
+.rtt-heatmap-detail-close svg { width: 12px; height: 12px; }
+
+.rtt-heatmap-detail-row {
+    display: flex;
+    gap: 12px;
+    padding: 2px 0;
+}
+
+.rtt-heatmap-detail-time {
+    font-family: var(--font-monospace);
+    color: var(--text-normal);
+    min-width: 44px;
+}
+
+.rtt-heatmap-detail-dur { color: var(--text-accent); }
+
+/* 热力图详情面板：文件列表 (table 布局) */
+.rtt-heatmap-files-wrap {
+    max-height: 300px;
+    overflow-y: auto;
+    margin-top: 6px;
+}
+
+.rtt-heatmap-files {
+    width: 100%;
+    border-collapse: collapse;
+    display: table;
+    table-layout: auto;  /* 自适应列宽 */
+}
+
+.rtt-heatmap-header th {
+    padding: 8px;
+    text-align: left;
+    font-size: var(--font-ui-smaller);
+    font-weight: 600;
+    color: var(--text-muted);
+    background: var(--background-secondary);
+    border-bottom: 2px solid var(--background-modifier-border);
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    white-space: nowrap;  /* 表头不换行 */
+}
+
+.rtt-heatmap-row {
+    border-bottom: 1px solid var(--background-modifier-border-hover);
+}
+
+.rtt-heatmap-row td {
+    white-space: normal;  /* ✅ 允许内容换行（状态序列分行显示） */
+    padding: 8px;
+}
+
+.rtt-heatmap-row:last-child {
+    border-bottom: none;
+}
+
+.rtt-heatmap-row td {
+    padding: 6px 8px;
+    vertical-align: middle;
+    font-size: var(--font-ui-smaller);
+}
+
+.rtt-heatmap-name {
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-normal);
+    font-weight: 500;
+}
+
+.rtt-heatmap-icon {
+    width: 40px;
+    text-align: center;
+    color: var(--text-muted);
+}
+
+.rtt-heatmap-time {
+    color: var(--text-normal);
+    font-size: 13px;
+    min-width: 160px;
+}
+
+.rtt-heatmap-state {
+    color: var(--text-muted);
+    font-size: 13px;
+    min-width: 60px;
+}
+
+.rtt-heatmap-duration {
+    text-align: left;
+    font-weight: 500;
+    color: var(--text-accent);
+    font-size: 13px;
+    min-width: 80px;
+}
+
+/* 保存标记行 */
+.rtt-heatmap-row.rtt-saved-row {
+    background: var(--background-secondary);
+}
+
+.rtt-saved-type {
+    color: var(--color-orange);
+    font-weight: 500;
+    font-size: 13px;
+}
+
+/* 会话分隔行 */
+.rtt-session-divider td {
+    padding: 4px 0;
+    border-bottom: 1px solid var(--background-modifier-border);
+}
+
+/* 保持旧的 file-name 和 file-dur 以兼容单文件视图 */
+.rtt-heatmap-file-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-normal);
+    font-weight: 500;
+}
+
+.rtt-heatmap-file-dur {
+    flex-shrink: 0;
+    margin-left: 12px;
+    color: var(--text-accent);
+}
+
+/* 被排除文件的 widget 标记图标 */
+.rtt-excluded-icon {
+    display: inline-flex;
+    align-items: center;
+    color: var(--color-orange);
+    padding: 0 4px;
+}
+
+.rtt-excluded-icon svg { width: 14px; height: 14px; }
+

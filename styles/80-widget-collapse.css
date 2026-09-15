@@ -1,0 +1,55 @@
+/* ============================================================
+   收缩按钮独立段落（放大显示）
+   ============================================================ */
+
+.rtt-collapse-section {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 8px;
+    border-left: 1px solid var(--background-modifier-border);
+}
+
+.rtt-mobile-collapse {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    padding: 5px;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: color 0.2s ease, transform 0.1s ease;
+}
+
+.rtt-mobile-collapse:hover {
+    color: var(--text-accent);
+}
+
+.rtt-mobile-collapse:active {
+    transform: scale(0.95);
+}
+
+.rtt-mobile-collapse svg {
+    width: 16px;
+    height: 16px;
+}
+
+/* 小屏幕收缩按钮优化 */
+@media (max-width: 400px) {
+    .rtt-collapse-section {
+        padding: 0 6px;
+    }
+
+    .rtt-mobile-collapse {
+        width: 20px;
+        height: 20px;
+        padding: 4px;
+    }
+
+    .rtt-mobile-collapse svg {
+        width: 14px;
+        height: 14px;
+    }
+}
+

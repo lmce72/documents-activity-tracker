@@ -1,0 +1,81 @@
+/* ============================================================
+   移动端专用控制按钮（关闭和拖动）
+   ============================================================ */
+
+.rtt-mobile-controls {
+    display: flex;
+    gap: 6px;
+    padding: 0 8px;
+    border-left: 1px solid var(--background-modifier-border);
+}
+
+.rtt-mobile-close,
+.rtt-mobile-drag {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    padding: 5px;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: color 0.2s ease, transform 0.1s ease;
+}
+
+.rtt-mobile-close:hover {
+    color: var(--text-error);
+}
+
+.rtt-mobile-drag:hover {
+    color: var(--text-normal);
+}
+
+.rtt-mobile-close:active,
+.rtt-mobile-drag:active {
+    transform: scale(0.95);
+}
+
+.rtt-mobile-close svg,
+.rtt-mobile-drag svg {
+    width: 16px;
+    height: 16px;
+}
+
+/* 拖动手柄光标 */
+.rtt-mobile-drag {
+    cursor: grab;
+    transition: color 0.2s ease, transform 0.1s ease, background-color 0.2s ease;
+}
+
+.rtt-mobile-drag:active {
+    cursor: grabbing;
+}
+
+/* 拖动锁定状态：红色高亮 */
+.rtt-mobile-drag.rtt-drag-locked {
+    color: var(--text-error) !important;
+    background-color: var(--background-modifier-error-hover);
+    border-radius: 4px;
+}
+
+/* 小屏幕控制按钮优化 */
+@media (max-width: 400px) {
+    .rtt-mobile-controls {
+        padding: 0 6px;
+        gap: 4px;
+    }
+
+    .rtt-mobile-close,
+    .rtt-mobile-drag {
+        width: 20px;
+        height: 20px;
+        padding: 4px;
+    }
+
+    .rtt-mobile-close svg,
+    .rtt-mobile-drag svg {
+        width: 14px;
+        height: 14px;
+    }
+}
+

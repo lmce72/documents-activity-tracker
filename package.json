@@ -1,0 +1,19 @@
+{
+  "name": "documents-activity-tracker",
+  "version": "1.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Obsidian plugin that tracks reading time per document.",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "build": "bun run typecheck && bun build.ts",
+    "build:prod": "bun run typecheck && bun build.ts --prod",
+    "build:deploy": "bun run typecheck && bun build.ts --deploy",
+    "dev": "bun build.ts --watch",
+    "check": "bun run typecheck && bun test"
+  },
+  "devDependencies": {
+    "typescript": "6.0.3"
+  }
+}

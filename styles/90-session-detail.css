@@ -1,0 +1,208 @@
+/* ============================================================
+   会话详情面板 - 时间轴样式
+   ============================================================ */
+
+.rtt-session-block {
+    margin-bottom: 20px;
+    padding: 12px;
+    border-radius: 8px;
+    background-color: var(--background-secondary);
+}
+
+.rtt-session-title {
+    font-weight: 600;
+    color: var(--text-normal);
+    font-size: 14px;
+}
+
+.rtt-timeline-list {
+    margin-top: 8px;
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: auto;  /* 自适应列宽 */
+}
+
+.rtt-timeline-header {
+    background: var(--background-secondary);
+    border-bottom: 2px solid var(--background-modifier-border);
+}
+
+.rtt-timeline-header th {
+    padding: 8px;
+    text-align: left;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-muted);
+    white-space: nowrap;  /* 表头不换行 */
+}
+
+.rtt-timeline-row {
+    border-bottom: 1px solid var(--background-modifier-border-hover);
+}
+
+.rtt-timeline-row td {
+    white-space: nowrap;  /* 单元格内容不换行 */
+    padding: 8px;
+}
+
+.rtt-timeline-row:last-child {
+    border-bottom: none;
+}
+
+.rtt-timeline-row td {
+    padding: 6px 8px;
+    vertical-align: middle;
+}
+
+.rtt-timeline-icon {
+    width: 40px;
+    text-align: center;
+    color: var(--text-muted);
+}
+
+.rtt-timeline-icon svg {
+    width: 16px;
+    height: 16px;
+}
+
+.rtt-icon-double {
+    display: flex;
+    gap: 4px;
+    justify-content: center;
+}
+
+.rtt-icon-item {
+    width: 16px;
+    height: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.rtt-icon-item svg {
+    width: 14px;
+    height: 14px;
+}
+
+.rtt-icon-item:nth-child(2) svg {
+    color: var(--color-orange);
+}
+
+.rtt-timeline-time {
+    color: var(--text-normal);
+    font-size: 13px;
+    min-width: 140px;
+}
+
+.rtt-timeline-state {
+    color: var(--text-muted);
+    font-size: 13px;
+    min-width: 60px;
+}
+
+.rtt-timeline-duration {
+    text-align: left;
+    font-weight: 500;
+    color: var(--text-accent);
+    font-size: 13px;
+    min-width: 80px;
+}
+    color: var(--text-normal);
+    font-size: 12px;
+}
+
+.rtt-timeline-duration {
+    color: var(--text-accent);
+    font-weight: 500;
+    text-align: left;
+    font-size: 12px;
+}
+
+.rtt-saved-row,
+.rtt-ongoing-row {
+    border-top: 1px solid var(--background-modifier-border);
+    padding-top: 8px;
+    margin-top: 4px;
+}
+
+/* 切换文件行样式（callout 背景色） */
+.rtt-switch-row {
+    background-color: var(--background-secondary);
+    border-left: 3px solid var(--text-accent);
+}
+
+.rtt-switch-row .rtt-timeline-icon {
+    color: var(--text-accent);
+}
+
+.rtt-switch-row .rtt-timeline-state {
+    font-weight: 500;
+    color: var(--text-normal);
+}
+
+.rtt-saved-text {
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.rtt-warning-text {
+    color: var(--text-warning);
+}
+
+.rtt-ongoing-text {
+    color: var(--text-accent);
+    font-weight: 500;
+    font-size: 12px;
+}
+
+.rtt-session-summary {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 12px;
+    margin-top: 8px;
+    padding: 12px 16px;
+    border-top: 1px solid var(--background-modifier-border);
+    background: var(--background-secondary);
+}
+
+.rtt-summary-col {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+}
+
+.rtt-summary-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    color: var(--text-muted);
+}
+
+.rtt-summary-text {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-normal);
+}
+
+/* 移动端适配 */
+@media (max-width: 600px) {
+    .rtt-timeline-row {
+        grid-template-columns: 20px 1fr 50px 80px;
+        gap: 6px;
+        font-size: 12px;
+    }
+
+    .rtt-timeline-icon {
+        width: 14px;
+        height: 14px;
+    }
+
+    .rtt-timeline-icon svg {
+        width: 14px;
+        height: 14px;
+    }
+}
+

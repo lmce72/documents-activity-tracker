@@ -1,0 +1,69 @@
+/* ========================================
+   状态链路渲染统一样式
+   Unified State Chain Rendering Styles
+   ======================================== */
+
+/* 切换事件高亮样式 - Switch event highlight style */
+.rtt-state-row.rtt-switch-event {
+    background-color: var(--background-modifier-info);
+    border-left: 3px solid var(--interactive-accent);
+    padding-left: 8px;
+    border-radius: 4px;
+    margin: 2px 0;
+}
+
+/* 两图标容器 - Two icons container */
+.rtt-icon-double {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.rtt-icon-item {
+    display: inline-flex;
+}
+
+/* 状态序列预览（detail 弹窗中）- State sequence preview (in detail popup) */
+.rtt-state-preview {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+    padding: 8px 12px;
+    background-color: var(--background-secondary);
+    border-radius: 6px;
+}
+
+.rtt-state-preview-label {
+    font-size: 0.9em;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+
+.rtt-state-preview .rtt-state-sequence {
+    display: flex;
+    flex-direction: row; /* 横向排列 - Horizontal layout */
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.rtt-state-preview .rtt-state-row {
+    margin: 0;
+}
+
+/* 移动端适配：状态预览 - Mobile adaptation: state preview */
+@media (max-width: 600px) {
+    .rtt-state-preview {
+        padding: 6px 10px;
+        gap: 6px;
+        margin-bottom: 10px;
+    }
+
+    .rtt-state-preview-label {
+        font-size: 0.85em;
+    }
+
+    .rtt-state-preview .rtt-state-sequence {
+        gap: 4px;
+    }
+}

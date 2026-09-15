@@ -1,0 +1,102 @@
+/* ============================================================================
+   状态序列样式（全局时间轴 v2）
+   ============================================================================ */
+
+/* 状态序列容器 */
+.rtt-state-sequence {
+    display: flex;
+    flex-direction: column;  /* ✅ 每个状态独占一行 */
+    align-items: flex-start;
+    gap: 4px;
+}
+
+.rtt-state-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.rtt-state-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    color: var(--text-muted);
+}
+
+.rtt-state-icon svg {
+    width: 16px;
+    height: 16px;
+}
+
+.rtt-state-arrow {
+    color: var(--text-muted);
+    font-size: 12px;
+    user-select: none;
+}
+
+/* 热力图详情统计汇总行（4列布局） */
+.rtt-heatmap-summary {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+    padding: 12px 16px;
+    margin-top: 8px;
+    border-top: 2px solid var(--background-modifier-border);
+    background: var(--background-secondary);
+}
+
+.rtt-heatmap-summary .rtt-summary-col {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+}
+
+.rtt-heatmap-summary .rtt-summary-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    color: var(--text-muted);
+}
+
+.rtt-heatmap-summary .rtt-summary-text {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-normal);
+}
+
+/* 移动端适配：状态序列 */
+@media (max-width: 600px) {
+    .rtt-state-sequence {
+        gap: 2px;
+    }
+
+    .rtt-state-icon {
+        width: 14px;
+        height: 14px;
+    }
+
+    .rtt-state-icon svg {
+        width: 14px;
+        height: 14px;
+    }
+
+    .rtt-state-arrow {
+        font-size: 10px;
+    }
+
+    .rtt-heatmap-summary {
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+        padding: 8px 12px;
+    }
+
+    .rtt-heatmap-summary .rtt-summary-text {
+        font-size: 11px;
+    }
+}
+

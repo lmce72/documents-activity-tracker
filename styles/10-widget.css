@@ -1,0 +1,254 @@
+/* ── HeaderWidget ─────────────────────────────────────────── */
+.rtt-widget {
+    display: inline-flex;
+    align-items: center;
+    gap: 0;
+    padding: 0;
+    border-radius: 0;
+    background: transparent;
+    font-size: var(--font-ui-smaller);
+    color: var(--text-muted);
+    margin-left: 8px;
+    vertical-align: middle;
+    user-select: none;
+}
+
+/* 四个独立分段 */
+.rtt-widget .rtt-section {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    padding: 0 12px;
+    border-right: 1px solid var(--background-modifier-border);
+}
+
+.rtt-widget .rtt-section:last-child {
+    border-right: none;
+}
+
+.rtt-widget .rtt-section:first-child {
+    padding-left: 0;
+}
+
+/* 按钮段 2x2 网格布局 */
+.rtt-widget .rtt-section-buttons {
+    display: grid;
+    grid-template-columns: repeat(2, auto);
+    gap: 3px;
+    border-right: none;
+    padding-right: 0;
+}
+
+/* 段内标签（上行） */
+.rtt-widget .rtt-section-label {
+    font-size: 7px;
+    color: var(--text-faint);
+    line-height: 1;
+    white-space: nowrap;
+    text-align: center;
+}
+
+/* 段内数值（下行）- 蓝色居中 */
+.rtt-widget .rtt-section-value {
+    font-size: 11px;
+    color: var(--text-accent);
+    font-weight: 600;
+    line-height: 1.2;
+    white-space: nowrap;
+    text-align: center;
+}
+
+.rtt-pause-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2px;
+    cursor: pointer;
+    color: var(--text-faint);
+    border-radius: 0;
+    line-height: 1;
+    transition: color 0.15s;
+    background: transparent;
+}
+
+.rtt-pause-btn:hover {
+    color: var(--text-normal);
+}
+
+.rtt-pause-btn.rtt-paused {
+    color: var(--text-accent);
+}
+
+.rtt-pause-btn svg {
+    width: 10px;
+    height: 10px;
+}
+
+.rtt-discard-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2px;
+    margin-left: 0;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    color: var(--text-faint);
+    border-radius: 0;
+    line-height: 1;
+    transition: color 0.15s;
+}
+
+.rtt-discard-btn:hover {
+    color: var(--text-error);
+}
+
+.rtt-discard-btn svg {
+    width: 10px;
+    height: 10px;
+}
+
+/* 保存和数据看板按钮 */
+.rtt-save-btn,
+.rtt-detail-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 12px;
+    height: 12px;
+    border-radius: 3px;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all 0.15s ease;
+    border: none;
+    padding: 2px;
+}
+
+.rtt-save-btn:hover,
+.rtt-detail-btn:hover {
+    color: var(--text-accent);
+    background: var(--background-modifier-hover);
+}
+
+.rtt-save-btn svg,
+.rtt-detail-btn svg {
+    width: 10px;
+    height: 10px;
+}
+
+/* 会话详情面板 */
+.rtt-session-detail {
+    padding: 16px;
+    max-height: 60vh;
+    overflow-y: auto;
+}
+
+.rtt-empty-hint {
+    color: var(--text-muted);
+    text-align: center;
+    padding: 32px 16px;
+    font-size: var(--font-ui-small);
+}
+
+.rtt-session-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.rtt-session-item {
+    padding: 12px;
+    border-radius: 8px;
+    background: var(--background-secondary);
+    border: 1px solid var(--background-modifier-border);
+    transition: background 0.15s ease;
+}
+
+.rtt-session-item:hover {
+    background: var(--background-modifier-hover);
+}
+
+.rtt-session-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+}
+
+.rtt-session-time {
+    font-size: var(--font-ui-small);
+    color: var(--text-muted);
+    font-family: var(--font-monospace);
+}
+
+.rtt-session-duration {
+    font-weight: 600;
+    color: var(--text-accent);
+    font-size: var(--font-ui-small);
+}
+
+.rtt-session-pauses {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--background-modifier-border);
+}
+
+.rtt-pause-label {
+    font-size: var(--font-ui-smaller);
+    color: var(--color-orange);
+    font-weight: 500;
+}
+
+.rtt-pause-list {
+    margin-top: 4px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.rtt-pause-item {
+    padding: 4px 8px;
+    border-radius: 4px;
+    background: var(--background-modifier-error-hover);
+    color: var(--color-orange);
+    font-size: var(--font-ui-smaller);
+    font-family: var(--font-monospace);
+    transition: background 0.15s ease;
+}
+
+.rtt-pause-item:hover {
+    background: var(--background-modifier-error);
+}
+
+.rtt-history-btn {
+    width: 100%;
+    margin-top: 16px;
+    padding: 8px;
+    border-radius: 6px;
+    background: var(--interactive-accent);
+    color: var(--text-on-accent);
+    border: none;
+    cursor: pointer;
+    font-size: var(--font-ui-small);
+    transition: opacity 0.15s ease;
+}
+
+.rtt-history-btn:hover {
+    opacity: 0.85;
+}
+
+.rtt-history-summary {
+    margin-top: 12px;
+    padding: 12px;
+    border-radius: 8px;
+    background: var(--background-secondary);
+}
+
+.rtt-history-stat {
+    padding: 6px 0;
+    color: var(--text-normal);
+    font-size: var(--font-ui-small);
+}
+

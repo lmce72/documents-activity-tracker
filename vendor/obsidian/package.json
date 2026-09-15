@@ -1,0 +1,8 @@
+{
+  "name": "obsidian",
+  "version": "1.13.1",
+  "description": "Vendored type definitions for the Obsidian API (offline copy).",
+  "license": "MIT",
+  "main": "",
+  "types": "obsidian.d.ts"
+}

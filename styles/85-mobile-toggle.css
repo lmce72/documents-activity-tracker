@@ -1,0 +1,18 @@
+/* ============================================================
+   移动端开关按钮
+   ============================================================ */
+
+.rtt-toggle-btn {
+    color: var(--text-muted);
+    transition: color 0.2s ease;
+}
+
+.rtt-toggle-btn:hover {
+    color: var(--text-normal);
+}
+
+/* 激活状态：蓝色高亮 */
+.rtt-toggle-btn.rtt-toggle-active {
+    color: var(--text-accent) !important;
+}
+

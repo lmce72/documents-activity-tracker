@@ -1,0 +1,192 @@
+/* ── 汇总条形图（列表上方）──────────────────────────────── */
+.rtt-summary {
+    padding: 10px 16px 12px;
+    border-bottom: 1px solid var(--background-modifier-border);
+    background: var(--background-secondary);
+}
+
+/* ── 统计卡片（热力图上方）──────────────────────────────── */
+.rtt-stats-bar {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0;
+    padding: 0;
+    border-bottom: 1px solid var(--background-modifier-border);
+    background: var(--background-secondary);
+}
+
+.rtt-stats-card {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    padding: 10px 12px;
+}
+
+.rtt-stats-card:nth-child(odd) {
+    border-right: 1px solid var(--background-modifier-border);
+}
+
+.rtt-stats-card:nth-child(1),
+.rtt-stats-card:nth-child(2) {
+    border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.rtt-stats-label {
+    font-size: var(--font-ui-smaller);
+    color: var(--text-muted);
+    line-height: 1;
+}
+
+.rtt-stats-value {
+    font-size: 1.25em;
+    font-weight: 600;
+    color: var(--text-accent);
+    line-height: 1.3;
+}
+
+/* ── 列表 ─────────────────────────────────────────────────── */
+.rtt-list {
+    overflow-y: auto;
+    max-height: 45vh;
+}
+
+.rtt-list-empty {
+    padding: 24px 16px;
+    color: var(--text-muted);
+    text-align: center;
+    font-size: var(--font-ui-small);
+}
+
+.rtt-list-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 10px 16px;
+    cursor: pointer;
+    border-bottom: 1px solid var(--background-modifier-border-hover);
+    transition: background 0.1s;
+}
+
+.rtt-list-item:hover {
+    background: var(--background-secondary);
+}
+
+.rtt-list-item.rtt-item-expanded {
+    background: var(--background-secondary);
+    border-bottom-color: transparent;
+}
+
+.rtt-item-icon {
+    flex-shrink: 0;
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-muted);
+    margin-top: 2px;
+}
+
+.rtt-item-icon svg {
+    width: 24px;
+    height: 24px;
+}
+
+.rtt-item-text {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+/* ✅ 删除按钮 */
+.rtt-item-delete {
+    flex-shrink: 0;
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-muted);
+    cursor: pointer;
+    border-radius: 4px;
+    transition: all 0.2s ease;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.rtt-list-item:hover .rtt-item-delete {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.rtt-item-delete:hover {
+    background: var(--background-modifier-error-hover);
+    color: var(--text-error);
+}
+
+.rtt-item-delete:active {
+    transform: scale(0.95);
+}
+
+.rtt-item-delete svg {
+    width: 18px;
+    height: 18px;
+}
+
+/* 文件名行：溢出截断 */
+.rtt-item-name-row {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    min-width: 0;
+    overflow: hidden;
+}
+
+.rtt-item-name {
+    font-weight: 600;
+    color: var(--text-normal);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex-shrink: 1;
+}
+
+.rtt-item-path {
+    color: var(--text-muted);
+    font-size: var(--font-ui-smaller);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex-shrink: 2;
+}
+
+.rtt-item-session {
+    font-size: var(--font-ui-small);
+}
+
+.rtt-item-session-label {
+    color: var(--text-muted);
+}
+
+.rtt-item-session-val {
+    color: var(--text-accent);
+    font-weight: 500;
+}
+
+.rtt-item-stats {
+    font-size: var(--font-ui-smaller);
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0;
+}
+
+.rtt-item-sep {
+    color: var(--text-faint);
+}
+
