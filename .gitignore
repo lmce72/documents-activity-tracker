@@ -3,8 +3,19 @@
 *.tmp
 *.log
 
+# 回滚备份（本地保留，不入库）
+# docs/ 不忽略：归档报告与 ARCHITECTURE.md / ROLLBACK.md 需要入库
+backups/
+
 # Test data
 data.json
+
+# 隔离验证环境（Phase 5）
+.testvault/
+.testprofile/
+
+# vendored 类型定义（离线用，体积小，需要入库 —— 故不忽略）
+# vendor/
 
 # Node modules (if any)
 node_modules/

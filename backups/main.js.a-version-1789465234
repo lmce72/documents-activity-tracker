@@ -476,14 +476,6 @@ class ReadTimeStore {
         }
         if (!this._cache.records) this._cache.records = {};
 
-        // ✅ 检测并删除旧格式数据（readTimeLine 是对象而非数组）
-        for (const [filePath, record] of Object.entries(this._cache.records)) {
-            if (record.readTimeLine && !Array.isArray(record.readTimeLine)) {
-                console.warn(`[ReadTimeTracker] 检测到旧格式数据: ${filePath}，已跳过（不兼容）`);
-                delete this._cache.records[filePath];
-            }
-        }
-
         // ✅ 构建内存索引
         this._rebuildIndex();
 
@@ -630,6 +622,27 @@ class ReadTimeStore {
         } catch (error) {
             console.error(`[ReadTimeTracker] upsertRecord 失败 (${filePath}):`, error);
             throw error; // Re-throw to allow caller to handle
+        }
+    }
+
+    /**
+     * 删除指定文件的记录
+     * Delete record for the specified file
+     * @param {string} filePath - 文件路径
+     */
+    async deleteRecord(filePath) {
+        try {
+            if (!this._cache) await this.load();
+            if (this._cache.records[filePath]) {
+                delete this._cache.records[filePath];
+                // 重建索引
+                this._rebuildIndex();
+                await this.save();
+                console.log(`[ReadTimeTracker] 已删除记录: ${filePath}`);
+            }
+        } catch (error) {
+            console.error(`[ReadTimeTracker] deleteRecord 失败 (${filePath}):`, error);
+            throw error;
         }
     }
 
@@ -1028,18 +1041,46 @@ class ReadTimeEngine {
                 try {
                     const existingRecord = await this.store.getRecord(filePath);
 
-                    // ✅ 从 readTimeLine 重新计算今天的总时间（而非直接用 readTimeToday）
+                    // ✅ 从 readTimeLine 重新计算今天的总时间（只计算今天范围内的时长）
                     let todaySeconds = 0;
                     if (existingRecord && existingRecord.readTimeLine && Array.isArray(existingRecord.readTimeLine)) {
                         const today = todayStr();
-                        // 修复：readTimeLine 是数组，遍历每个 session 对象
+                        const todayStart = new Date(today + ' 00:00:00').getTime();
+                        const todayEnd = todayStart + 24 * 60 * 60 * 1000; // 今天23:59:59
+
+                        // 遍历每个 session
                         for (const session of existingRecord.readTimeLine) {
                             const timestamps = Object.keys(session).sort();
-                            if (timestamps.length > 0 && timestamps[0].startsWith(today)) {
-                                todaySeconds += calculateSessionDuration(session);
+
+                            // 遍历 session 中的每个时间段
+                            for (let i = 0; i < timestamps.length - 1; i++) {
+                                const currTime = timestamps[i];
+                                const nextTime = timestamps[i + 1];
+                                const currState = session[currTime];
+
+                                // 解析时间戳
+                                const currMs = new Date(currTime).getTime();
+                                const nextMs = new Date(nextTime).getTime();
+
+                                // 只计算今天范围内的时长
+                                if (currMs < todayEnd && nextMs > todayStart) {
+                                    // 计算交集时长
+                                    const start = Math.max(currMs, todayStart);
+                                    const end = Math.min(nextMs, todayEnd);
+                                    const duration = (end - start) / 1000;
+
+                                    // 只累加 tracking 状态的时长
+                                    if (currState === 'tracking' && duration > 0) {
+                                        todaySeconds += duration;
+                                    }
+                                }
                             }
                         }
                     }
+
+                    // ❌ 删除错误的 fallback 逻辑
+                    // readTimeToday 是历史数据，不是今天的时长，不能用作 fallback
+                    // Removed incorrect fallback: readTimeToday is historical data, not today's duration
 
                     console.log(`[ReadTimeTracker] 🔍 初始化 ${filePath}:`, {
                         hasStoreRecord: !!existingRecord,
@@ -1291,27 +1332,19 @@ class ReadTimeEngine {
             return;
         }
 
-        // ✅ 最终去重检查：如果当前正在计时的就是这个文件，且叶子相同（用 ID 比较）
-        if (this.currentPath === newFilePath && (this.activeLeaf ? this.activeLeaf.id : null) === (leaf ? leaf.id : null)) {
+        // ✅ 最终去重检查：如果当前正在计时的就是这个文件
+        // 不管叶子是否相同，同一个文件就继续当前session
+        if (this.currentFile === newFilePath) {
             const view = this._getActiveMarkdownView();
             const domOk = (view && view.contentEl) && this.currentBoundEl && this.currentBoundEl.isConnected;
             if (domOk) {
-                console.log(`[ReadTimeTracker] 🔒 最终去重阻止: ${newFilePath} (已在计时中)`);
+                console.log(`[ReadTimeTracker] 🔒 同文件去重: ${newFilePath} (继续当前session)`);
                 return;
             }
-            // DOM 已失效（视图重建），仅重绑 DOM 事件，不重启会话
-            console.log(`[ReadTimeTracker] 🔄 DOM 重绑: ${newFilePath}`);
+            // DOM 已失效（视图重建或模式切换），仅重绑 DOM 事件，不重启会话
+            console.log(`[ReadTimeTracker] 🔄 同文件DOM重绑: ${newFilePath}`);
             if ((view && view.contentEl)) this._bindDomEvents(view.contentEl);
             return;
-        }
-
-        // 🔍 诊断日志：检查为什么去重没有生效
-        if (this.currentPath === newFilePath) {
-            console.log(`[ReadTimeTracker] ⚠️ 同文件但叶子不同: ${newFilePath}`, {
-                activeLeafId: (this.activeLeaf ? this.activeLeaf.id : null),
-                newLeafId: (leaf ? leaf.id : null),
-                leafEqual: this.activeLeaf === leaf
-            });
         }
 
         this._bindToFile(newFilePath, leaf);
@@ -1627,53 +1660,46 @@ class ReadTimeEngine {
         const today = todayStr();
         const todayPrefix = today + ' ';
 
-        // ✅ 从全局时间轴计算所有文件的今日时长
-        const fileStats = new Map();
+        // ✅ 策略：从内存timeline计算今天所有tracking状态的时长 + 当前正在tracking的时长
+        // Strategy: Calculate all tracking duration from in-memory timeline + current active tracking
 
-        // 遍历今日的所有事件
+        let totalSeconds = 0;
+
+        // 1. 从timeline计算今天已记录的时长
+        // Calculate saved duration from timeline
         for (let i = 0; i < this.timeline.length - 1; i++) {
             const curr = this.timeline[i];
             if (!curr.time.startsWith(todayPrefix)) continue;
 
             const next = this.timeline[i + 1];
+
+            // 检查next是否也是今天的事件（避免跨日计算）
+            // Check if next event is also today (avoid cross-day calculation)
+            if (!next.time.startsWith(todayPrefix)) continue;
+
             const duration = (new Date(next.time) - new Date(curr.time)) / 1000;
 
-            // 确定哪个文件的时长
-            let targetFile = curr.file;
+            // 确定状态：优先使用toState（switch事件），否则使用state
+            // Determine state: prefer toState (for switch events), otherwise use state
             let targetState = curr.state;
-
-            if (curr.type === "switch") {
-                // switch 事件：from 文件和 to 文件都受影响
-                if (curr.from) {
-                    const fromFile = curr.from;
-                    if (!fileStats.has(fromFile)) fileStats.set(fromFile, 0);
-                    // from 文件的状态是 fromState，但 switch 时已经 inactive，不计时
-                }
-                if (curr.to) {
-                    targetFile = curr.to;
-                    targetState = curr.toState;
-                }
+            if (curr.type === "switch" && curr.toState) {
+                targetState = curr.toState;
             }
 
             // 只累加 tracking 状态的时长
-            if (targetFile && targetState === "tracking") {
-                if (!fileStats.has(targetFile)) fileStats.set(targetFile, 0);
-                fileStats.set(targetFile, fileStats.get(targetFile) + duration);
+            // Only accumulate tracking duration
+            if (targetState === "tracking" && duration > 0) {
+                totalSeconds += duration;
             }
         }
 
-        // 累加所有文件的时长
-        let total = 0;
-        for (const time of fileStats.values()) {
-            total += time;
+        // 2. 加上当前正在tracking的会话时长
+        // Add current active tracking session duration
+        if (this.currentState === "tracking" && this.currentFile) {
+            totalSeconds += this._activeSecondsCache || 0;
         }
 
-        // ✅ 加上当前正在计时的缓存时长
-        if (this.currentFile && this.currentState === "tracking") {
-            total += this._activeSecondsCache;
-        }
-
-        return total;
+        return totalSeconds;
     }
 
     /** 从全局时间轴计算指定文件今日的统计数据 */
@@ -1988,33 +2014,57 @@ class ReadTimeEngine {
     /** 将指定文件的积累秒数写盘，使用给定的 sessionKey */
     async _flushFileSilent(filePath, sessionKey) {
         try {
-            // 1. 检查该文件是否有未保存的计时数据
+            // 1. 检查timeline中是否有该文件的未闭合会话
+            let hasUnfinishedSession = false;
+            let lastEventIndex = -1;
+            let lastEventType = null;
+
+            // 从后往前找该文件的最后一个事件
+            for (let i = this.timeline.length - 1; i >= 0; i--) {
+                const event = this.timeline[i];
+                const eventFile = event.file || event.to || event.from;
+
+                if (eventFile === filePath) {
+                    lastEventIndex = i;
+                    lastEventType = event.type;
+                    // 如果最后一个事件不是save/auto-save/discard，说明会话未闭合
+                    if (event.type !== 'save' && event.type !== 'auto-save' && event.type !== 'discard') {
+                        hasUnfinishedSession = true;
+                    }
+                    break;
+                }
+            }
+
+            // 2. 检查该文件是否有未保存的计时数据
             const record = this.readingMap.get(filePath);
-            if (!record || record.seconds <= 0) {
+            const delta = record ? record.seconds : 0;
+
+            // 3. 如果既没有未闭合会话，也没有计时数据，直接返回
+            if (!hasUnfinishedSession && delta <= 0) {
                 return;
             }
 
-            const delta = record.seconds;
-
-            // 2. 检查最小阈值
+            // 4. 检查最小阈值
             const minSec = Math.max(0, parseInt(this.settings.minReadSeconds) || 0);
-            if (minSec > 0 && delta < minSec) {
+            if (minSec > 0 && delta < minSec && delta > 0) {
                 // 检查文件是否仍有活跃叶子或正在前台阅读（非孤立状态）
                 const isOrphan = this.currentPath !== filePath
                     && !Array.from(this._leafStates.values()).some(s => s.filePath === filePath);
 
                 if (isOrphan) {
                     // 孤立文件：彻底关闭且未达标，丢弃并清理
-                    record.seconds = 0;
-                    this.readingMap.delete(filePath);
+                    if (record) {
+                        record.seconds = 0;
+                        this.readingMap.delete(filePath);
+                    }
                     console.log(`[ReadTimeTracker] 🗑 未达标丢弃: ${filePath} (${delta}s < ${minSec}s)`);
                 }
                 // 活跃文件：保留 record.seconds 继续累加
                 return;
             }
 
-            // 3. 如果该文件正在计时，添加 auto-save 事件到时间轴
-            if (this.currentFile === filePath) {
+            // 5. 有未闭合会话且最后一个事件不是auto-save，添加 auto-save 事件
+            if (hasUnfinishedSession && lastEventType !== 'auto-save') {
                 this.timeline.push({
                     time: nowFullStr(),
                     type: "auto-save",
@@ -2023,20 +2073,20 @@ class ReadTimeEngine {
                 });
 
                 await this.store.saveTimeline(this.timeline);
+                console.log(`[ReadTimeTracker] 💾 静默刷盘(未闭合会话): ${filePath}`);
+            }
 
-                // 清空当前会话状态
+            // 6. 如果是当前文件，清空会话状态
+            if (this.currentFile === filePath) {
                 this.currentFile = null;
                 this.currentState = null;
                 this._activeSecondsCache = 0;
-
-                console.log(`[ReadTimeTracker] 💾 静默刷盘完成: ${filePath} (${delta}s)`);
-            } else {
-                // 文件不在计时中，但有累积秒数（边缘情况），记录日志
-                console.log(`[ReadTimeTracker] ⚠️ 文件不在计时但有累积秒数: ${filePath} (${delta}s)`);
             }
 
-            // 4. 清零内存计数
-            record.seconds = 0;
+            // 7. 清零内存计数
+            if (record) {
+                record.seconds = 0;
+            }
 
         } catch (err) {
             console.error(`[ReadTimeTracker] _flushFileSilent 失败 (${filePath}):`, err);
@@ -4411,6 +4461,38 @@ class HeatmapView {
                     el.style.width = widthPct + '%';
                     el.setAttribute('title', formatReadTime(seg.secs, this.settings.timeDisplayMode));
 
+                    // ✅ 检查是否是未终止会话（超过24小时）
+                    let isAbnormal = false;
+                    if (seg.origValue && typeof seg.origValue === 'object') {
+                        const startTime = seg.origValue.startTime || seg.key;
+                        const endTime = seg.origValue.endTime;
+
+                        // 如果没有endTime或endTime距离现在超过24小时
+                        if (startTime) {
+                            const start = new Date(startTime);
+                            const now = new Date();
+                            const elapsed = (now - start) / 1000;
+                            const MAX_SESSION_DURATION = 24 * 60 * 60;
+
+                            if (elapsed > MAX_SESSION_DURATION) {
+                                isAbnormal = true;
+                                el.addClass('rtt-hm-seg-abnormal');
+                                el.style.opacity = '0.5';
+
+                                // 添加警告图标
+                                const warnIcon = el.createSpan({ cls: 'rtt-hm-seg-warning' });
+                                setIcon(warnIcon, 'circle-alert');
+                                warnIcon.style.position = 'absolute';
+                                warnIcon.style.right = '2px';
+                                warnIcon.style.top = '50%';
+                                warnIcon.style.transform = 'translateY(-50%)';
+                                warnIcon.style.color = 'orange';
+                                warnIcon.style.fontSize = '12px';
+                                warnIcon.setAttribute('title', '异常未终止会话（超过24小时）');
+                            }
+                        }
+                    }
+
                     // ✅ 精确渲染暂停时段橙色块
                     const pauseRanges = this._extractPauseRanges(seg.origValue, seg.key);
                     if (pauseRanges.length > 0) {
@@ -4601,6 +4683,70 @@ class HeatmapView {
         const label = `${formatLocalHMS(startTime)} – ${formatLocalHMS(endTime)}`;
         const totalTime = totalActiveTime + totalPauseTime;
         header.createSpan({ text: `${label} ${formatDurationWithSeconds(totalTime)}` });
+
+        // ✅ 删除会话按钮（仅单文件模式显示）
+        if (this.isSingleFile && fileGroups.size === 1) {
+            const deleteBtn = header.createSpan({ cls: 'rtt-heatmap-detail-delete' });
+            setIcon(deleteBtn, 'trash-2');
+            deleteBtn.setAttribute('aria-label', '删除此会话');
+            deleteBtn.style.marginLeft = '8px';
+            deleteBtn.style.cursor = 'pointer';
+            deleteBtn.style.color = 'var(--text-error)';
+
+            deleteBtn.addEventListener('click', async () => {
+                const filePath = Array.from(fileGroups.keys())[0];
+                if (confirm(`确定要删除此会话吗？\n时间: ${label}\n此操作无法撤销。`)) {
+                    try {
+                        // 获取该文件的记录
+                        const record = this.store.getRecord(filePath);
+                        if (!record || !Array.isArray(record.readTimeLine)) {
+                            new Notice('未找到会话记录');
+                            return;
+                        }
+
+                        // 查找并删除匹配的session
+                        const sessionKey = seg.key; // 'YYYY-MM-DD HH:mm'
+                        let deletedIndex = -1;
+
+                        for (let i = 0; i < record.readTimeLine.length; i++) {
+                            const session = record.readTimeLine[i];
+                            const timestamps = Object.keys(session).sort();
+                            if (timestamps.length > 0) {
+                                const sessionStart = timestamps[0].slice(0, 16); // 'YYYY-MM-DD HH:mm'
+                                if (sessionStart === sessionKey) {
+                                    deletedIndex = i;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (deletedIndex >= 0) {
+                            // 删除session
+                            record.readTimeLine.splice(deletedIndex, 1);
+
+                            // 保存到store
+                            await this.store.upsertRecord(filePath, record);
+
+                            new Notice('已删除会话');
+
+                            // 隐藏详情面板
+                            this._detailEl.style.display = 'none';
+
+                            // 触发页面刷新（如果有回调）
+                            if (this.onSessionDeleted) {
+                                this.onSessionDeleted(filePath);
+                            }
+                        } else {
+                            new Notice('未找到匹配的会话');
+                        }
+                    } catch (error) {
+                        console.error('[HeatmapView] 删除会话失败:', error);
+                        new Notice(`删除失败: ${error.message}`);
+                    }
+                }
+            });
+        }
+
         const closeBtn = header.createSpan({ cls: 'rtt-heatmap-detail-close' });
         setIcon(closeBtn, 'x');
 
@@ -4822,6 +4968,7 @@ class ReadRecordsModal extends Modal {
             let totalReadTime = 0;
             let readTimeToday = 0;
             let lastReadAt = '';
+            let hasAbnormalSession = false; // ✅ 标记是否有异常未闭合会话
 
             const today = todayStr();
 
@@ -4853,18 +5000,27 @@ class ReadRecordsModal extends Modal {
                     let sessionDuration = 0;
 
                     if (isUnfinishedSession && Object.keys(sessionObj).length === 1) {
-                        // ✅ 未闭合会话：只有一个 start 事件，使用当前时间计算时长
+                        // ✅ 未闭合会话：只有一个 start 事件
                         const startTime = new Date(Object.keys(sessionObj)[0]);
                         const now = new Date();
                         const elapsed = (now - startTime) / 1000;
 
-                        // 只统计 tracking 状态的时长
-                        const startState = sessionObj[Object.keys(sessionObj)[0]];
-                        if (startState === 'tracking') {
-                            sessionDuration = Math.max(0, elapsed);
-                        }
+                        // ❌ 防止旧的未闭合会话（超过24小时）计入统计
+                        // Prevent old unfinished sessions (over 24 hours) from being counted
+                        const MAX_SESSION_DURATION = 24 * 60 * 60; // 24小时 / 24 hours
 
-                        console.log(`[ReadRecordsModal] 未闭合会话 ${filePath}: ${Math.floor(sessionDuration)}秒`);
+                        if (elapsed > MAX_SESSION_DURATION) {
+                            console.warn(`[ReadRecordsModal] 跳过异常未闭合会话 ${filePath}: ${Math.floor(elapsed/3600)}小时前开始，未正常结束`);
+                            hasAbnormalSession = true; // ✅ 标记为异常
+                            sessionDuration = 0;
+                        } else {
+                            // 只统计 tracking 状态的时长
+                            const startState = sessionObj[Object.keys(sessionObj)[0]];
+                            if (startState === 'tracking') {
+                                sessionDuration = Math.max(0, elapsed);
+                            }
+                            console.log(`[ReadRecordsModal] 未闭合会话 ${filePath}: ${Math.floor(sessionDuration)}秒`);
+                        }
                     } else {
                         // 已闭合会话：使用标准计算方法
                         sessionDuration = calculateSessionDuration(sessionObj);
@@ -4891,7 +5047,8 @@ class ReadRecordsModal extends Modal {
                 totalReadTime,
                 readTimeToday,
                 lastReadAt: lastReadAt.slice(0, 10), // 只保留日期部分
-                readTimeLine
+                readTimeLine,
+                hasAbnormalSession // ✅ 添加异常标志
             };
         }
 
@@ -5276,6 +5433,16 @@ class ReadRecordsModal extends Modal {
                 // 文件名行（粗体）+ 路径（灰色），溢出截断
                 const nameRow = textCol.createDiv({ cls: 'rtt-item-name-row' });
                 nameRow.createSpan({ cls: 'rtt-item-name', text: rec.fileName || filePath.split('/').pop() });
+
+                // ✅ 如果有异常未闭合会话，显示警告图标
+                if (rec.hasAbnormalSession) {
+                    const warningIcon = nameRow.createSpan({ cls: 'rtt-item-warning' });
+                    setIcon(warningIcon, 'circle-alert');
+                    warningIcon.style.color = 'orange';
+                    warningIcon.style.marginLeft = '6px';
+                    warningIcon.setAttribute('aria-label', '检测到异常未闭合会话（超过24小时未结束）');
+                }
+
                 const folder = filePath.includes('/') ? filePath.substring(0, filePath.lastIndexOf('/')) : '';
                 if (folder) nameRow.createSpan({ cls: 'rtt-item-path', text: '  ' + folder });
 
@@ -5312,24 +5479,49 @@ class ReadRecordsModal extends Modal {
                 deleteBtn.setAttribute('aria-label', '删除记录');
 
                 // ✅ 删除按钮监听器
-                const deleteListener = (e) => {
+                const deleteListener = async (e) => {
                     e.stopPropagation(); // 阻止事件冒泡，避免触发 item 点击
 
                     // 确认删除
                     const fileName = rec.fileName || filePath.split('/').pop();
                     if (confirm(`确定要删除「${fileName}」的所有阅读记录吗？\n此操作无法撤销。`)) {
-                        // 从 store 中删除
-                        this.store.deleteRecord(filePath);
+                        try {
+                            // 从 store 中删除
+                            await this.store.deleteRecord(filePath);
 
-                        // 如果当前展开的是这个 item，清理 timeline
-                        if (currentExpandedItem === item && currentTimelineEl) {
-                            currentTimelineEl.remove();
-                            currentTimelineEl = null;
-                            currentExpandedItem = null;
+                            // ✅ 从内存 timeline 中移除该文件的所有事件
+                            this.engine.timeline = this.engine.timeline.filter(event =>
+                                event.file !== filePath && event.from !== filePath && event.to !== filePath
+                            );
+
+                            // ✅ 从 readingMap 中移除
+                            this.engine.readingMap.delete(filePath);
+
+                            // ✅ 重新构建 fileRecords 和 entries
+                            const newFileRecords = this._buildFileRecordsFromTimeline();
+                            const newAllEntries = this.filterPath
+                                ? (newFileRecords[this.filterPath] ? [[this.filterPath, newFileRecords[this.filterPath]]] : [])
+                                : Object.entries(newFileRecords);
+
+                            // 更新 baseEntries
+                            baseEntries.length = 0;
+                            baseEntries.push(...newAllEntries.sort(SORT_FNS[sortKey]));
+
+                            // 如果当前展开的是这个 item，清理 timeline
+                            if (currentExpandedItem === item && currentTimelineEl) {
+                                currentTimelineEl.remove();
+                                currentTimelineEl = null;
+                                currentExpandedItem = null;
+                            }
+
+                            // 重新渲染列表
+                            renderList(searchInput.value.trim().toLowerCase(), baseEntries);
+
+                            new Notice(`已删除「${fileName}」的阅读记录`);
+                        } catch (error) {
+                            console.error('[ReadRecordsModal] 删除记录失败:', error);
+                            new Notice(`删除失败: ${error.message}`);
                         }
-
-                        // 重新渲染列表
-                        renderList(searchInput.value.trim().toLowerCase(), baseEntries);
                     }
                 };
                 deleteBtn.addEventListener('click', deleteListener);
@@ -5397,6 +5589,38 @@ class ReadRecordsModal extends Modal {
 
                     const fileHeatmap = new HeatmapView(timelineEl, legacyTimeLine, this.settings, this.store);
                     fileHeatmap.isSingleFile = true;  // ✅ 单文件模式：不显示文件名列
+
+                    // ✅ 设置删除会话后的回调：重新构建数据并刷新列表
+                    fileHeatmap.onSessionDeleted = async (deletedFilePath) => {
+                        // 重新构建 fileRecords
+                        const newFileRecords = this._buildFileRecordsFromTimeline();
+                        const newAllEntries = this.filterPath
+                            ? (newFileRecords[this.filterPath] ? [[this.filterPath, newFileRecords[this.filterPath]]] : [])
+                            : Object.entries(newFileRecords);
+
+                        // 更新 baseEntries
+                        baseEntries.length = 0;
+                        baseEntries.push(...newAllEntries.sort(SORT_FNS[sortKey]));
+
+                        // 更新当前记录的数据
+                        const updatedRec = newFileRecords[filePath];
+                        if (updatedRec) {
+                            Object.assign(rec, updatedRec);
+                        }
+
+                        // 折叠并重新渲染列表
+                        if (currentTimelineEl) {
+                            currentTimelineEl.remove();
+                            currentTimelineEl = null;
+                        }
+                        if (currentExpandedItem) {
+                            currentExpandedItem.removeClass('rtt-item-expanded');
+                            currentExpandedItem = null;
+                        }
+
+                        renderList(searchInput.value.trim().toLowerCase(), baseEntries);
+                    };
+
                     fileHeatmap.render();
                 };
 
@@ -5695,21 +5919,22 @@ const DEFAULT_SETTINGS = {
 
 class ReadTimeTrackerPlugin extends Plugin {
     async onload() {
-        // 加载设置
-        const saved = await this.loadData();
-        this.settings = Object.assign({}, DEFAULT_SETTINGS, (saved ? saved.settings : null) || {});
+        try {
+            // 加载设置
+            const saved = await this.loadData();
+            this.settings = Object.assign({}, DEFAULT_SETTINGS, (saved ? saved.settings : null) || {});
 
-        // ✅ 迁移旧的布尔配置到新的枚举配置（必须检查原始 saved 而非合并后的 this.settings）
-        if ((saved ? saved.settings : null) && typeof saved.settings.autoStartOnOpen === 'boolean' && !saved.settings.autoStartMode) {
-            this.settings.autoStartMode = saved.settings.autoStartOnOpen ? 'start-only' : 'manual';
-            delete this.settings.autoStartOnOpen;
-            await this.saveSettings();
-            console.log('[ReadTimeTracker] 已迁移 autoStartOnOpen 配置');
-        }
+            // ✅ 迁移旧的布尔配置到新的枚举配置（必须检查原始 saved 而非合并后的 this.settings）
+            if ((saved ? saved.settings : null) && typeof saved.settings.autoStartOnOpen === 'boolean' && !saved.settings.autoStartMode) {
+                this.settings.autoStartMode = saved.settings.autoStartOnOpen ? 'start-only' : 'manual';
+                delete this.settings.autoStartOnOpen;
+                await this.saveSettings();
+                console.log('[ReadTimeTracker] 已迁移 autoStartOnOpen 配置');
+            }
 
-        // 初始化数据层
-        this.store = new ReadTimeStore(this, this.settings);
-        await this.store.load();
+            // 初始化数据层
+            this.store = new ReadTimeStore(this, this.settings);
+            await this.store.load();
 
         // 初始化计时引擎
         this.engine = new ReadTimeEngine(
@@ -6046,6 +6271,21 @@ class ReadTimeTrackerPlugin extends Plugin {
         });
 
         console.log('[ReadTimeTracker] 插件已加载 v1.0.0 - Documents Activity Tracker');
+        } catch (error) {
+            console.error('[ReadTimeTracker] 插件加载失败:', error);
+            new Notice('Documents Activity Tracker 加载失败，请查看控制台日志');
+            // 尝试清理已初始化的部分
+            try {
+                if (this.engine && this.engine.destroy) {
+                    await this.engine.destroy();
+                }
+                if (this.widget && this.widget.unmountAll) {
+                    this.widget.unmountAll();
+                }
+            } catch (cleanupError) {
+                console.error('[ReadTimeTracker] 清理失败:', cleanupError);
+            }
+        }
     }
 
     async onunload() {
