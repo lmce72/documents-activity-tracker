@@ -36,6 +36,8 @@ declare module 'bun:test' {
     skip(label: string, fn: TestFn): void;
     only(label: string, fn: () => void): void;
     todo(label: string): void;
+    /** 条件为真时才定义该组 / only define the block when the condition holds */
+    if(condition: boolean): DescribeBlock;
   }
 
   interface ItBlock {
@@ -43,6 +45,8 @@ declare module 'bun:test' {
     skip(label: string, fn?: TestFn): void;
     only(label: string, fn: TestFn, timeout?: number): void;
     todo(label: string): void;
+    /** 条件为真时才定义该用例 / only define the case when the condition holds */
+    if(condition: boolean): ItBlock;
   }
 
   export const describe: DescribeBlock;

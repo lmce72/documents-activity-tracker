@@ -1,0 +1,878 @@
+{
+  "version": 2,
+  "records": {},
+  "timeline": [
+    {
+      "time": "2026-09-07 00:00:00",
+      "type": "start",
+      "file": "Notes/beta.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:00:37",
+      "type": "start",
+      "file": "Notes/gamma.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:01:14",
+      "type": "start",
+      "file": "Archive/delta.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:01:51",
+      "type": "start",
+      "file": "Notes/alpha.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:02:28",
+      "type": "start",
+      "file": "Notes/beta.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:03:05",
+      "type": "start",
+      "file": "Notes/gamma.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:03:42",
+      "type": "start",
+      "file": "Archive/delta.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:04:19",
+      "type": "start",
+      "file": "Notes/alpha.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:04:56",
+      "type": "start",
+      "file": "Notes/beta.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:05:33",
+      "type": "start",
+      "file": "Notes/gamma.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:06:10",
+      "type": "start",
+      "file": "Archive/delta.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:06:47",
+      "type": "start",
+      "file": "Notes/alpha.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:07:24",
+      "type": "start",
+      "file": "Notes/beta.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:08:01",
+      "type": "start",
+      "file": "Notes/gamma.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:08:38",
+      "type": "start",
+      "file": "Archive/delta.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:09:15",
+      "type": "start",
+      "file": "Notes/alpha.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:09:52",
+      "type": "start",
+      "file": "Notes/beta.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:10:29",
+      "type": "start",
+      "file": "Notes/gamma.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:11:06",
+      "type": "start",
+      "file": "Archive/delta.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:11:43",
+      "type": "start",
+      "file": "Notes/alpha.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:12:20",
+      "type": "start",
+      "file": "Notes/beta.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:12:57",
+      "type": "start",
+      "file": "Notes/gamma.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:13:34",
+      "type": "start",
+      "file": "Archive/delta.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:14:11",
+      "type": "start",
+      "file": "Notes/alpha.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:14:48",
+      "type": "start",
+      "file": "Notes/beta.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:15:25",
+      "type": "start",
+      "file": "Notes/gamma.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:16:02",
+      "type": "start",
+      "file": "Archive/delta.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:16:39",
+      "type": "start",
+      "file": "Notes/alpha.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:17:16",
+      "type": "start",
+      "file": "Notes/beta.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:17:53",
+      "type": "start",
+      "file": "Notes/gamma.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:18:30",
+      "type": "start",
+      "file": "Archive/delta.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:19:07",
+      "type": "start",
+      "file": "Notes/alpha.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:19:44",
+      "type": "start",
+      "file": "Notes/beta.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:20:21",
+      "type": "start",
+      "file": "Notes/gamma.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:20:58",
+      "type": "start",
+      "file": "Archive/delta.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:21:35",
+      "type": "start",
+      "file": "Notes/alpha.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:22:12",
+      "type": "start",
+      "file": "Notes/beta.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:22:49",
+      "type": "start",
+      "file": "Notes/gamma.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:23:26",
+      "type": "start",
+      "file": "Archive/delta.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:24:03",
+      "type": "start",
+      "file": "Notes/alpha.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:24:40",
+      "type": "start",
+      "file": "Notes/beta.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:25:17",
+      "type": "start",
+      "file": "Notes/gamma.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:25:54",
+      "type": "start",
+      "file": "Archive/delta.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:26:31",
+      "type": "start",
+      "file": "Notes/alpha.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:27:08",
+      "type": "start",
+      "file": "Notes/beta.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:27:45",
+      "type": "start",
+      "file": "Notes/gamma.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:28:22",
+      "type": "start",
+      "file": "Archive/delta.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:28:59",
+      "type": "start",
+      "file": "Notes/alpha.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:29:36",
+      "type": "start",
+      "file": "Notes/beta.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:30:13",
+      "type": "start",
+      "file": "Notes/gamma.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:30:50",
+      "type": "start",
+      "file": "Archive/delta.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:31:27",
+      "type": "start",
+      "file": "Notes/alpha.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:32:04",
+      "type": "start",
+      "file": "Notes/beta.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 00:32:41",
+      "type": "auto-save",
+      "file": "Notes/gamma.md",
+      "state": "saved"
+    },
+    {
+      "time": "2026-09-07 00:33:18",
+      "type": "auto-save",
+      "file": "Archive/delta.md",
+      "state": "saved"
+    },
+    {
+      "time": "2026-09-07 00:33:55",
+      "type": "auto-save",
+      "file": "Notes/alpha.md",
+      "state": "saved"
+    },
+    {
+      "time": "2026-09-07 00:34:32",
+      "type": "auto-save",
+      "file": "Notes/beta.md",
+      "state": "saved"
+    },
+    {
+      "time": "2026-09-07 00:35:09",
+      "type": "auto-save",
+      "file": "Notes/gamma.md",
+      "state": "saved"
+    },
+    {
+      "time": "2026-09-07 00:35:46",
+      "type": "auto-save",
+      "file": "Archive/delta.md",
+      "state": "saved"
+    },
+    {
+      "time": "2026-09-07 00:36:23",
+      "type": "auto-save",
+      "file": "Notes/alpha.md",
+      "state": "saved"
+    },
+    {
+      "time": "2026-09-07 00:37:00",
+      "type": "auto-save",
+      "file": "Notes/beta.md",
+      "state": "saved"
+    },
+    {
+      "time": "2026-09-07 00:37:37",
+      "type": "auto-save",
+      "file": "Notes/gamma.md",
+      "state": "saved"
+    },
+    {
+      "time": "2026-09-07 00:38:14",
+      "type": "auto-save",
+      "file": "Archive/delta.md",
+      "state": "saved"
+    },
+    {
+      "time": "2026-09-07 00:38:51",
+      "type": "auto-save",
+      "file": "Notes/alpha.md",
+      "state": "saved"
+    },
+    {
+      "time": "2026-09-07 00:39:28",
+      "type": "auto-save",
+      "file": "Notes/beta.md",
+      "state": "saved"
+    },
+    {
+      "time": "2026-09-07 00:40:05",
+      "type": "auto-save",
+      "file": "Notes/gamma.md",
+      "state": "saved"
+    },
+    {
+      "time": "2026-09-07 00:40:42",
+      "type": "auto-save",
+      "file": "Archive/delta.md",
+      "state": "saved"
+    },
+    {
+      "time": "2026-09-07 00:41:19",
+      "type": "auto-save",
+      "file": "Notes/alpha.md",
+      "state": "saved"
+    },
+    {
+      "time": "2026-09-07 00:41:56",
+      "type": "auto-save",
+      "file": "Notes/beta.md",
+      "state": "saved"
+    },
+    {
+      "time": "2026-09-07 00:42:33",
+      "type": "auto-save",
+      "file": "Notes/gamma.md",
+      "state": "saved"
+    },
+    {
+      "time": "2026-09-07 00:43:10",
+      "type": "auto-save",
+      "file": "Archive/delta.md",
+      "state": "saved"
+    },
+    {
+      "time": "2026-09-07 00:43:47",
+      "type": "auto-save",
+      "file": "Notes/alpha.md",
+      "state": "saved"
+    },
+    {
+      "time": "2026-09-07 00:44:24",
+      "type": "auto-save",
+      "file": "Notes/beta.md",
+      "state": "saved"
+    },
+    {
+      "time": "2026-09-07 00:45:01",
+      "type": "auto-save",
+      "file": "Notes/gamma.md",
+      "state": "saved"
+    },
+    {
+      "time": "2026-09-07 00:45:38",
+      "type": "auto-save",
+      "file": "Archive/delta.md",
+      "state": "saved"
+    },
+    {
+      "time": "2026-09-07 00:46:15",
+      "type": "auto-save",
+      "file": "Notes/alpha.md",
+      "state": "saved"
+    },
+    {
+      "time": "2026-09-07 00:46:52",
+      "type": "blur",
+      "file": "Notes/beta.md",
+      "state": "pausing",
+      "reason": "window-blur"
+    },
+    {
+      "time": "2026-09-07 00:47:29",
+      "type": "blur",
+      "file": "Notes/gamma.md",
+      "state": "pausing",
+      "reason": "window-blur"
+    },
+    {
+      "time": "2026-09-07 00:48:06",
+      "type": "blur",
+      "file": "Archive/delta.md",
+      "state": "pausing",
+      "reason": "window-blur"
+    },
+    {
+      "time": "2026-09-07 00:48:43",
+      "type": "blur",
+      "file": "Notes/alpha.md",
+      "state": "pausing",
+      "reason": "window-blur"
+    },
+    {
+      "time": "2026-09-07 00:49:20",
+      "type": "blur",
+      "file": "Notes/beta.md",
+      "state": "pausing",
+      "reason": "window-blur"
+    },
+    {
+      "time": "2026-09-07 00:49:57",
+      "type": "blur",
+      "file": "Notes/gamma.md",
+      "state": "pausing",
+      "reason": "window-blur"
+    },
+    {
+      "time": "2026-09-07 00:50:34",
+      "type": "blur",
+      "file": "Archive/delta.md",
+      "state": "pausing",
+      "reason": "window-blur"
+    },
+    {
+      "time": "2026-09-07 00:51:11",
+      "type": "blur",
+      "file": "Notes/alpha.md",
+      "state": "pausing",
+      "reason": "window-blur"
+    },
+    {
+      "time": "2026-09-07 00:51:48",
+      "type": "blur",
+      "file": "Notes/beta.md",
+      "state": "pausing",
+      "reason": "window-blur"
+    },
+    {
+      "time": "2026-09-07 00:52:25",
+      "type": "blur",
+      "file": "Notes/gamma.md",
+      "state": "pausing",
+      "reason": "window-blur"
+    },
+    {
+      "time": "2026-09-07 00:53:02",
+      "type": "blur",
+      "file": "Archive/delta.md",
+      "state": "pausing",
+      "reason": "window-blur"
+    },
+    {
+      "time": "2026-09-07 00:53:39",
+      "type": "blur",
+      "file": "Notes/alpha.md",
+      "state": "pausing",
+      "reason": "window-blur"
+    },
+    {
+      "time": "2026-09-07 00:54:16",
+      "type": "blur",
+      "file": "Notes/beta.md",
+      "state": "pausing",
+      "reason": "window-blur"
+    },
+    {
+      "time": "2026-09-07 00:54:53",
+      "type": "blur",
+      "file": "Notes/gamma.md",
+      "state": "pausing",
+      "reason": "window-blur"
+    },
+    {
+      "time": "2026-09-07 00:55:30",
+      "type": "blur",
+      "file": "Archive/delta.md",
+      "state": "pausing",
+      "reason": "window-blur"
+    },
+    {
+      "time": "2026-09-07 00:56:07",
+      "type": "blur",
+      "file": "Notes/alpha.md",
+      "state": "pausing",
+      "reason": "window-blur"
+    },
+    {
+      "time": "2026-09-07 00:56:44",
+      "type": "blur",
+      "file": "Notes/beta.md",
+      "state": "pausing",
+      "reason": "window-blur"
+    },
+    {
+      "time": "2026-09-07 00:57:21",
+      "type": "blur",
+      "file": "Notes/gamma.md",
+      "state": "pausing",
+      "reason": "window-blur"
+    },
+    {
+      "time": "2026-09-07 00:57:58",
+      "type": "blur",
+      "file": "Archive/delta.md",
+      "state": "pausing",
+      "reason": "window-blur"
+    },
+    {
+      "time": "2026-09-07 00:58:35",
+      "type": "focus",
+      "file": "Notes/alpha.md",
+      "state": "tracking",
+      "reason": "window-focus"
+    },
+    {
+      "time": "2026-09-07 00:59:12",
+      "type": "focus",
+      "file": "Notes/beta.md",
+      "state": "tracking",
+      "reason": "window-focus"
+    },
+    {
+      "time": "2026-09-07 00:59:49",
+      "type": "focus",
+      "file": "Notes/gamma.md",
+      "state": "tracking",
+      "reason": "window-focus"
+    },
+    {
+      "time": "2026-09-07 01:00:26",
+      "type": "focus",
+      "file": "Archive/delta.md",
+      "state": "tracking",
+      "reason": "window-focus"
+    },
+    {
+      "time": "2026-09-07 01:01:03",
+      "type": "focus",
+      "file": "Notes/alpha.md",
+      "state": "tracking",
+      "reason": "window-focus"
+    },
+    {
+      "time": "2026-09-07 01:01:40",
+      "type": "focus",
+      "file": "Notes/beta.md",
+      "state": "tracking",
+      "reason": "window-focus"
+    },
+    {
+      "time": "2026-09-07 01:02:17",
+      "type": "focus",
+      "file": "Notes/gamma.md",
+      "state": "tracking",
+      "reason": "window-focus"
+    },
+    {
+      "time": "2026-09-07 01:02:54",
+      "type": "focus",
+      "file": "Archive/delta.md",
+      "state": "tracking",
+      "reason": "window-focus"
+    },
+    {
+      "time": "2026-09-07 01:03:31",
+      "type": "focus",
+      "file": "Notes/alpha.md",
+      "state": "tracking",
+      "reason": "window-focus"
+    },
+    {
+      "time": "2026-09-07 01:04:08",
+      "type": "focus",
+      "file": "Notes/beta.md",
+      "state": "tracking",
+      "reason": "window-focus"
+    },
+    {
+      "time": "2026-09-07 01:04:45",
+      "type": "focus",
+      "file": "Notes/gamma.md",
+      "state": "tracking",
+      "reason": "window-focus"
+    },
+    {
+      "time": "2026-09-07 01:05:22",
+      "type": "focus",
+      "file": "Archive/delta.md",
+      "state": "tracking",
+      "reason": "window-focus"
+    },
+    {
+      "time": "2026-09-07 01:05:59",
+      "type": "focus",
+      "file": "Notes/alpha.md",
+      "state": "tracking",
+      "reason": "window-focus"
+    },
+    {
+      "time": "2026-09-07 01:06:36",
+      "type": "focus",
+      "file": "Notes/beta.md",
+      "state": "tracking",
+      "reason": "window-focus"
+    },
+    {
+      "time": "2026-09-07 01:07:13",
+      "type": "switch",
+      "from": "Notes/gamma.md",
+      "to": "Archive/delta.md",
+      "fromState": "tracking",
+      "toState": "tracking"
+    },
+    {
+      "time": "2026-09-07 01:07:50",
+      "type": "switch",
+      "from": "Archive/delta.md",
+      "to": "Notes/alpha.md",
+      "fromState": "tracking",
+      "toState": "tracking"
+    },
+    {
+      "time": "2026-09-07 01:08:27",
+      "type": "switch",
+      "from": "Notes/alpha.md",
+      "to": "Notes/beta.md",
+      "fromState": "tracking",
+      "toState": "tracking"
+    },
+    {
+      "time": "2026-09-07 01:09:04",
+      "type": "switch",
+      "from": "Notes/beta.md",
+      "to": "Notes/gamma.md",
+      "fromState": "tracking",
+      "toState": "tracking"
+    },
+    {
+      "time": "2026-09-07 01:09:41",
+      "type": "switch",
+      "from": "Notes/gamma.md",
+      "to": "Archive/delta.md",
+      "fromState": "tracking",
+      "toState": "tracking"
+    },
+    {
+      "time": "2026-09-07 01:10:18",
+      "type": "switch",
+      "from": "Archive/delta.md",
+      "to": "Notes/alpha.md",
+      "fromState": "tracking",
+      "toState": "tracking"
+    },
+    {
+      "time": "2026-09-07 01:10:55",
+      "type": "switch",
+      "from": "Notes/alpha.md",
+      "to": "Notes/beta.md",
+      "fromState": "tracking",
+      "toState": "tracking"
+    },
+    {
+      "time": "2026-09-07 01:11:32",
+      "type": "switch",
+      "from": "Notes/beta.md",
+      "to": "Notes/gamma.md",
+      "fromState": "tracking",
+      "toState": "tracking"
+    },
+    {
+      "time": "2026-09-07 01:12:09",
+      "type": "pause",
+      "file": "Notes/gamma.md",
+      "state": "pausing"
+    },
+    {
+      "time": "2026-09-07 01:12:46",
+      "type": "pause",
+      "file": "Archive/delta.md",
+      "state": "pausing"
+    },
+    {
+      "time": "2026-09-07 01:13:23",
+      "type": "pause",
+      "file": "Notes/alpha.md",
+      "state": "pausing"
+    },
+    {
+      "time": "2026-09-07 01:14:00",
+      "type": "pause",
+      "file": "Notes/beta.md",
+      "state": "pausing"
+    },
+    {
+      "time": "2026-09-07 01:14:37",
+      "type": "pause",
+      "file": "Notes/gamma.md",
+      "state": "pausing"
+    },
+    {
+      "time": "2026-09-07 01:15:14",
+      "type": "pause",
+      "file": "Archive/delta.md",
+      "state": "pausing"
+    },
+    {
+      "time": "2026-09-07 01:15:51",
+      "type": "discard",
+      "file": "Notes/alpha.md"
+    },
+    {
+      "time": "2026-09-07 01:16:28",
+      "type": "discard",
+      "file": "Notes/beta.md"
+    },
+    {
+      "time": "2026-09-07 01:17:05",
+      "type": "discard",
+      "file": "Notes/gamma.md"
+    },
+    {
+      "time": "2026-09-07 01:17:42",
+      "type": "discard",
+      "file": "Archive/delta.md"
+    },
+    {
+      "time": "2026-09-07 01:18:19",
+      "type": "discard",
+      "file": "Notes/alpha.md"
+    },
+    {
+      "time": "2026-09-07 01:18:56",
+      "type": "discard",
+      "file": "Notes/beta.md"
+    },
+    {
+      "time": "2026-09-07 01:19:33",
+      "type": "save",
+      "file": "Notes/gamma.md",
+      "state": "saved"
+    },
+    {
+      "time": "2026-09-07 01:20:10",
+      "type": "save",
+      "file": "Archive/delta.md",
+      "state": "saved"
+    },
+    {
+      "time": "2026-09-07 01:20:47",
+      "type": "save",
+      "file": "Notes/alpha.md",
+      "state": "saved"
+    },
+    {
+      "time": "2026-09-07 01:21:24",
+      "type": "save",
+      "file": "Notes/beta.md",
+      "state": "saved"
+    },
+    {
+      "time": "2026-09-07 01:22:01",
+      "type": "save",
+      "file": "Notes/gamma.md",
+      "state": "saved"
+    },
+    {
+      "time": "2026-09-07 01:22:38",
+      "type": "resume",
+      "file": "Archive/delta.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 01:23:15",
+      "type": "resume",
+      "file": "Notes/alpha.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 01:23:52",
+      "type": "resume",
+      "file": "Notes/beta.md",
+      "state": "tracking"
+    },
+    {
+      "time": "2026-09-07 01:24:29",
+      "type": "resume",
+      "file": "Notes/gamma.md",
+      "state": "tracking"
+    }
+  ],
+  "settings": {}
+}
