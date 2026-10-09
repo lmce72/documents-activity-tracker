@@ -1,16 +1,13 @@
 /**
- * 核心常量 / Core constants
+ * Core constants
  *
- * 来源：vault 版 main.js 第 133-158 行（STATUS / ActionTypes）与第 4952-4966 行
- * （DEFAULT_SETTINGS），另加本次重构引入的常量。
  * Origin: vault main.js lines 133-158 and 4952-4966, plus new constants introduced here.
  *
- * 本模块是第 0 层叶子 / L0 leaf module.
+ * L0 leaf module.
  */
 
 /**
- * 文件状态枚举 / File status enum.
- * 与原实现完全一致，取值不可更改（会写入持久化数据）。
+ * File status enum.
  * Identical to the original; values must not change as they are persisted.
  */
 export const STATUS = {
@@ -24,11 +21,7 @@ export const STATUS = {
 export type FileStatus = (typeof STATUS)[keyof typeof STATUS];
 
 /**
- * Action 类型 / Action types.
- *
- * 相比原实现删除了 4 个有声明无实现的死常量：
- *   START_SESSION / PAUSE_SESSION / RESUME_SESSION / UNBIND_FILE（引用数均为 0）
- * 并把 CLEAR_PENDING_WRITES 改名为 CONSUME_PENDING_WRITES（语义：按条数消费队首）。
+ * Action types.
  *
  * Removed 4 declared-but-never-implemented constants (all had zero references) and
  * renamed CLEAR_PENDING_WRITES to CONSUME_PENDING_WRITES.
@@ -46,35 +39,76 @@ export const ActionTypes = {
   RESTORE_FILE: 'RESTORE_FILE',
   CONSUME_PENDING_WRITES: 'CONSUME_PENDING_WRITES',
   REQUEUE_PENDING_WRITES: 'REQUEUE_PENDING_WRITES',
+
+  SET_WINDOW_FOCUS: 'SET_WINDOW_FOCUS',
+  /**
+   *
+   * The original had no action for "nothing trackable is open": one version forced
+   * activeFilePath to null, the other did nothing and left the timer bound to a closed file.
+   */
+  UNBIND_FILE: 'UNBIND_FILE',
+
+  MANUAL_START: 'MANUAL_START',
+  MANUAL_PAUSE: 'MANUAL_PAUSE',
+  MANUAL_RESUME: 'MANUAL_RESUME',
+  MANUAL_STOP: 'MANUAL_STOP',
+  /** place a mark during manual timing */
+  MANUAL_FLAG: 'MANUAL_FLAG',
 } as const;
 
 export type ActionType = (typeof ActionTypes)[keyof typeof ActionTypes];
 
 /**
- * 当前数据格式版本 / Current data format version.
- * 只在迁移路径中读写，绝不在普通保存时写回（原实现把 version=2 硬编码在
- * saveTimeline 里，导致 v3 数据被降级标记、反复迁移）。
+ * Current data format version.
  * Only touched on the migration path — never written back on ordinary saves.
  */
 export const DATA_VERSION = 3;
 
-/** localStorage 崩溃恢复快照的键名 / Key for the crash-recovery snapshot. */
+/** Key for the crash-recovery snapshot. */
 export const LS_SNAPSHOT_KEY = 'rtt_timer_state';
 
 /**
- * tick 间隔上限（毫秒）/ Maximum tick gap in milliseconds.
- * 超过此值认为系统休眠过，本 tick 丢弃以防错误累加。
  * Gaps larger than this indicate a sleep; the tick is dropped to avoid bogus accumulation.
  */
 export const TICK_GAP_LIMIT_MS = 5000;
 
 /**
- * 会被持久化到 timeline 的事件类型 / Event types persisted into the timeline.
+ * Maximum tick gap for the unfocused channel — deliberately different from the focused one.
  *
- * 这是本次重构最关键的修正：原白名单为
+ * Chromium throttles timers in hidden windows down to once per minute after five
+ * minutes. Reusing the 5s guard would discard nearly every unfocused tick and record
+ * nothing. 90s sits above the throttle interval (60s) and far below a real sleep jump,
+ * so sparse ticks settle correctly while sleep jumps are still dropped.
+ *
+ * Note: the unfocused channel accumulates the *actual* gap, not 1s per tick, because a
+ * throttled tick represents a whole minute.
+ */
+export const UNFOCUSED_GAP_LIMIT_MS = 90_000;
+
+/**
+ *
+ * Only used when deriving unfocused time from the event stream. Live accumulation is
+ * already guarded by UNFOCUSED_GAP_LIMIT_MS; the derived path has no tick evidence, so
+ * a stretch beyond 4h is treated as absence (overnight, idle machine) and not counted.
+ */
+export const UNFOCUSED_ATTRIBUTION_CAP_SECONDS = 4 * 60 * 60;
+
+/**
+ * Manual timer status.
+ * Unrelated to the document-tracking `STATUS`: the manual timer binds to no file.
+ */
+export const MANUAL_STATUS = {
+  IDLE: 'idle',
+  RUNNING: 'running',
+  PAUSED: 'paused',
+} as const;
+
+export type ManualStatus = (typeof MANUAL_STATUS)[keyof typeof MANUAL_STATUS];
+
+/**
+ * Event types persisted into the timeline.
+ *
  *   ['start','pause','resume','save','auto-save','discard']
- * 会把真实数据中 41 个事件（blur 19 + focus 14 + switch 8）静默丢弃。
- * 这里补全为九类，并使迁移变成非破坏性。
  *
  * The most important fix in this refactor: the original whitelist silently dropped
  * 41 real events (blur 19 + focus 14 + switch 8). Completed to nine types so the

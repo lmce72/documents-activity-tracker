@@ -1,10 +1,5 @@
 /**
- * 迁移无损性测试 / Migration non-destructiveness tests
- *
- * 这是本次重构最重要的一组断言。原实现的迁移会静默丢弃真实数据中 41 个事件
- * （blur 19 + focus 14 + switch 8），并把 switch 事件的 from/to、blur/focus 的
- * reason 一并抹掉。下面的测试把「一条都不能少、一个字段都不能丢、连跑两次结果
- * 相同」固化下来，任何回归都会立刻失败。
+ * Migration non-destructiveness tests
  *
  * The most important assertions in this refactor. The original migration silently
  * dropped 41 real events and erased switch's from/to and blur/focus's reason. These
@@ -47,7 +42,7 @@ describe('migrateV2ToV3 — 无损性 / non-destructiveness', () => {
     const after = countByType(cache.timeline);
 
     expect(after).toEqual(before);
-    // 原白名单会丢掉的三种类型
+
     expect(after.blur).toBe(19);
     expect(after.focus).toBe(14);
     expect(after.switch).toBe(8);
@@ -64,7 +59,7 @@ describe('migrateV2ToV3 — 无损性 / non-destructiveness', () => {
       expect(typeof e.to).toBe('string');
       expect(e.fromState).toBe('tracking');
       expect(e.toState).toBe('tracking');
-      // 原实现的 .map() 会写 file: event.file || event.to || event.from
+
       expect('file' in e).toBe(false);
     }
   });
@@ -85,7 +80,7 @@ describe('migrateV2ToV3 — 无损性 / non-destructiveness', () => {
     expect(JSON.stringify(twice.cache.timeline)).toBe(JSON.stringify(once.cache.timeline));
     expect(JSON.stringify(twice.cache.records)).toBe(JSON.stringify(once.cache.records));
     expect(twice.cache.version).toBe(DATA_VERSION);
-    // 第二次已无版本变化，migrated 应为 false
+
     expect(twice.report.migrated).toBe(false);
   });
 
@@ -114,8 +109,8 @@ describe('migrateV2ToV3 — 边界 / edge cases', () => {
       records: {},
       timeline: [
         { time: '2026-09-07 08:00:00', type: 'start', file: 'a.md', state: 'tracking' },
-        { type: 'start', file: 'b.md' }, // 缺 time
-        { time: '', type: 'start', file: 'c.md' }, // 空 time
+        { type: 'start', file: 'b.md' },
+        { time: '', type: 'start', file: 'c.md' },
         null,
       ],
     } as unknown as HistoryCache;
@@ -140,7 +135,7 @@ describe('migrateV2ToV3 — 边界 / edge cases', () => {
     expect(report.unknownEventTypes).toEqual(['some-future-type']);
   });
 
-  it('records 归一化为三个统计字段', () => {
+  it('records 归一化为四个统计字段', () => {
     const withRecords = {
       version: 2,
       timeline: [],
@@ -148,9 +143,11 @@ describe('migrateV2ToV3 — 边界 / edge cases', () => {
         'Notes/a.md': {
           fileName: 'a.md',
           totalReadTime: 120,
+
+          unfocusedReadTime: 45,
           lastReadAt: '2026-09-07',
-          readTimeToday: 60, // 派生字段，应被移除
-          readTimeLine: [{ '2026-09-07 08:00': 'tracking' }], // 派生字段，应被移除
+          readTimeToday: 60,
+          readTimeLine: [{ '2026-09-07 08:00': 'tracking' }],
         },
       },
     } as unknown as HistoryCache;
@@ -158,10 +155,26 @@ describe('migrateV2ToV3 — 边界 / edge cases', () => {
     const { cache, report } = migrateV2ToV3(withRecords);
     const rec = cache.records['Notes/a.md']!;
 
-    expect(Object.keys(rec).sort()).toEqual(['fileName', 'lastReadAt', 'totalReadTime']);
+    expect(Object.keys(rec).sort()).toEqual([
+      'fileName',
+      'lastReadAt',
+      'totalReadTime',
+      'unfocusedReadTime',
+    ]);
     expect(rec.totalReadTime).toBe(120);
+    expect(rec.unfocusedReadTime).toBe(45);
     expect(report.recordsBefore).toBe(1);
     expect(report.recordsAfter).toBe(1);
+  });
+
+  it('旧数据没有 unfocusedReadTime 时补 0', () => {
+    const legacy = {
+      version: 2,
+      timeline: [],
+      records: { 'Notes/b.md': { fileName: 'b.md', totalReadTime: 30, lastReadAt: '' } },
+    } as unknown as HistoryCache;
+
+    expect(migrateV2ToV3(legacy).cache.records['Notes/b.md']!.unfocusedReadTime).toBe(0);
   });
 
   it('空输入不抛异常', () => {
@@ -190,9 +203,7 @@ describe('eventFileRefs', () => {
 });
 
 /**
- * 可选：对真实数据跑同一组不变量。
  *
- * 真实文件含个人阅读历史，故不提交进仓库。本地想校验时：
  *   RTT_REAL_DATA="/path/to/readTimeHistory.json" bun test
  *
  * Optional: run the same invariants against the real file when explicitly pointed at it.

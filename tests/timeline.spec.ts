@@ -1,8 +1,7 @@
 /**
- * 时间轴派生计算测试 / Timeline derivation tests
+ * Timeline derivation tests
  *
- * 覆盖从 UI 抽取到 core 的纯函数：buildFileRecords / getTodaySeconds /
- * getTodaySessionCount / getAllTodaySeconds / removeFileEvents，以及过滤器与时间工具。
+ * getTodaySeconds /
  */
 
 import { describe, expect, it } from 'bun:test';
@@ -29,13 +28,14 @@ function loadEvents(): TimelineEvent[] {
   return (JSON.parse(readFileSync(FIXTURE, 'utf8')) as HistoryCache).timeline;
 }
 
-/** 造一个进行中的文件状态 / Build an in-progress file state. */
+/** Build an in-progress file state. */
 function fakeFile(overrides: Partial<TimerFileState> = {}): TimerFileState {
   return {
     filePath: 'Notes/alpha.md',
     status: 'tracking',
     sessionStartTime: '2026-09-07 08:00',
     activeSeconds: 42,
+    unfocusedSeconds: 0,
     pausedSeconds: 0,
     lastTickTimestamp: null,
     pauseStartTimestamp: null,
@@ -47,7 +47,7 @@ function fakeFile(overrides: Partial<TimerFileState> = {}): TimerFileState {
 
 describe('buildFileRecords', () => {
   const TODAY = '2026-09-07';
-  // 用一个远晚于夹具数据的时间，模拟「这些会话早已闭合」
+
   const NOW = new Date('2026-09-20T00:00:00').getTime();
 
   it('能从 138 个事件里构建出文件记录', () => {
@@ -56,7 +56,7 @@ describe('buildFileRecords', () => {
   });
 
   it('不把 switch 事件当成某个文件的会话起点', () => {
-    // switch 事件没有 file 字段，只有 from/to；它不应产生独立的文件记录键
+
     const records = buildFileRecords(loadEvents(), NOW, TODAY);
     for (const filePath of Object.keys(records)) {
       expect(filePath.length).toBeGreaterThan(0);
@@ -84,7 +84,7 @@ describe('buildFileRecords', () => {
     const open = [
       { time: '2026-09-01 08:00:00', type: 'start', file: 'Notes/alpha.md', state: 'tracking' },
     ] as TimelineEvent[];
-    const now = new Date('2026-09-07T08:00:00').getTime(); // 6 天后
+    const now = new Date('2026-09-07T08:00:00').getTime();
     const records = buildFileRecords(open, now, '2026-09-07');
     const rec = records['Notes/alpha.md']!;
 
@@ -160,7 +160,7 @@ describe('今日统计 / today figures', () => {
       { time: `${TODAY} 09:00:00`, type: 'auto-save', file: 'a.md', state: 'saved' },
     ];
     expect(getTodaySessionCount(events, null, 'a.md', TODAY)).toBe(2);
-    // 进行中的一轮 +1
+
     expect(getTodaySessionCount(events, fakeFile(), 'a.md', TODAY)).toBe(3);
   });
 
@@ -186,7 +186,7 @@ describe('recalcAggregates', () => {
     ] as const;
 
     const result = recalcAggregates([...sessions], '2026-09-07');
-    expect(result.totalReadTime).toBe(90); // 30 + 60
+    expect(result.totalReadTime).toBe(90); //  30 + 60
     expect(result.readTimeToday).toBe(30);
   });
 
@@ -199,7 +199,7 @@ describe('recalcAggregates', () => {
 });
 
 describe('shouldTrackFile', () => {
-  // 取自真实配置：白名单模式下一长串路径前缀
+
   const whitelist = {
     ...DEFAULT_SETTINGS,
     filterMode: 'whitelist',

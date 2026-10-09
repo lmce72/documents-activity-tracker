@@ -1,8 +1,5 @@
 /**
- * bun:test 的最小桩声明 / Minimal stub for bun:test
- *
- * 本机离线且 bun 缓存中无 @types/bun，故在此声明测试所需的 API 形状，
- * 让 tests/**\/*.spec.ts 能被 tsc 检查。运行时由 bun 自身提供真实实现。
+ * Minimal stub for bun:test
  *
  * Offline machine with no @types/bun in the bun cache, so we declare the shape
  * of the test API we use. At runtime bun supplies the real implementation.
@@ -24,6 +21,8 @@ declare module 'bun:test' {
     toBeGreaterThanOrEqual(n: number): void;
     toBeLessThan(n: number): void;
     toBeLessThanOrEqual(n: number): void;
+
+    toBeCloseTo(expected: number, precision?: number): void;
     toContain(item: unknown): void;
     toHaveLength(n: number): void;
     toMatch(re: RegExp | string): void;
@@ -36,7 +35,7 @@ declare module 'bun:test' {
     skip(label: string, fn: TestFn): void;
     only(label: string, fn: () => void): void;
     todo(label: string): void;
-    /** 条件为真时才定义该组 / only define the block when the condition holds */
+    /** only define the block when the condition holds */
     if(condition: boolean): DescribeBlock;
   }
 
@@ -45,7 +44,7 @@ declare module 'bun:test' {
     skip(label: string, fn?: TestFn): void;
     only(label: string, fn: TestFn, timeout?: number): void;
     todo(label: string): void;
-    /** 条件为真时才定义该用例 / only define the case when the condition holds */
+    /** only define the case when the condition holds */
     if(condition: boolean): ItBlock;
   }
 

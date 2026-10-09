@@ -1,12 +1,5 @@
 /**
- * 状态机测试 / Reducer tests
- *
- * 覆盖本次重构中改动最深的几处：
- *   - 双秒数字段合并（activeSeconds + pausedSeconds，墙钟派生）
- *   - 跨日处理 DAY_ROLLOVER（原实现只有常量、无 case）
- *   - 待写入队列的消费语义（CONSUME / REQUEUE）
- *   - 时间注入带来的确定性（「跟踪 10s → 暂停 30s → 恢复 10s」可精确断言）
- *   - reducer 的纯性（不修改入参 state）
+ * Reducer tests
  *
  * Covers the deepest changes: merged second-counters, the previously unimplemented
  * DAY_ROLLOVER, the pending-write consumption semantics, clock injection, and purity.
@@ -22,7 +15,7 @@ import { CapturingLogger, FakeClock, testDeps } from './helpers/fake-clock';
 const FILE = 'Notes/alpha.md';
 const OTHER = 'Notes/beta.md';
 
-/** 建一个可用的测试环境 / Build a fresh test context. */
+/** Build a fresh test context. */
 function setup() {
   const clock = new FakeClock('2026-09-15T10:00:00');
   const logger = new CapturingLogger();
@@ -35,7 +28,7 @@ function setup() {
     return state;
   };
 
-  /** 把当前队列清空，使断言只看到本用例新产生的事件 / drain so assertions see only new writes. */
+  /** drain so assertions see only new writes. */
   const drain = (): void => {
     const count = state.pendingWrites.length;
     if (count > 0) {
@@ -47,9 +40,7 @@ function setup() {
 }
 
 /**
- * 让某文件进入追踪态 / Put a file into TRACKING with an open session.
- * 默认清空待写入队列：SWITCH_FILE 自身会推一条 timeline-start，
- * 若不清空，后续针对 pendingWrites 的断言都会被它干扰。
+ * Put a file into TRACKING with an open session.
  *
  * Drains pending writes by default, because SWITCH_FILE itself queues a
  * timeline-start that would otherwise skew later assertions.
@@ -62,7 +53,7 @@ function startTracking(ctx: ReturnType<typeof setup>, filePath = FILE): void {
   ctx.drain();
 }
 
-/** 推进 n 秒，每秒一个 TICK / Advance n seconds, one TICK per second. */
+/** Advance n seconds, one TICK per second. */
 function tick(ctx: ReturnType<typeof setup>, seconds: number, filePath = FILE): void {
   for (let i = 0; i < seconds; i++) {
     ctx.clock.advanceSeconds(1);
@@ -97,14 +88,12 @@ describe('TICK — 累加与间隔防护', () => {
     tick(ctx, 5);
     expect(ctx.getState().files.get(FILE)!.activeSeconds).toBe(5);
 
-    // 模拟系统休眠：直接跨过 60 秒
     ctx.clock.advanceSeconds(60);
     ctx.dispatch({ type: ActionTypes.TICK, payload: { filePath: FILE } });
 
-    expect(ctx.getState().files.get(FILE)!.activeSeconds).toBe(5); // 未增加
+    expect(ctx.getState().files.get(FILE)!.activeSeconds).toBe(5);
     expect(ctx.logger.hasWarning('间隔过长')).toBe(true);
 
-    // 丢弃后时间戳已刷新，下一次正常 tick 应恢复累加
     tick(ctx, 1);
     expect(ctx.getState().files.get(FILE)!.activeSeconds).toBe(6);
   });
@@ -128,19 +117,16 @@ describe('TOGGLE_PAUSE — 双秒数字段合并', () => {
     startTracking(ctx);
     tick(ctx, 10);
 
-    // 暂停
     ctx.clock.advanceSeconds(1);
     ctx.dispatch({ type: ActionTypes.TOGGLE_PAUSE, payload: { filePath: FILE } });
     expect(ctx.getState().files.get(FILE)!.status).toBe(STATUS.PAUSED);
 
-    // 暂停 30 秒（期间不 tick）
     ctx.clock.advanceSeconds(30);
 
-    // 恢复
     ctx.dispatch({ type: ActionTypes.TOGGLE_PAUSE, payload: { filePath: FILE } });
     const afterResume = ctx.getState().files.get(FILE)!;
     expect(afterResume.status).toBe(STATUS.TRACKING);
-    // 恰好 30 秒。暂停前那 1 秒落在两次 tick 之间、不计入（与原实现一致）
+
     expect(afterResume.pausedSeconds).toBe(30);
     expect(afterResume.activeSeconds).toBe(10);
 
@@ -148,7 +134,7 @@ describe('TOGGLE_PAUSE — 双秒数字段合并', () => {
     const final = ctx.getState().files.get(FILE)!;
     expect(final.activeSeconds).toBe(20);
     expect(final.pausedSeconds).toBe(30);
-    // 墙钟 = 活跃 + 暂停，等价于原实现的 accumulatedSeconds
+
     expect(wallClockSeconds(final)).toBe(50);
   });
 
@@ -179,7 +165,7 @@ describe('TOGGLE_PAUSE — 双秒数字段合并', () => {
       type: ActionTypes.TOGGLE_PAUSE,
       payload: { filePath: FILE },
     });
-    expect(after).toBe(before); // 引用相等 = 未产生新状态
+    expect(after).toBe(before);
   });
 });
 
@@ -207,7 +193,7 @@ describe('SAVE_SESSION — 阈值与结算', () => {
     const ctx = setup();
     startTracking(ctx);
     tick(ctx, 10);
-    // 制造一段暂停，验证 totalSeconds 记的是墙钟而非活跃
+
     ctx.dispatch({ type: ActionTypes.TOGGLE_PAUSE, payload: { filePath: FILE } });
     ctx.clock.advanceSeconds(20);
     ctx.dispatch({ type: ActionTypes.TOGGLE_PAUSE, payload: { filePath: FILE } });
@@ -224,7 +210,7 @@ describe('SAVE_SESSION — 阈值与结算', () => {
     if (write.type !== 'session') throw new Error('unreachable');
 
     expect(write.activeSeconds).toBe(10);
-    expect(write.totalSeconds).toBe(30); // 10 活跃 + 20 暂停
+    expect(write.totalSeconds).toBe(30);
     expect(write.session[Object.keys(write.session).sort().pop()!]).toBe('saved');
 
     const file = ctx.getState().files.get(FILE)!;
@@ -254,7 +240,7 @@ describe('DISCARD_SESSION', () => {
 describe('SWITCH_FILE', () => {
   it('新文件自动开始时产生 timeline-start 并进入追踪态', () => {
     const ctx = setup();
-    // 刻意直接 dispatch 而不用 startTracking：后者会清空队列，而本用例要断言这条 start
+
     ctx.dispatch({
       type: ActionTypes.SWITCH_FILE,
       payload: { fromPath: null, toPath: FILE, autoStart: true },
@@ -278,7 +264,7 @@ describe('SWITCH_FILE', () => {
     expect(ctx.getState().pendingWrites).toHaveLength(0);
   });
 
-  it('切走时旧文件转 IDLE；切回时不重复写 start', () => {
+  it('切走时旧文件转 IDLE；切回是一次新会话，恰好补一条 start', () => {
     const ctx = setup();
     startTracking(ctx);
     tick(ctx, 5);
@@ -296,8 +282,48 @@ describe('SWITCH_FILE', () => {
       payload: { fromPath: OTHER, toPath: FILE, autoStart: true },
     });
 
+    //  Returning begins a new session, so exactly one start is queued — the original wrote
+    //  none, leaving that session invisible to the derived view; the older bug was the
+    //  opposite, a dozen duplicates per save.
     expect(ctx.getState().files.get(FILE)!.status).toBe(STATUS.TRACKING);
+    expect(ctx.getState().pendingWrites.length).toBe(writesBefore + 1);
+    const last = ctx.getState().pendingWrites[ctx.getState().pendingWrites.length - 1]!;
+    expect(last.type).toBe('timeline-start');
+
+    //  Counters are not reset here: settling is the caller's job via SAVE_SESSION, which the
+    //  service always does first. Keeping them avoids dropping unsettled time at this level.
+    expect(ctx.getState().files.get(FILE)!.activeSeconds).toBe(5);
+  });
+
+  it('会话起始时刻精确到秒，且状态与 start 事件取的是同一时刻', () => {
+    const ctx = setup();
+    ctx.dispatch({
+      type: ActionTypes.SWITCH_FILE,
+      payload: { fromPath: null, toPath: FILE, autoStart: true },
+    });
+
+    const file = ctx.getState().files.get(FILE)!;
+    const start = ctx.getState().pendingWrites[0]!;
+    if (start.type !== 'timeline-start') throw new Error('unreachable');
+
+    //  Minute precision would inflate derived durations by up to 59s
+    expect(file.sessionStartTime).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+    expect(start.time).toBe(file.sessionStartTime!);
+  });
+
+  it('对已在计时的文件重复 SWITCH_FILE 不会重复写 start', () => {
+    const ctx = setup();
+    startTracking(ctx);
+    tick(ctx, 3);
+
+    const writesBefore = ctx.getState().pendingWrites.length;
+    ctx.dispatch({
+      type: ActionTypes.SWITCH_FILE,
+      payload: { fromPath: FILE, toPath: FILE, autoStart: true },
+    });
+
     expect(ctx.getState().pendingWrites.length).toBe(writesBefore);
+    expect(ctx.getState().files.get(FILE)!.activeSeconds).toBe(3);
   });
 });
 
@@ -309,12 +335,11 @@ describe('DAY_ROLLOVER — 原实现缺失的能力', () => {
     const beforeRollover = ctx.getState().files.get(FILE)!;
     expect(beforeRollover.sessionStartTime!.startsWith('2026-09-15')).toBe(true);
 
-    // 跨到次日
     ctx.clock.setLocal('2026-09-16T00:00:05');
     ctx.dispatch({ type: ActionTypes.DAY_ROLLOVER, payload: { filePath: FILE } });
 
     const state = ctx.getState();
-    // 一条 session（闭合昨日）+ 一条 timeline-start（开启今日）
+
     const types = state.pendingWrites.map((w) => w.type);
     expect(types).toContain('session');
     expect(types).toContain('timeline-start');
@@ -341,7 +366,7 @@ describe('DAY_ROLLOVER — 原实现缺失的能力', () => {
       payload: { filePath: FILE },
     });
 
-    expect(afterSecond).toBe(afterFirst); // 引用相等 = 完全无副作用
+    expect(afterSecond).toBe(afterFirst);
     expect(afterSecond.pendingWrites.length).toBe(writesAfterFirst);
   });
 
@@ -361,7 +386,7 @@ describe('待写入队列 / pending-write queue', () => {
   it('CONSUME_PENDING_WRITES 从队首消费指定条数', () => {
     const ctx = setup();
     startTracking(ctx);
-    // 切到新文件推入 1 条 timeline-start，再丢弃推入 1 条 timeline-discard
+
     ctx.dispatch({
       type: ActionTypes.SWITCH_FILE,
       payload: { fromPath: FILE, toPath: OTHER, autoStart: true },
@@ -379,7 +404,7 @@ describe('待写入队列 / pending-write queue', () => {
 
     const remaining = ctx.getState().pendingWrites;
     expect(remaining).toHaveLength(1);
-    expect(remaining[0]!.type).toBe('timeline-discard'); // 队首那条已被消费
+    expect(remaining[0]!.type).toBe('timeline-discard');
   });
 
   it('消费 0 或负数不改变状态', () => {
@@ -433,7 +458,6 @@ describe('纯性 / purity', () => {
     ctx.dispatch({ type: ActionTypes.TOGGLE_PAUSE, payload: { filePath: FILE } });
     tick(ctx, 2, OTHER);
 
-    // 老 state 对象的内容必须原封不动
     const filesNow = [...state.files.entries()].map(([k, v]) => [k, { ...v }]);
     expect(JSON.stringify(filesNow)).toBe(JSON.stringify(filesSnapshot));
     expect(JSON.stringify(state.pendingWrites)).toBe(pendingSnapshot);

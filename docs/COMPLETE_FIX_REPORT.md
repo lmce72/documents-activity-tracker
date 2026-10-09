@@ -112,7 +112,7 @@ async function() {
 
 ### 自动化测试脚本
 生成了3个测试脚本：
-1. `/home/corevortex/documents-activity-tracker/verify-fixes.js` - 浏览器控制台验证
+1. `<repo>/verify-fixes.js` - 浏览器控制台验证
 2. `/tmp/cdp-remote-test.js` - CDP远程测试生成器
 3. `VERIFICATION_GUIDE.md` - 用户验证指南
 
@@ -156,7 +156,7 @@ async function() {
 
 ### 源文件
 ```
-/home/corevortex/documents-activity-tracker/
+<repo>/
 ├── main.js (285,881 字节)
 ├── FIX_REPORT_20260907.md
 ├── VERIFICATION_GUIDE.md
@@ -170,7 +170,7 @@ async function() {
 
 ### Vault 插件目录
 ```
-/home/corevortex/文档/Markdown Docs/.obsidian/plugins/documents-activity-tracker/
+<old-vault>/.obsidian/plugins/documents-activity-tracker/
 ├── main.js (286,021 字节) ← 已同步
 ├── styles.css
 ├── manifest.json

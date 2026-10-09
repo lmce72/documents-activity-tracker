@@ -263,5 +263,5 @@ for (let i = 0; i < timeline.length - 1; i++) {
 
 1. **无向后兼容**: 旧数据格式（readTimeLine 对象格式）会被跳过
 2. **数据迁移**: 当前无历史数据，全新开始
-3. **插件目录**: `/home/corevortex/documents-activity-tracker/`
+3. **插件目录**: `<repo>/`
 4. **计划文档**: `REFACTOR_PLAN.md`

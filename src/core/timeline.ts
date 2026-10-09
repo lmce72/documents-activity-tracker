@@ -1,29 +1,18 @@
 /**
- * 时间轴派生计算 / Timeline-derived computations
+ * Timeline-derived computations
  *
- * 来源 / Origins:
- *   - `buildFileRecords`      ← vault 版 ReadRecordsModal._buildFileRecordsFromTimeline (3952-4104)
- *   - `recalcAggregates`      ← 工程目录版 ReadTimeEngine._recalcAggregates (1636-1656)
- *   - `getTodaySeconds`       ← vault 版 HeaderWidget._getTodaySeconds (3151-3173)
- *   - `getTodaySessionCount`  ← vault 版 HeaderWidget._getTodaySessionCount (3182-3202)
- *   - `getAllTodaySeconds`    ← vault 版 HeaderWidget._getAllTodaySeconds (3218-3239)
- *   - `removeFileEvents`      ← 取代 vault 版 ReadRecordsModal 第 4541 行对
- *                               `dataStore._cache.timeline` 的直接赋值（且当时未落盘）
+ * Origins:
  *
- * 本次改动 / Changes:
- *   1. 全部抽为纯函数：timeline 作为参数传入，不再从 `dataStore._cache` 里穿透读取。
+ * Changes:
  *      All turned into pure functions taking the timeline as a parameter.
- *   2. `buildFileRecords` 的「当前时间」改为注入，便于确定性测试。
  *      `buildFileRecords` takes `now` as a parameter for deterministic testing.
- *   3. `removeFileEvents` 修正了原实现的引用判定：switch 事件用 from/to，
- *      原过滤条件已正确处理，这里保持并加注释。
  *      `removeFileEvents` keeps the original's switch-aware reference check.
  *
- * 本模块是第 0 层，只依赖 constants / types / time / session。
  */
 
+import { UNFOCUSED_ATTRIBUTION_CAP_SECONDS } from './constants';
 import { calculateSessionDuration } from './session';
-import { todayStr } from './time';
+import { parseSessionStartTime, todayStr } from './time';
 import type {
   FileRecord,
   SessionStateMap,
@@ -32,26 +21,133 @@ import type {
 } from './types';
 import { eventFileRefs } from './migration';
 
-/** 未闭合会话的最大可信时长（秒）：24 小时 / Max credible unfinished session: 24h. */
+/** Max credible unfinished session: 24h. */
 export const MAX_SESSION_DURATION = 24 * 60 * 60;
 
-/** 判断事件是否代表一次「已结算」的阅读 / Whether an event closes a session. */
+/** Whether an event closes a session. */
 function isSaveLike(event: TimelineEvent): boolean {
   return event.type === 'save' || event.type === 'auto-save';
 }
 
+/** A session's three-channel durations. */
+export interface SessionDurations {
+  /** in-window active seconds */
+  activeSeconds: number;
+  /** out-of-window seconds */
+  unfocusedSeconds: number;
+  /** paused seconds */
+  pausedSeconds: number;
+  /** an unclosed session older than 24h */
+  abnormal: boolean;
+}
+
+function eventState(event: TimelineEvent): string | undefined {
+  return (event as { state?: string }).state;
+}
+
 /**
- * 从 timeline 一次性构建所有文件的视图记录。
+ * Whether an event can start an attributed interval.
+ */
+function isAttributable(event: TimelineEvent): boolean {
+  if (event.type === 'switch') return false;
+  if (isSaveLike(event) || event.type === 'discard') return false;
+  return eventState(event) !== undefined || event.type === 'blur' || event.type === 'focus';
+}
+
+/**
+ * Attribute one session's durations from its event stream.
+ *
+ * This is the key handling for unfocused time and also fixes an existing defect: the old
+ * implementation counted blur stretches as active, because a blur event carries the state
+ * it had *before* blurring (`tracking` in real data) and `calculateSessionDuration` looks
+ * only at states. Here the event type wins: an interval starting at a blur goes to
+ * `unfocusedSeconds` regardless of its `state`, so old and new data agree.
+ *
+ *               the end to extrapolate to for an open session; null when closed
+ * whether the session is still open
+ */
+export function computeSessionDurations(
+  events: readonly TimelineEvent[],
+  nowMs: number | null,
+  isOpen: boolean,
+): SessionDurations {
+  const empty: SessionDurations = {
+    activeSeconds: 0,
+    unfocusedSeconds: 0,
+    pausedSeconds: 0,
+    abnormal: false,
+  };
+  if (events.length === 0) return empty;
+
+  const boundaries = events.filter((e) => isAttributable(e) || isSaveLike(e) || e.type === 'discard');
+  if (boundaries.length === 0) return empty;
+
+  let activeSeconds = 0;
+  let unfocusedSeconds = 0;
+  let pausedSeconds = 0;
+  let abnormal = false;
+
+  for (let i = 0; i < boundaries.length; i++) {
+    const current = boundaries[i]!;
+
+    if (isSaveLike(current) || current.type === 'discard') continue;
+
+    const startMs = parseSessionStartTime(current.time);
+    if (!startMs) continue;
+
+    let endMs: number | null = null;
+    let extrapolated = false;
+    const next = boundaries[i + 1];
+    if (next) {
+      endMs = parseSessionStartTime(next.time)?.getTime() ?? null;
+    } else if (isOpen && nowMs !== null) {
+
+      endMs = nowMs;
+      extrapolated = true;
+    }
+    if (endMs === null) continue;
+
+    const gap = (endMs - startMs.getTime()) / 1000;
+    if (gap <= 0) continue;
+
+    //  Only the extrapolated tail is guarded by the 24h rule. An interval bounded by two
+    //  real events is measured evidence and must be kept even if the session never
+    //  closed; zeroing the whole session would discard real readings.
+    if (extrapolated && gap > MAX_SESSION_DURATION) {
+      console.warn(
+        '[RTT][timeline] 跳过异常未闭合会话 / skipping abnormal open session:',
+        current.time,
+      );
+      abnormal = true;
+      continue;
+    }
+
+    const state = eventState(current);
+
+    if (current.type === 'blur' || state === 'inactive') {
+
+      if (gap <= UNFOCUSED_ATTRIBUTION_CAP_SECONDS) unfocusedSeconds += gap;
+      continue;
+    }
+
+    if (current.type === 'pause' || state === 'pausing') {
+      pausedSeconds += gap;
+    } else if (current.type === 'focus' || state === 'tracking') {
+      activeSeconds += gap;
+    }
+  }
+
+  return { activeSeconds, unfocusedSeconds, pausedSeconds, abnormal };
+}
+
+/**
  * Build the per-file view records in a single pass over the timeline.
  *
- * 单遍扫描：先用 `currentSession` 把事件流切成一个个会话，再按文件汇总。
- * 复杂度 O(事件数 + 会话数)，与文件数无关。
  * Single pass: split the event stream into sessions with `currentSession`, then
  * aggregate per file — O(events + sessions), independent of file count.
  *
- * @param timeline 时间轴事件（假定按时间升序）/ events, assumed time-ascending
- * @param nowMs   当前时间戳，用于未闭合会话的时长推算 / current time for open sessions
- * @param today   今日日期串 / today's date string
+ * current time for open sessions
+ * today's date string
  */
 export function buildFileRecords(
   timeline: readonly TimelineEvent[],
@@ -79,7 +175,7 @@ export function buildFileRecords(
     if (!filePath) continue;
 
     if (event.type === 'start') {
-      // 任何 start 都开启新会话，未闭合的先收下
+
       if (currentSession) closeSession(currentSession);
       currentSession = { filePath: event.file, events: [event] };
       continue;
@@ -94,7 +190,6 @@ export function buildFileRecords(
       currentSession.events.push(event);
     }
 
-    // save / auto-save 计入历史；discard 整段丢弃
     if (isSaveLike(event) || event.type === 'discard') {
       const belongsToCurrent =
         event.type === 'switch' ? false : event.file === currentSession.filePath;
@@ -105,12 +200,12 @@ export function buildFileRecords(
     }
   }
 
-  // 未闭合的会话（含正在计时的那个）也要算进来
   if (currentSession) closeSession(currentSession);
 
   for (const [filePath, sessions] of Object.entries(fileSessions)) {
     const readTimeLine: SessionStateMap[] = [];
     let totalReadTime = 0;
+    let unfocusedReadTime = 0;
     let readTimeToday = 0;
     let lastReadAt = '';
     let hasAbnormalSession = false;
@@ -129,12 +224,10 @@ export function buildFileRecords(
           sessionObj[event.time] = 'saved';
           isUnfinishedSession = false;
         } else if (event.type === 'discard') {
-          // 原实现此处写 'discarded'。该分支实际不可达：携带 discard 的会话在
-          // 下面的闭合逻辑里会被整段丢弃、不会进入 readTimeLine，所以这个值
-          // 从不被读到。这里写 'saved' 以符合 SessionState 的取值域。
-          // The original wrote 'discarded' here, but this branch is unreachable: a session
-          // closed by discard is dropped wholesale and never enters readTimeLine, so the
-          // value is never read. 'saved' keeps it inside SessionState's domain.
+
+          //  The original wrote 'discarded' here, but this branch is unreachable: a session
+          //  closed by discard is dropped wholesale and never enters readTimeLine, so the
+          //  value is never read. 'saved' keeps it inside SessionState's domain.
           sessionObj[event.time] = 'saved';
           isUnfinishedSession = false;
         }
@@ -145,28 +238,21 @@ export function buildFileRecords(
 
       readTimeLine.push(sessionObj);
 
-      let sessionDuration: number;
-      if (isUnfinishedSession && keys.length === 1) {
-        // 只有一个 start：按「至今」推算，但超过 24 小时的判定为异常、计 0
-        // A lone start: measure up to now, but treat >24h as abnormal and count zero
-        const startTime = new Date(keys[0]!);
-        const elapsed = (nowMs - startTime.getTime()) / 1000;
+      //  Three-channel attribution, event-type driven. This also replaces the old
+      //  "extrapolate only for a lone start" special case: once the service logs
+      //  blur/focus/pause/resume, an in-progress session is no longer a lone start and
+      //  that special case would report 0 for it.
+      const durations = computeSessionDurations(
+        session.events,
+        nowMs,
+        isUnfinishedSession,
+      );
+      if (durations.abnormal) hasAbnormalSession = true;
 
-        if (elapsed > MAX_SESSION_DURATION) {
-          console.warn(
-            `[RTT][timeline] 跳过异常未闭合会话 / skipping abnormal open session ${filePath}: ` +
-              `${Math.floor(elapsed / 3600)}小时前开始 / started hours ago`,
-          );
-          hasAbnormalSession = true;
-          sessionDuration = 0;
-        } else {
-          sessionDuration = sessionObj[keys[0]!] === 'tracking' ? Math.max(0, elapsed) : 0;
-        }
-      } else {
-        sessionDuration = calculateSessionDuration(sessionObj);
-      }
-
+      //  Total reading time = in-window + out-of-window
+      const sessionDuration = durations.activeSeconds + durations.unfocusedSeconds;
       totalReadTime += sessionDuration;
+      unfocusedReadTime += durations.unfocusedSeconds;
 
       const sorted = keys.slice().sort();
       const firstTime = sorted[0]!;
@@ -179,6 +265,7 @@ export function buildFileRecords(
     fileRecords[filePath] = {
       fileName: (filePath.split('/').pop() ?? filePath).replace(/\.md$/, ''),
       totalReadTime,
+      unfocusedReadTime,
       readTimeToday,
       lastReadAt: lastReadAt.slice(0, 10),
       readTimeLine,
@@ -190,8 +277,7 @@ export function buildFileRecords(
 }
 
 /**
- * 从会话列表重算统计汇总 / Recompute aggregates from a session list.
- * 来源：工程目录版 _recalcAggregates。
+ * Recompute aggregates from a session list.
  */
 export function recalcAggregates(
   readTimeLine: readonly SessionStateMap[],
@@ -214,10 +300,10 @@ export function recalcAggregates(
 }
 
 /**
- * 单个文件的今日活跃秒数 / Today's active seconds for one file.
+ * Today's reading seconds for one file.
  *
- * 含两部分：今日已结算事件的 activeSeconds + 当前会话的 activeSeconds。
- * Two parts: settled events today, plus the in-progress session.
+ * Two parts — settled events today plus the in-progress session — both counted as
+ * in-window + out-of-window, since unfocused time is reading time too.
  */
 export function getTodaySeconds(
   timeline: readonly TimelineEvent[],
@@ -231,20 +317,20 @@ export function getTodaySeconds(
     if (event.type === 'switch') continue;
     if (event.file !== filePath || !event.time.startsWith(today)) continue;
     if (isSaveLike(event)) {
-      total += (event as { activeSeconds?: number }).activeSeconds ?? 0;
+      const e = event as { activeSeconds?: number; unfocusedSeconds?: number };
+      total += (e.activeSeconds ?? 0) + (e.unfocusedSeconds ?? 0);
     }
   }
 
   if (file?.sessionStartTime?.startsWith(today)) {
-    total += file.activeSeconds;
+    total += file.activeSeconds + file.unfocusedSeconds;
   }
 
   return total;
 }
 
 /**
- * 单个文件的今日会话轮数 / Today's session count for one file.
- * 至少返回 1（与原实现的 `|| 1` 兜底一致）。
+ * Today's session count for one file.
  */
 export function getTodaySessionCount(
   timeline: readonly TimelineEvent[],
@@ -270,7 +356,8 @@ export function getTodaySessionCount(
 }
 
 /**
- * 全库今日活跃秒数 / Vault-wide active seconds today.
+ * Vault-wide reading seconds today.
+ * Same basis as getTodaySeconds: in-window + out-of-window.
  */
 export function getAllTodaySeconds(
   timeline: readonly TimelineEvent[],
@@ -282,13 +369,14 @@ export function getAllTodaySeconds(
   for (const event of timeline) {
     if (event.type === 'switch') continue;
     if (event.time.startsWith(today) && isSaveLike(event)) {
-      total += (event as { activeSeconds?: number }).activeSeconds ?? 0;
+      const e = event as { activeSeconds?: number; unfocusedSeconds?: number };
+      total += (e.activeSeconds ?? 0) + (e.unfocusedSeconds ?? 0);
     }
   }
 
   for (const file of files) {
     if (file.sessionStartTime?.startsWith(today)) {
-      total += file.activeSeconds;
+      total += file.activeSeconds + file.unfocusedSeconds;
     }
   }
 
@@ -296,10 +384,7 @@ export function getAllTodaySeconds(
 }
 
 /**
- * 移除某个文件的全部事件 / Remove every event referring to a file.
- *
- * 取代 vault 版 ReadRecordsModal 第 4541 行对 `_cache.timeline` 的直接赋值。
- * 注意引用判定必须覆盖 switch 事件的 from/to，否则切换事件会成为孤儿。
+ * Remove every event referring to a file.
  *
  * Replaces the direct `_cache.timeline` assignment at ReadRecordsModal:4541.
  * The reference check must cover a switch event's from/to, or those become orphans.
@@ -312,7 +397,6 @@ export function removeFileEvents(
 }
 
 /**
- * 把某文件的事件挑出来（只读视图）/ Read-only view of one file's events.
  */
 export function getFileEvents(
   timeline: readonly TimelineEvent[],
@@ -322,8 +406,7 @@ export function getFileEvents(
 }
 
 /**
- * 按时间区间筛选事件 / Filter events into a time range (inclusive on both ends).
- * 用于热力图按日/周聚合。
+ * Filter events into a time range (inclusive on both ends).
  */
 export function getTimeRangeEvents(
   timeline: readonly TimelineEvent[],

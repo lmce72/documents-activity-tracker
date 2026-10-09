@@ -3,7 +3,7 @@
 **修复日期**: 2026-09-05  
 **修复时间**: 18:30 - 19:00 CST  
 **测试环境**: Obsidian 1.13.7 (Linux)  
-**参考备份**: `/home/corevortex/文档/Markdown Docs_backup/.obsidian/plugins/documents-activity-tracker/main.js`
+**参考备份**: `<old-vault>_backup/.obsidian/plugins/documents-activity-tracker/main.js`
 
 ---
 
@@ -216,7 +216,7 @@ Widget 创建逻辑正常，无需修复。
 
 ## 与备份版本的对比
 
-备份版本 (`/home/corevortex/文档/Markdown Docs_backup/.obsidian/plugins/documents-activity-tracker/main.js`) 的关键设计：
+备份版本 (`<old-vault>_backup/.obsidian/plugins/documents-activity-tracker/main.js`) 的关键设计：
 
 **行 791**: `_bindToFile()` 第一行就检查 `shouldTrackFile`
 ```javascript
@@ -243,8 +243,8 @@ if (!shouldTrackFile(filePath, this.settings)) {
 
 ### 文件同步
 ```bash
-cp /home/corevortex/documents-activity-tracker/main.js \
-   /home/corevortex/文档/Markdown\ Docs/.obsidian/plugins/documents-activity-tracker/main.js
+cp <repo>/main.js \
+   <old-vault>/.obsidian/plugins/documents-activity-tracker/main.js
 ```
 
 ### 插件重新加载

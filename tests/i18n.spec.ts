@@ -1,9 +1,5 @@
 /**
- * 国际化测试 / i18n tests
- *
- * 固化本次对词条表的两处修正：
- *   1. en 表的 statsToday / statsTodayTotal / statsTodaySessions / statsWeek 原为中文
- *   2. en 表原本缺失 excluded 键，导致英文界面下显示字面量 "excluded"
+ * i18n tests
  *
  * Pins down two fixes to the string tables: four en entries that held Chinese text,
  * and a missing `excluded` key that leaked the raw key into the English UI.
@@ -13,7 +9,7 @@ import { describe, expect, it } from 'bun:test';
 
 import { I18N, getLang, t } from '../src/core/i18n';
 
-/** 中日韩统一表意文字 / CJK Unified Ideographs. */
+/** CJK Unified Ideographs. */
 const CJK = /[一-鿿㐀-䶿]/;
 
 const zhKeys = Object.keys(I18N.zh).sort();
@@ -44,7 +40,7 @@ describe('t()', () => {
   });
 
   it('excluded 在英文下有真实译文，不会回退成键名', () => {
-    // 修复前：I18N.en.excluded 不存在 → 回退返回字符串 'excluded'
+
     expect(t('excluded', 'en')).not.toBe('excluded');
     expect(t('excluded', 'en')).toBe('This file is filtered out');
   });

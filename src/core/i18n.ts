@@ -1,28 +1,21 @@
 /**
- * 国际化 / Internationalisation
+ * Internationalisation
  *
- * 来源：vault 版 main.js 第 12-126 行（两版逐字节相同）。
  * Origin: vault main.js lines 12-126 (byte-identical across both versions).
  *
- * 本次改动 / Changes in this refactor:
- *   1. `en` 分支的 statsToday / statsTodayTotal / statsTodaySessions / statsWeek
- *      四项原为中文，已补为英文译文。
+ * Changes in this refactor:
  *      Four `en` entries previously held Chinese text; translated.
- *   2. 补上类型：key 受 `TranslationKey` 约束，拼错即是编译错误。
  *      Typed: keys constrained by `TranslationKey`, so typos fail compilation.
- *   3. `t()` 增加可选 lang 参数，便于测试直接指定语言、不依赖运行时环境。
  *      `t()` takes an optional lang so tests need not touch the environment.
  *
- * 本模块是第 0 层（叶子），不 import 任何其他模块。
  * This is the L0 leaf layer and imports nothing else.
  */
 
-/** 支持的语言 / Supported languages. */
+/** Supported languages. */
 export type Lang = 'zh' | 'en';
 
 /**
- * 中英词条表 / The zh+en string table.
- * 导出是为了让测试能校验两表键集一致、且英文表里不含中日韩字符。
+ * The zh+en string table.
  * Exported so tests can assert key parity and the absence of CJK text in the en table.
  */
 export const I18N = {
@@ -92,6 +85,50 @@ export const I18N = {
     previousSessions: '之前还有 {n} 轮记录',
     viewAllRecords: '查看更多历史记录',
     now: '现在',
+
+    sidebarTitle: '活动追踪',
+    panelDocument: '文档追踪',
+    panelManual: '手动计时',
+    openSidebar: '打开活动追踪侧栏',
+    tabUnfocused: '脱离窗口',
+    tabInWindow: '窗口内',
+    trackerOff: '文档追踪已关闭',
+    trackerOffDesc: '在设置中开启后才会记录阅读时长。',
+    noOpenFile: '当前没有正在追踪的文档',
+    btnStart: '开始计时',
+    btnPause: '暂停',
+    btnResume: '继续',
+    btnSave: '保存',
+    btnDiscard: '丢弃',
+    sessionCount: '今日轮数',
+    manualStart: '开始',
+    manualPause: '暂停',
+    manualResume: '继续',
+    manualStop: '停止',
+    manualRunning: '计时中',
+    manualPaused: '已暂停',
+    manualIdle: '未计时',
+    manualStopTitle: '这段时间做了什么？',
+    manualStopDesc: '写下这段时间的内容。留空则只保存时长。',
+    manualStopPlaceholder: '例如：写周报',
+    manualSaveSession: '保存记录',
+    manualDiscard: '放弃',
+    manualTodayTotal: '今日手动计时',
+    manualNoRecords: '这一天没有手动计时记录',
+    manualListTitle: '手动计时记录',
+    manualHeatmapTitle: '手动计时热力图',
+    manualTimerOff: '手动计时已关闭',
+    manualTimerOffDesc: '在设置中开启后即可使用手动计时。',
+    prevDay: '前一天',
+    nextDay: '后一天',
+    todayLabel: '今天',
+    noteLabel: '内容',
+    settingDocumentTracking: '文档追踪',
+    settingDocumentTrackingDesc: '按文档记录阅读时长。关闭后隐藏文档面板并停止计时。',
+    settingManualTimer: '手动计时',
+    settingManualTimerDesc:
+      '独立于文档追踪的秒表：开始、停止，并写下这段时间做了什么。',
+
     todayTotalDisplay: '今日总计显示模式',
     todayTotalDisplayDesc:
       '空闲/暂停时显示：暂停时第二段显示文档今日总计，第三段显示全库今日总计；始终显示：第三段始终显示全库今日总计；不显示：不显示今日总计。',
@@ -104,12 +141,65 @@ export const I18N = {
     statsTodayTotal: '今日总时长',
     statsTodaySessions: '今日轮数',
     statsWeek: '本周阅读',
+
+    // records browser ───────────────────────────────
+    recTitle: '阅读记录',
+    recSort: '排序方式',
+    recTotalFiles: '共 {n} 个文件有记录',
+    recDelete: '删除该文件的全部记录',
+    recDeleteConfirm: '确定删除「{name}」的全部阅读记录？此操作不可撤销。',
+    recDeleted: '已删除「{name}」的阅读记录',
+    recChannelPaused: '暂停',
+    recDetailHint: '点击下方任一行，查看该文件当日的阅读热力图',
+    recDetailTitle: '当日热力图',
+    recNoEvents: '该文件暂无可用的事件记录',
+
+    // manual timer: marks, display, controls ──
+    manualFlag: '标记',
+    manualFlagsTitle: '本轮标记',
+    manualNoFlags: '本轮还没有标记',
+    manualFlagAt: '第 {n}',
+    manualShowSeconds: '秒表显示秒',
+    manualShowSecondsDesc: '关闭后只显示到时和分，长时间专注时少一点跳动的干扰。',
+    manualRecordDoc: '记录文档活动',
+    manualRecordDocDesc:
+      '关闭后，手动计时期间不再写入任何文档的阅读记录（文档面板显示 0 秒），手动计时本身不受影响。',
+    manualRingHint: '外圈是本分钟的进度',
+
+    // overview ────────────────────────────────────────────
+    panelOverview: '总看板',
+    ovUnion: '并集总时长',
+    ovDocument: '文档计时合计',
+    ovManual: '手动计时合计',
+    ovOverlap: '重叠',
+    ovEmpty: '这一天没有任何记录',
+    ovLegendBoth: '两者同时',
+    ovExplain:
+      '文档计时与手动计时记的是同一段墙钟时间，因此这里取**并集**：两边同时覆盖的部分只算一次。合计栏仍按各账本自身列出，重叠量说明两手同时在记。',
+
+    // panel list and heatmap copy ──────
+    docHeatmapTitle: '当日文档热力图',
+    docListTop: '今日时长前三',
+    docListEmpty: '今天还没有阅读记录',
+    docHeatmapEmpty: '今天还没有可画的阅读时段',
+    manualRecent: '最近记录',
+    manualShowMore: '显示更多',
+    manualShowLess: '收起',
+    viewAllRecordsDesc: '打开完整记录面板，可搜索、排序与删除',
+    dayPicker: '选择日期',
+    dayPickerDesc: '打开日历；只有有记录的日子可以选中',
+    dayNoRecords: '这一天没有任何记录',
+    prevMonth: '上个月',
+    nextMonth: '下个月',
+    calNoRecords: '这个月没有记录',
+    calOnlyRecorded: '只有有记录的日子可选',
+    close: '关闭',
   },
   en: {
     labelPrefix: 'Read',
-    // 原 en 表缺失此键，导致英文界面下 t('excluded') 回退成字面量 "excluded"
-    // This key was missing from the original en table, so English users saw the raw
-    // string "excluded" as the message.
+
+    //  This key was missing from the original en table, so English users saw the raw
+    //  string "excluded" as the message.
     excluded: 'This file is filtered out',
     pause: 'Pause timer',
     resume: 'Resume timer',
@@ -185,22 +275,116 @@ export const I18N = {
     todayTotalNever: 'Never show',
     fileToday: 'File Today',
     vaultToday: 'Vault Today',
-    // 原文这四项误填了中文，此处补为英文译文
-    // These four previously held Chinese text; translated here.
+
+    //  These four previously held Chinese text; translated here.
     statsToday: 'Read today',
     statsTodayTotal: 'Today total',
     statsTodaySessions: 'Today sessions',
     statsWeek: 'Read this week',
+
+    recTitle: 'Reading records',
+    recSort: 'Sort by',
+    recTotalFiles: '{n} files with records',
+    recDelete: 'Delete every record for this file',
+    recDeleteConfirm: 'Delete all reading records for "{name}"? This cannot be undone.',
+    recDeleted: 'Deleted reading records for "{name}"',
+    recChannelPaused: 'Paused',
+    recDetailHint: 'Select a row below to see that file’s heatmap for the day',
+    recDetailTitle: 'Daily heatmap',
+    recNoEvents: 'No usable events for this file yet',
+
+    manualFlag: 'Mark',
+    manualFlagsTitle: 'Marks this run',
+    manualNoFlags: 'No marks yet in this run',
+    manualFlagAt: 'At {n}',
+    manualShowSeconds: 'Show seconds on the stopwatch',
+    manualShowSecondsDesc:
+      'Turn off to read hours and minutes only, for long focus sessions where a ticking second distracts.',
+    manualRecordDoc: 'Record document activity',
+    manualRecordDocDesc:
+      'Turn off and no reading record is written to any document while manual timing runs (the document panel reads 0s). Manual timing itself is unaffected.',
+    manualRingHint: 'The outer ring shows progress through the current minute',
+
+    panelOverview: 'Overview',
+    ovUnion: 'Union total',
+    ovDocument: 'Document total',
+    ovManual: 'Manual total',
+    ovOverlap: 'Overlap',
+    ovEmpty: 'Nothing recorded on this day',
+    ovLegendBoth: 'Both at once',
+    ovExplain:
+      'Document and manual timing cover the same wall clock, so this panel takes the **union**: time covered by both is counted once. The per-ledger totals are still listed, and the overlap shows where the two ran at the same time.',
+
+    docHeatmapTitle: 'Document heatmap today',
+    docListTop: 'Top 3 today',
+    docListEmpty: 'Nothing read today yet',
+    docHeatmapEmpty: 'No reading stretches to draw for today',
+    manualRecent: 'Recent sessions',
+    manualShowMore: 'Show more',
+    manualShowLess: 'Show less',
+    viewAllRecordsDesc: 'Open the full records browser to search, sort and delete',
+    dayPicker: 'Pick a date',
+    dayPickerDesc: 'Open the calendar; only days that have records can be selected',
+    dayNoRecords: 'No records on that day',
+    prevMonth: 'Previous month',
+    nextMonth: 'Next month',
+    calNoRecords: 'No records this month',
+    calOnlyRecorded: 'Only days with records can be selected',
+    close: 'Close',
+
+    //  New in this refactor: sidebar, manual timer, feature toggles
+    sidebarTitle: 'Activity tracker',
+    panelDocument: 'Document tracking',
+    panelManual: 'Manual timer',
+    openSidebar: 'Open activity tracker sidebar',
+    tabUnfocused: 'Out of window',
+    tabInWindow: 'In window',
+    trackerOff: 'Document tracking is off',
+    trackerOffDesc: 'Enable it in settings to start recording reading time.',
+    noOpenFile: 'No document is being tracked',
+    btnStart: 'Start tracking',
+    btnPause: 'Pause',
+    btnResume: 'Resume',
+    btnSave: 'Save',
+    btnDiscard: 'Discard',
+    sessionCount: 'Rounds today',
+    manualStart: 'Start',
+    manualPause: 'Pause',
+    manualResume: 'Resume',
+    manualStop: 'Stop',
+    manualRunning: 'Timing',
+    manualPaused: 'Paused',
+    manualIdle: 'Not timing',
+    manualStopTitle: 'What did you work on?',
+    manualStopDesc: 'Describe this session. Leave it empty to save without a note.',
+    manualStopPlaceholder: 'e.g. writing the weekly report',
+    manualSaveSession: 'Save session',
+    manualDiscard: 'Discard',
+    manualTodayTotal: 'Manual total today',
+    manualNoRecords: 'No manual sessions on this day',
+    manualListTitle: 'Manual sessions',
+    manualHeatmapTitle: 'Manual timing heatmap',
+    manualTimerOff: 'Manual timer is off',
+    manualTimerOffDesc: 'Enable it in settings to use the manual timer.',
+    prevDay: 'Previous day',
+    nextDay: 'Next day',
+    todayLabel: 'Today',
+    noteLabel: 'Note',
+    settingDocumentTracking: 'Document tracking',
+    settingDocumentTrackingDesc:
+      'Track reading time per document. Turning this off hides the document panel and stops the timer.',
+    settingManualTimer: 'Manual timer',
+    settingManualTimerDesc:
+      'An independent stopwatch: start it, stop it, and write down what you did. Unaffected by document tracking.',
   },
 } as const;
 
-/** 词条键 / Translation key. */
+/** Translation key. */
 export type TranslationKey = keyof typeof I18N.zh;
 
 /**
- * 探测当前界面语言 / Detect the current UI language.
+ * Detect the current UI language.
  *
- * 依次尝试 Obsidian 内置 moment 的 locale、浏览器语言，兜底 'en'。
  * Falls back through Obsidian's bundled moment locale, then navigator, then 'en'.
  */
 export function getLang(): Lang {
@@ -214,21 +398,20 @@ export function getLang(): Lang {
     const locale = fromMoment || fromNavigator || 'en';
     return locale.startsWith('zh') ? 'zh' : 'en';
   } catch (error) {
-    // 读取语言失败不应影响插件运行，静默降级为英文
-    // A failure here must not break the plugin; degrade to English.
+
+    //  A failure here must not break the plugin; degrade to English.
     console.error('[RTT][i18n] 语言探测失败 / language detection failed:', error);
     return 'en';
   }
 }
 
 /**
- * 取词 / Look up a translated string.
+ * Look up a translated string.
  *
- * 三级回退：指定语言 → en → 键名本身。与原实现一致。
  * Three-level fallback: requested lang -> en -> the key itself. Matches the original.
  *
- * @param key  词条键 / the translation key
- * @param lang 目标语言；默认按环境探测 / target language; defaults to detection
+ * the translation key
+ * target language; defaults to detection
  */
 export function t(key: TranslationKey, lang: Lang = getLang()): string {
   const table = I18N[lang] ?? I18N.en;

@@ -17,9 +17,9 @@
 ### 关键路径
 
 ```
-真实数据文件   /home/corevortex/文档/Markdown Docs/Components/History/readTimeHistory.json
-vault 插件目录 /home/corevortex/文档/Markdown Docs/.obsidian/plugins/documents-activity-tracker/
-工程目录       /home/corevortex/documents-activity-tracker/
+真实数据文件   <old-vault>/Components/History/readTimeHistory.json
+vault 插件目录 <old-vault>/.obsidian/plugins/documents-activity-tracker/
+工程目录       <repo>/
 ```
 
 ## 二、回滚步骤
@@ -28,18 +28,18 @@ vault 插件目录 /home/corevortex/文档/Markdown Docs/.obsidian/plugins/docum
 一旦新版本写盘，`readTimeHistory.json` 的 `version` 已变为 `3`。
 
 ```bash
-VAULT="/home/corevortex/文档/Markdown Docs/.obsidian/plugins/documents-activity-tracker"
-DATA="/home/corevortex/文档/Markdown Docs/Components/History/readTimeHistory.json"
+VAULT="<old-vault>/.obsidian/plugins/documents-activity-tracker"
+DATA="<old-vault>/Components/History/readTimeHistory.json"
 TS=1789465241
 
 # 1. 在 Obsidian 中禁用 documents-activity-tracker（设置 → 第三方插件）
 #    插件当前本就处于禁用状态，若已启用需先禁用
 
 # 2. 还原数据文件
-cp "/home/corevortex/documents-activity-tracker/backups/readTimeHistory.json.pre-ts-$TS" "$DATA"
+cp "<repo>/backups/readTimeHistory.json.pre-ts-$TS" "$DATA"
 
 # 3. 还原插件产物
-cp "/home/corevortex/documents-activity-tracker/backups/vault-main.js.b-version-$TS" "$VAULT/main.js"
+cp "<repo>/backups/vault-main.js.b-version-$TS" "$VAULT/main.js"
 
 # 4. 在 Obsidian 中重新启用插件
 ```
@@ -47,7 +47,7 @@ cp "/home/corevortex/documents-activity-tracker/backups/vault-main.js.b-version-
 ### 校验副本未被改动
 
 ```bash
-cd /home/corevortex/documents-activity-tracker/backups
+cd <repo>/backups
 md5sum readTimeHistory.json.pre-ts-1789465241   # 应为 88b76e629ed91030040c8f52db755a58
 md5sum vault-main.js.b-version-1789465241       # 应为 f20373605744066915f41fa01745ca04
 ```

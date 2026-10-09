@@ -1,16 +1,10 @@
 /**
- * 测试环境的运行时声明 / Runtime declarations for the test environment
- *
- * 测试直接在 bun 下运行，用到 node:fs / node:path / process / import.meta.dir。
- * 本机离线且 bun 缓存中没有 @types/node 与 @types/bun，因此这里声明刚好够用的形状
- * —— 与 vendor/stubs 下对 moment / codemirror 的处理方式一致。
+ * Runtime declarations for the test environment
  *
  * Tests run directly under bun and use node:fs / node:path / process / import.meta.dir.
  * This machine is offline with no @types/node or @types/bun in the bun cache, so the
  * shapes actually used are declared here, mirroring the approach in vendor/stubs.
  *
- * 这些声明只对 tsconfig 的 include 生效（tests/**\/*.ts 覆盖 .d.ts），
- * 不会进入插件产物。
  * Scoped to the tsconfig include list and never part of the plugin bundle.
  */
 
@@ -43,7 +37,7 @@ declare const process: {
 };
 
 interface ImportMeta {
-  /** bun 提供的当前模块目录绝对路径 / absolute directory of the current module */
+  /** absolute directory of the current module */
   readonly dir: string;
   readonly path: string;
 }

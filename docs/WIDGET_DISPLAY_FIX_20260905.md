@@ -149,7 +149,7 @@ if (displayMode === 'never') {
 
 ### 问题：为什么备份版本也有这个 bug？
 
-备份版本（`/home/corevortex/文档/Markdown Docs_backup/.obsidian/plugins/documents-activity-tracker/main.js`）也只设置了 `todaySection` 的显示，没有设置其他区域。
+备份版本（`<old-vault>_backup/.obsidian/plugins/documents-activity-tracker/main.js`）也只设置了 `todaySection` 的显示，没有设置其他区域。
 
 **可能原因**：
 1. 这是一个长期存在的 bug，只在特定设置下才会触发

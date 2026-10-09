@@ -1,0 +1,621 @@
+/* ── 侧栏：面板切换 / Sidebar: panel switcher ──────────────────────────────
+ *
+ * 本模块是**守门范围之外**的新增样式（见 build.ts 的 CSS_MODULES_EXTRA）。
+ * 既有的 13 个模块一字未改，守门 md5 仍然成立。
+ *
+ * This module is new and lives outside the gate (see CSS_MODULES_EXTRA in build.ts).
+ * The original 13 modules are untouched and the gate md5 still holds.
+ *
+ * 全部取值走 Obsidian 全局变量，不写死颜色，随主题与明暗自动适配。
+ * Every value comes from an Obsidian global variable, so themes and light/dark both work.
+ */
+
+/* 侧栏顶部的图标 + 文字切换按钮 / icon-plus-label panel buttons */
+.rtt-panel-tabs {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 12px;
+    padding: 3px;
+    background: var(--background-secondary);
+    border-radius: 8px;
+}
+
+.rtt-panel-tab {
+    flex: 1 1 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    min-width: 0;
+    padding: 6px 6px;
+    background: none;
+    border: none;
+    box-shadow: none;
+    border-radius: 6px;
+    cursor: pointer;
+    color: var(--text-muted);
+    /* 比 --font-ui-small 再小一档，好让两个面板名在窄侧栏里尽量一行放得下
+       （放不下就折行，见下面的 label 规则）。 */
+    /* A step below --font-ui-small, so both names usually fit on one line in a narrow
+       sidebar; the label rule below wraps them when they do not. */
+    font-size: var(--font-ui-smaller);
+    transition: color 0.15s, background 0.15s;
+}
+
+.rtt-panel-tab:hover {
+    color: var(--text-normal);
+    background: var(--background-modifier-hover);
+}
+
+.rtt-panel-tab.is-active {
+    color: var(--text-on-accent);
+    background: var(--interactive-accent);
+}
+
+.rtt-panel-tab-icon {
+    display: flex;
+    align-items: center;
+    flex: 0 0 auto;
+}
+
+.rtt-panel-tab-icon svg {
+    width: 16px;
+    height: 16px;
+}
+
+/* 文字换行而不截断 / the label wraps instead of being cut off.
+ *
+ * 早先用 `text-overflow: ellipsis`，实测在默认宽度的右侧栏里 "Document tracking"
+ * 就被截成 "Document tra…" —— 省略号让两个面板名看起来像同一个。改为允许折成两行：
+ * 无论侧栏多窄，名字都完整可读，按钮高度随文字自适应。
+ *
+ * Ellipsis was used first, but at the default right-sidebar width "Document tracking" was
+ * cut to "Document tra…", which makes the two panel names look alike. Wrapping to two
+ * lines keeps both names fully readable at any width, with the button growing to fit. */
+.rtt-panel-tab-label {
+    min-width: 0;
+    text-align: center;
+    line-height: 1.2;
+    white-space: normal;
+    /* 只在空格处折行。`overflow-wrap: anywhere` 会从词中间断开，实测把
+       "Document tracking" 断成了 "Documen / t tracking"。
+       Wrap at spaces only: `overflow-wrap: anywhere` breaks inside a word and was measured
+       splitting "Document tracking" into "Documen" / "t tracking". */
+    overflow-wrap: normal;
+}
+
+/* ── 阅读记录面板 / Records browser ─────────────────────────────────────── */
+
+.rtt-records-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+}
+
+.rtt-records-toolbar input[type='search'],
+.rtt-records-toolbar input[type='text'] {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.rtt-records-toolbar select {
+    flex: 0 0 auto;
+    max-width: 45%;
+}
+
+/* 文件行右端的时间分列 / per-file time split at the row's trailing edge */
+.rtt-records-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 10px;
+    margin-top: 4px;
+    color: var(--text-muted);
+    font-size: var(--font-ui-smaller);
+}
+
+/* 异常未闭合会话的提示徽标 / badge for an abnormal unfinished session */
+.rtt-records-warn {
+    color: var(--text-error);
+    font-size: var(--font-ui-smaller);
+}
+
+/* 记录行里的 Iconize 图标 / the Iconize icon inside a record row */
+.rtt-item-icon {
+    display: flex;
+    align-items: center;
+    flex: 0 0 auto;
+    margin-right: 8px;
+    color: var(--text-muted);
+}
+
+.rtt-item-icon svg,
+.rtt-item-icon img {
+    width: 16px;
+    height: 16px;
+}
+
+/* ── 记录热力图的三通道配色 / three-channel colours for the record heatmap ──
+ *
+ * 基础段 `.rtt-hm-seg` 是强调色（窗口内）。这里用「两个类」的选择器，
+ * 特异性高于基础规则，因此无论模块顺序如何都能覆盖。
+ * The base segment is accent-coloured (in-window). These two-class selectors outrank the
+ * base rule, so they win regardless of module order.
+ */
+.rtt-hm-seg.rtt-hm-out {
+    background: var(--color-orange);
+}
+
+.rtt-hm-seg.rtt-hm-paused {
+    background: var(--text-faint);
+    opacity: 0.55;
+}
+
+/* 记录行被选中时的强调 / highlight for the selected record row */
+.rtt-list-item.is-selected {
+    background: var(--background-modifier-hover);
+}
+
+/* 待确认删除的行 / a row whose delete is awaiting confirmation */
+.rtt-item-delete.is-confirming {
+    color: var(--text-on-accent);
+    background: var(--text-error);
+    border-radius: 4px;
+    padding: 0 6px;
+    width: auto;
+}
+
+/* ── 秒表：外圈 + 读数 / stopwatch: ring plus readout ───────────────────── */
+
+.rtt-stopwatch {
+    display: grid;
+    place-items: center;
+    gap: 0;
+    margin: 4px auto 10px;
+}
+
+/* 圈与读数是同一格的两层：mask 会把子节点一起遮掉，读数必须是兄弟节点
+   The ring and the readout share one grid cell: `mask` hides descendants too, so the
+   readout has to be a sibling rather than a child. */
+.rtt-stopwatch-ring,
+.rtt-stopwatch-face {
+    grid-area: 1 / 1;
+}
+
+.rtt-stopwatch-ring {
+    --rtt-ring-pct: 0;
+    width: 132px;
+    height: 132px;
+    border-radius: 50%;
+    /* 用 conic-gradient 画进度，避免每秒手搓 SVG 节点 */
+    background: conic-gradient(
+        var(--interactive-accent) calc(var(--rtt-ring-pct) * 1%),
+        var(--background-modifier-border) 0
+    );
+    /* 掏空内圈，留出 ring 的环宽 */
+    -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 7px), #000 calc(100% - 6px));
+    mask: radial-gradient(farthest-side, transparent calc(100% - 7px), #000 calc(100% - 6px));
+}
+
+.rtt-stopwatch-face {
+    z-index: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    pointer-events: none;
+}
+
+.rtt-stopwatch-time {
+    font-family: var(--font-monospace);
+    font-size: 1.35em;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-normal);
+}
+
+.rtt-stopwatch-state {
+    font-size: var(--font-ui-smaller);
+    color: var(--text-muted);
+}
+
+.rtt-stopwatch-hint {
+    grid-column: 1;
+    margin-top: 6px;
+    color: var(--text-faint);
+    font-size: var(--font-ui-smaller);
+    text-align: center;
+}
+
+/* ── 标记 / marks ──────────────────────────────────────────────────────── */
+
+.rtt-flag-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.rtt-flag-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: var(--background-secondary);
+    color: var(--text-normal);
+    font-family: var(--font-monospace);
+    font-size: var(--font-ui-smaller);
+}
+
+.rtt-flag-icon {
+    display: flex;
+    align-items: center;
+    color: var(--color-orange);
+}
+
+.rtt-flag-icon svg {
+    width: 12px;
+    height: 12px;
+}
+
+/* ── 总看板：并集热力图的三色 / overview: three colours for the union ────── */
+
+.rtt-hm-seg.rtt-ov-doc {
+    background: var(--interactive-accent);
+}
+
+.rtt-hm-seg.rtt-ov-manual {
+    background: var(--color-green);
+}
+
+.rtt-hm-seg.rtt-ov-both {
+    /* 两本账同时覆盖：斜纹，色觉障碍下也能与纯色区分 */
+    /* Covered by both ledgers: a stripe, distinguishable from flat fills without colour */
+    background: repeating-linear-gradient(
+        45deg,
+        var(--color-purple) 0 3px,
+        var(--color-pink, var(--color-purple)) 3px 6px
+    );
+}
+
+.rtt-ov-legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.rtt-ov-swatch {
+    display: inline-block;
+    width: 9px;
+    height: 9px;
+    border-radius: 2px;
+}
+
+.rtt-ov-swatch.rtt-ov-doc {
+    background: var(--interactive-accent);
+}
+
+.rtt-ov-swatch.rtt-ov-manual {
+    background: var(--color-green);
+}
+
+.rtt-ov-swatch.rtt-ov-both {
+    background: var(--color-purple);
+}
+
+/* 手动时段统一用绿色，与总看板里"手动"那一档同色
+   Manual stretches are green, matching the overview's "manual" category */
+.rtt-hm-seg.rtt-hm-manual {
+    background: var(--color-green);
+}
+
+/* 不能点击的行不该有手型光标 / a row that cannot be clicked must not show a pointer */
+.rtt-list-item.is-static {
+    cursor: default;
+}
+
+/* ── 纯图标操作按钮 / icon-only control buttons ───────────────────────────
+ *
+ * 基础外观全部来自 Obsidian 的 `.clickable-icon`：它是唯一能让
+ * `button:not(.clickable-icon)`（主题的底色与阴影）失效的选择器，因此这里不需要
+ * `!important`。本模块只做两件事：去掉悬浮底色，以及保证触屏命中区。
+ *
+ * All base appearance comes from Obsidian's `.clickable-icon` — the only selector that makes
+ * the themed `button:not(.clickable-icon)` rule stop applying, so no `!important` is needed.
+ * This module only removes the hover fill and guarantees a touch target.
+ *
+ * 选择器必须带 `button.` 前缀：`.rtt-icon-btn` 单类 (0,1,0) 会输给
+ * `button:not(.clickable-icon)` (0,1,1)，底色根本去不掉。
+ * The `button.` prefix is required: a bare `.rtt-icon-btn` (0,1,0) loses to
+ * `button:not(.clickable-icon)` (0,1,1) and the fill would never come off.
+ */
+button.clickable-icon.rtt-icon-btn {
+    color: var(--icon-color, var(--text-muted));
+    padding: 4px;
+}
+
+button.clickable-icon.rtt-icon-btn svg {
+    width: var(--icon-s, 16px);
+    height: var(--icon-s, 16px);
+}
+
+/* 悬浮只换颜色，不加底色 / hover changes colour only, never a fill */
+button.clickable-icon.rtt-icon-btn:hover {
+    background-color: transparent;
+    box-shadow: none;
+    color: var(--text-normal);
+}
+
+/* 丢弃 / 删除类：悬浮转红，避免误点 / destructive actions turn red on hover */
+button.clickable-icon.rtt-icon-btn.is-danger:hover {
+    color: var(--text-error);
+}
+
+button.clickable-icon.rtt-icon-btn:focus-visible {
+    box-shadow: 0 0 0 2px var(--background-modifier-border-focus);
+}
+
+/* ghost：连轮廓都不要，完全融进背景（翻页箭头、今天这类次要导航）
+   Fully blended — no fill and no outline, for secondary navigation such as the day arrows */
+button.clickable-icon.rtt-icon-btn.is-ghost {
+    color: var(--text-faint);
+}
+
+button.clickable-icon.rtt-icon-btn.is-ghost:hover {
+    background-color: transparent;
+    box-shadow: none;
+    color: var(--text-normal);
+}
+
+/* 焦点环也去掉，但改用颜色变化保留键盘可见性 —— 完全没有焦点指示会让键盘用户
+   不知道自己在哪，这是"不要 outline"能接受的最低补偿。
+   The focus ring goes too, replaced by a colour change so keyboard users can still see where
+   they are: no indicator at all would leave them lost, and this is the least compensation
+   that "no outline" can accept. */
+button.clickable-icon.rtt-icon-btn.is-ghost:focus,
+button.clickable-icon.rtt-icon-btn.is-ghost:focus-visible {
+    box-shadow: none;
+    outline: none;
+    color: var(--text-accent);
+}
+
+/* 触屏命中区：桌面保持小字形，粗指针设备才撑到可点大小
+   Touch target: the glyph stays small on desktop and only grows under a coarse pointer */
+@media (pointer: coarse) {
+    button.clickable-icon.rtt-icon-btn {
+        min-width: var(--touch-size-m, 44px);
+        min-height: var(--touch-size-m, 44px);
+    }
+}
+
+/* ── 「查看全部记录」/ 「显示更多」入口 / full-width text entries ──────────
+ *
+ * 撑满宽度、居中、无底色，图标 + 文字。它是通往完整面板的唯一入口，必须留着文字。
+ * Full width, centred, no fill, icon plus label — the only way into the full browser, so it
+ * keeps its text.
+ */
+button.rtt-view-all-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    width: 100%;
+    margin-top: 6px;
+    padding: 6px 8px;
+    background: none;
+    background-color: transparent;
+    border: none;
+    box-shadow: none;
+    border-radius: var(--radius-s);
+    color: var(--text-muted);
+    font-size: var(--font-ui-smaller);
+    cursor: pointer;
+}
+
+button.rtt-view-all-btn:hover {
+    background: none;
+    background-color: transparent;
+    box-shadow: none;
+    color: var(--text-accent);
+}
+
+.rtt-view-all-icon {
+    display: flex;
+    align-items: center;
+    flex: 0 0 auto;
+}
+
+.rtt-view-all-icon svg {
+    width: var(--icon-s, 16px);
+    height: var(--icon-s, 16px);
+}
+
+/* ── 日期触发按钮 / the date trigger ─────────────────────────────────────
+ * 用自绘日历而不是原生 <input type="date">：原生控件无法逐日禁用，
+ * 而"只有有记录的日子可选"要的正是逐日判定。
+ * Hand-drawn rather than a native date input, which cannot disable individual days —
+ * exactly what "only days with records are selectable" needs.
+ */
+.rtt-timeline-nav {
+    /* 日历弹层要相对它定位 / the popover anchors to this */
+    position: relative;
+}
+
+button.rtt-day-trigger {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
+    padding: 3px 6px;
+    background: none;
+    background-color: transparent;
+    border: none;
+    box-shadow: none;
+    border-radius: var(--radius-s);
+    color: var(--text-normal);
+    font-family: var(--font-monospace);
+    font-size: var(--font-ui-smaller);
+    cursor: pointer;
+}
+
+button.rtt-day-trigger:hover {
+    background-color: transparent;
+    box-shadow: none;
+    color: var(--text-accent);
+}
+
+.rtt-day-trigger-icon {
+    display: flex;
+    align-items: center;
+    color: var(--text-muted);
+}
+
+.rtt-day-trigger-icon svg {
+    width: var(--icon-s, 16px);
+    height: var(--icon-s, 16px);
+}
+
+/* ── 自绘日历弹层 / the calendar popover ──────────────────────────────── */
+
+.rtt-cal {
+    position: absolute;
+    z-index: var(--layer-popover, 30);
+    top: calc(100% + 4px);
+    left: 50%;
+    transform: translateX(-50%);
+    width: min(268px, 100%);
+    padding: 8px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-m);
+    background: var(--background-secondary);
+    box-shadow: var(--shadow-s);
+}
+
+.rtt-cal-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 4px;
+    margin-bottom: 6px;
+}
+
+.rtt-cal-title {
+    font-size: var(--font-ui-small);
+    font-weight: 600;
+    color: var(--text-normal);
+    white-space: nowrap;
+}
+
+.rtt-cal-grid {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 2px;
+}
+
+.rtt-cal-wd {
+    padding: 2px 0;
+    text-align: center;
+    color: var(--text-faint);
+    font-size: var(--font-ui-smaller);
+}
+
+button.rtt-cal-cell {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    /* 28px 是桌面鼠标的舒适下限；粗指针设备在下面单独放大 */
+    /* 28px is the desktop floor; coarse pointers get a bigger box below */
+    min-height: 28px;
+    padding: 0;
+    background: none;
+    background-color: transparent;
+    border: none;
+    border-radius: var(--radius-s);
+    box-shadow: none;
+    color: var(--text-normal);
+    font-size: var(--font-ui-smaller);
+    font-variant-numeric: tabular-nums;
+    cursor: pointer;
+    /* 避免移动端滚动被当成点击 / keeps mobile scrolling from registering as a tap */
+    touch-action: manipulation;
+}
+
+button.rtt-cal-cell.has-records:hover {
+    background-color: var(--background-modifier-hover);
+    box-shadow: none;
+    color: var(--text-accent);
+}
+
+button.rtt-cal-cell.is-blank {
+    visibility: hidden;
+    pointer-events: none;
+}
+
+/* 没有记录的日子：禁用且明确变淡，而不是"能点但会报错" */
+/* A record-less day is disabled and visibly faint, not clickable-then-refused */
+button.rtt-cal-cell.is-disabled {
+    color: var(--text-faint);
+    opacity: 0.45;
+    cursor: default;
+    text-decoration: line-through;
+    background-color: transparent;
+    box-shadow: none;
+}
+
+button.rtt-cal-cell.is-today:not(.is-selected) {
+    box-shadow: inset 0 0 0 1px var(--background-modifier-border-focus);
+}
+
+button.rtt-cal-cell.is-selected {
+    background-color: var(--interactive-accent);
+    color: var(--text-on-accent);
+    box-shadow: none;
+}
+
+.rtt-cal-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1px solid var(--background-modifier-border);
+}
+
+.rtt-cal-note {
+    color: var(--text-faint);
+    font-size: var(--font-ui-smaller);
+}
+
+button.rtt-cal-today {
+    padding: 2px 8px;
+    background: none;
+    background-color: transparent;
+    border: none;
+    border-radius: var(--radius-s);
+    box-shadow: none;
+    color: var(--text-accent);
+    font-size: var(--font-ui-smaller);
+    cursor: pointer;
+}
+
+button.rtt-cal-today:hover {
+    background-color: transparent;
+    box-shadow: none;
+    color: var(--text-accent-hover);
+}
+
+button.rtt-cal-today.is-disabled {
+    color: var(--text-faint);
+    cursor: default;
+}
+
+/* 触屏：把格子撑到可点大小 / touch: grow the cells to a tappable size */
+@media (pointer: coarse) {
+    button.rtt-cal-cell {
+        min-height: var(--touch-size-m, 40px);
+    }
+
+    .rtt-cal {
+        width: min(300px, 100%);
+    }
+}

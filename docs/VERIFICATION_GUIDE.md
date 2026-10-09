@@ -100,7 +100,7 @@
 
 ```bash
 # 在终端中执行
-cat /home/corevortex/documents-activity-tracker/verify-fixes.js
+cat <repo>/verify-fixes.js
 ```
 
 然后将输出复制到 Obsidian 控制台执行。

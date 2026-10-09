@@ -240,13 +240,13 @@ console.log('✅ saveTimeline 执行成功');
 
 ### CDP (Chrome DevTools Protocol) 启动命令
 ```bash
-/home/corevortex/AppImages/obsidian.appimage \
+obsidian.appimage \
   --enable-features=UseOzonePlatform \
   --ozone-platform=wayland \
   --enable-wayland-ime \
   --no-sandbox \
   --remote-debugging-port=9222 \
-  /home/corevortex/文档/Markdown\ Docs
+  <old-vault>
 ```
 
 ### CDP 端点
@@ -264,7 +264,7 @@ ws://127.0.0.1:9222/devtools/page/470BA278907BD2A48F385CE814486C90
 ## 同步状态
 
 ### ✅ 已同步
-- `/home/corevortex/documents-activity-tracker/main.js` → `.obsidian/plugins/documents-activity-tracker/main.js`
+- `<repo>/main.js` → `.obsidian/plugins/documents-activity-tracker/main.js`
 - 备份文件已创建: `main.js.backup-1788780375831`
 
 ---

@@ -1,28 +1,32 @@
 /**
- * 核心类型定义 / Core type definitions
+ * Core type definitions
  *
- * 来源：vault 版 main.js 中散落的 JSDoc 与隐式结构，本次统一为强类型。
  * Origin: previously implicit/JSDoc shapes scattered across vault main.js,
  * now consolidated into explicit types.
  *
- * 本模块只依赖 constants，属第 0 层 / L0 module; depends only on constants.
+ * L0 module; depends only on constants.
  */
 
-import type { FileStatus, ActionType } from './constants';
+import type { FileStatus, ActionType, ManualStatus } from './constants';
 
-// ============================================================================
-// 设置 / Settings
-// ============================================================================
+//  ============================================================================
+// Settings
+//  ============================================================================
 
-/** 设置项 / Plugin settings (13 fields, unchanged from the original). */
+/**
+ * Plugin settings.
+ *
+ * The first 13 fields are identical to the original (including 3 write-only legacy
+ * fields); the last 2 are the new feature toggles. Defaults live in defaults.ts.
+ */
 export interface PluginSettings {
   /** 'blacklist' | 'whitelist' */
   filterMode: string;
-  /** 逗号/换行分隔，支持路径前缀与正则 / comma or newline separated */
+  /** comma or newline separated */
   filterPatterns: string;
   idleTimeoutEnabled: boolean;
   idleTimeout: number;
-  /** 起步阈值（秒），低于此值不写入记录 / min session seconds */
+  /** min session seconds */
   minReadSeconds: number;
   /** 'compact' | 'precise' */
   timeDisplayMode: string;
@@ -32,51 +36,93 @@ export interface PluginSettings {
   dataFilePath: string;
   /** 'idle' | 'always' | 'never' */
   todayTotalDisplay: string;
-  /** 遗留项：只写不读，本次重构刻意保留原样 / legacy, intentionally untouched */
+  /** legacy, intentionally untouched */
   autoSaveEnabled: boolean;
-  /** 遗留项：只写不读 / legacy, intentionally untouched */
+  /** legacy, intentionally untouched */
   autoSaveInterval: number;
-  /** 'focus' | 'visibility'，遗留项：只写不读 / legacy, intentionally untouched */
+  /** legacy, intentionally untouched */
   trackingMode: string;
+
+  //  --------------------------------------------------------------------------
+  // New in this refactor
+  //  --------------------------------------------------------------------------
+
+  /**
+   * Document tracking toggle: no timer service, no in-note widget, no document
+   * section in the sidebar. Manual timing is unaffected.
+   */
+  documentTrackingEnabled: boolean;
+
+  /**
+   * Manual-timer toggle: hides its UI, ribbon icon and service; document tracking
+   * is unaffected.
+   */
+  manualTimerEnabled: boolean;
+
+  /**
+   * Whether the manual stopwatch shows seconds. On by default; when off it reads to the
+   * minute only, for long focus sessions where a ticking second is a distraction.
+   */
+  manualShowSeconds: boolean;
+
+  /**
+   *
+   * Whether document activity is still recorded while manual timing runs. On by default.
+   * When off, the heartbeat and file switches stop producing events, so nothing lands in
+   * any document's reading record — the two are separate ledgers and the user may want
+   * only the manual one. The document panel reads 0s meanwhile, because nothing is being
+   * recorded.
+   */
+  manualRecordDocActivity: boolean;
 }
 
-// ============================================================================
-// 会话与记录 / Sessions & records
-// ============================================================================
-
-/** sessionObject 的状态取值 / State values stored in a sessionObject. */
-export type SessionState = 'tracking' | 'pausing' | 'saved';
+//  ============================================================================
+// Sessions & records
+//  ============================================================================
 
 /**
- * 会话时间轴对象 / Session timeline object.
- * 形如 { 'YYYY-MM-DD HH:mm:ss': 'tracking' | 'pausing' | 'saved' }
+ * State values stored in a sessionObject.
+ *
+ * `inactive` is new: written while the window is unfocused. It keeps blur stretches out
+ * of the active total, since `calculateSessionDuration` only counts `tracking` — which
+ * fixes the original's bug of counting blur stretches as active time.
+ */
+export type SessionState = 'tracking' | 'pausing' | 'saved' | 'inactive';
+
+/**
+ * Session timeline object.
  */
 export type SessionStateMap = Record<string, SessionState>;
 
-/** 暂停区间 [开始毫秒, 结束毫秒] / A paused range as [startMs, endMs]. */
+/** A paused range as [startMs, endMs]. */
 export type PausedRange = [number | null, number];
 
-/** 单个文件的计时状态 / Per-file timer state. */
+/** Per-file timer state. */
 export interface TimerFileState {
   filePath: string;
   status: FileStatus;
   sessionStartTime: string | null;
 
   /**
-   * 唯一真相：纯活跃秒数 / single source of truth: pure active seconds.
-   * 原先另有一个 `accumulatedSeconds`（墙钟，含暂停）与之并存，二者并非恒等，
-   * 本次合并为 `activeSeconds` + `pausedSeconds`，墙钟按需派生（见下）。
+   * single source of truth: pure active seconds.
    * The original kept an additional `accumulatedSeconds` (wall clock, incl. pauses);
    * the two were not identical. Merged here into active + paused, with wall clock derived.
    */
   activeSeconds: number;
 
   /**
-   * 唯一真相：累计暂停秒数 / single source of truth: accumulated paused seconds.
-   * 复现原实现的取整方式：每次「恢复」时一次性累加 floor(暂停时长/1000)。
+   * single source of truth: accumulated paused seconds.
    * Reproduces the original rounding: floor(pauseDuration / 1000) added once on resume.
    */
   pausedSeconds: number;
+
+  /**
+   *
+   * Behaviour change: the old implementation stopped counting on window blur and lost
+   * that time entirely. Blur now keeps counting, banked here rather than in
+   * `activeSeconds`, so in-window and out-of-window time stay separable.
+   */
+  unfocusedSeconds: number;
 
   lastTickTimestamp: number | null;
   pauseStartTimestamp: number | null;
@@ -85,19 +131,94 @@ export interface TimerFileState {
 }
 
 /**
- * 墙钟时长派生 / Derive wall-clock seconds.
- * 等价于原 `accumulatedSeconds` 的语义（活跃 + 暂停）。
- * Equivalent to the original `accumulatedSeconds` semantics.
+ * Derive reading seconds.
+ * In-window plus out-of-window: both are real reading time, so both count.
  */
-export function wallClockSeconds(file: TimerFileState): number {
-  return file.activeSeconds + file.pausedSeconds;
+export function readingSeconds(file: TimerFileState): number {
+  return file.activeSeconds + file.unfocusedSeconds;
 }
 
-// ============================================================================
-// 待写入队列 / Pending writes
-// ============================================================================
+/**
+ * Derive wall-clock seconds.
+ *
+ * Extended by this refactor: unfocused time is part of the session's wall clock, so
+ * wall = in-window + unfocused + paused. It differs from the original
+ * `accumulatedSeconds` only by the unfocused part, which the original never recorded —
+ * for pre-existing data `unfocusedSeconds` is 0 and the value is unchanged.
+ */
+export function wallClockSeconds(file: TimerFileState): number {
+  return file.activeSeconds + file.unfocusedSeconds + file.pausedSeconds;
+}
 
-/** 新会话开始 / A new session started. */
+//  ============================================================================
+// Manual timer
+//  ============================================================================
+
+/**
+ * Manual-timer state.
+ *
+ * Independent of document tracking: bound to no file, not part of `activeFilePath`, and
+ * unaffected by the document filter rules. It only answers "since when have I been
+ * focusing on something, and for how long".
+ */
+export interface ManualTimerState {
+  status: ManualStatus;
+  /** start timestamp in ms, null when idle */
+  startTimestamp: number | null;
+  /** local full timestamp string for persistence */
+  startedAt: string;
+  /**
+   * accumulated paused milliseconds.
+   * Milliseconds rather than seconds so repeated short pauses do not lose precision.
+   */
+  pausedMs: number;
+  /** start of the current pause, null when not paused */
+  pauseStartTimestamp: number | null;
+  /**
+   * marks placed during this run.
+   * Saved with the session on stop; `MANUAL_START` clears it, so each run starts empty.
+   */
+  flags: ManualFlag[];
+}
+
+/**
+ * One mark placed during manual timing.
+ *
+ * A mark records the net seconds (pauses excluded) since the run began, at the instant it
+ * was placed — not a wall-clock time. The session is measured in net seconds, and a
+ * wall-clock mark would drift out of step with it.
+ */
+export interface ManualFlag {
+  /** net seconds since the run began */
+  atSeconds: number;
+  /** when it was placed, local full timestamp */
+  atTime: string;
+  /** optional label, may be empty */
+  label: string;
+}
+
+/**
+ * A completed manual session.
+ * The unit of persistence; `note` is what the user fills in after stopping.
+ */
+export interface ManualSession {
+  id: string;
+
+  startTime: string;
+  endTime: string;
+
+  durationSeconds: number;
+  /** what the user wrote, may be empty */
+  note: string;
+
+  flags: ManualFlag[];
+}
+
+//  ============================================================================
+// Pending writes
+//  ============================================================================
+
+/** A new session started. */
 export interface TimelineStartWrite {
   type: 'timeline-start';
   filePath: string;
@@ -105,52 +226,72 @@ export interface TimelineStartWrite {
   state: string;
 }
 
-/** 会话被丢弃 / A session was discarded. */
+/** A session was discarded. */
 export interface TimelineDiscardWrite {
   type: 'timeline-discard';
   filePath: string;
   time: string;
 }
 
-/** 会话已保存 / A session was saved. */
+/** A session was saved. */
 export interface SessionWrite {
   type: 'session';
   filePath: string;
   session: SessionStateMap;
-  /** 活跃秒数，累加进 records / active seconds, added to records */
+  /**
+   * which event type to write on flush.
+   *
+   * `save` is an explicit user save; `auto-save` is an automatic close (tab switch or
+   * close, day rollover, startup recovery). Real data contains both (5 save / 23
+   * auto-save), and the heatmap renders them differently, so the caller states it rather
+   * than leaving the service to guess.
+   */
+  eventType: 'save' | 'auto-save';
+  /** in-window seconds, added to records */
   activeSeconds: number;
-  /** 墙钟秒数，写入 timeline 事件的 duration / wall clock, written as event.duration */
+  /** out-of-window seconds, accumulated separately */
+  unfocusedSeconds: number;
+  /** wall clock, written as event.duration */
   totalSeconds: number;
 }
 
 export type PendingWrite = TimelineStartWrite | TimelineDiscardWrite | SessionWrite;
 
-// ============================================================================
-// 全局计时状态 / Global timer state
-// ============================================================================
+//  ============================================================================
+// Global timer state
+//  ============================================================================
 
-/** reducer 管理的唯一状态树 / The single state tree managed by the reducer. */
+/**
+ * The single state tree managed by the reducer.
+ *
+ * Document tracking and the manual timer share this tree but are data-independent: no
+ * field references the other, and the manual timer never touches activeFilePath. One
+ * tree means one persistence and subscription path; the service layer stays split.
+ */
 export interface TimerState {
   activeFilePath: string | null;
   files: Map<string, TimerFileState>;
   isPaused: boolean;
   isIdle: boolean;
+  /**
+   * whether the Obsidian window is focused.
+   * Counting does not stop on blur — it flows into `unfocusedSeconds`. Starts focused.
+   */
+  isWindowFocused: boolean;
+  /** manual-timer state, unrelated to files */
+  manual: ManualTimerState;
   lastActivityTime: number;
   lastTickTime: number | null;
-  /** 用于跨日检测 / used for day-rollover detection */
+  /** used for day-rollover detection */
   lastCheckDay: string;
   pendingWrites: PendingWrite[];
 }
 
-// ============================================================================
-// Action
-// ============================================================================
+//  ============================================================================
+//  Action
+//  ============================================================================
 
 /**
- * 注意：原实现的 TICK / TOGGLE_PAUSE 载荷里带 `currentTime`，由 TimerService 用
- * Date.now() 填入；而 reducer 内部另有若干处直接调 Date.now()。两套时间来源并存
- * 使 reducer 无法确定性重放。本次统一为只从注入的 clock 取时间，载荷不再携带
- * currentTime —— 这是内部契约调整，不改变行为（TimerService 原本就传 Date.now()）。
  *
  * Note: the original carried `currentTime` in TICK / TOGGLE_PAUSE payloads while also
  * calling Date.now() directly inside the reducer, which made deterministic replay
@@ -165,12 +306,9 @@ export interface TickPayload {
 }
 
 /**
- * 全部 Action 的判别联合 / Discriminated union of every action.
+ * Discriminated union of every action.
  *
- * 相比原实现：删除了 4 个有声明无实现的死常量（START_SESSION / PAUSE_SESSION /
- * RESUME_SESSION / UNBIND_FILE）；`CLEAR_PENDING_WRITES` 改为语义更准确的
- * `CONSUME_PENDING_WRITES`（按条数消费队首，用于消除并发重复写入）；
- * 新增 `REQUEUE_PENDING_WRITES`（落盘失败时把事件写回队首，不再静默丢数据）。
+ * PAUSE_SESSION /
  *
  * Versus the original: dropped 4 declared-but-unimplemented constants; renamed
  * CLEAR_PENDING_WRITES to CONSUME_PENDING_WRITES (consume N from the head, which is
@@ -186,7 +324,12 @@ export type TimerAction =
     }
   | {
       type: Extract<ActionType, 'SAVE_SESSION'>;
-      payload: { filePath: string; minReadSeconds: number };
+      payload: {
+        filePath: string;
+        minReadSeconds: number;
+
+        eventType?: 'save' | 'auto-save';
+      };
     }
   | { type: Extract<ActionType, 'DISCARD_SESSION'>; payload: { filePath: string } }
   | { type: Extract<ActionType, 'USER_ACTIVITY'> }
@@ -207,20 +350,41 @@ export type TimerAction =
   | {
       type: Extract<ActionType, 'REQUEUE_PENDING_WRITES'>;
       payload: { writes: PendingWrite[] };
+    }
+  //  --------------------------------------------------------------------------
+  // New in this refactor
+  //  --------------------------------------------------------------------------
+  | {
+      type: Extract<ActionType, 'SET_WINDOW_FOCUS'>;
+      payload: { focused: boolean };
+    }
+  | { type: Extract<ActionType, 'UNBIND_FILE'> }
+  | { type: Extract<ActionType, 'MANUAL_START'> }
+  | { type: Extract<ActionType, 'MANUAL_PAUSE'> }
+  | { type: Extract<ActionType, 'MANUAL_RESUME'> }
+  | { type: Extract<ActionType, 'MANUAL_STOP'> }
+  | {
+      type: Extract<ActionType, 'MANUAL_FLAG'>;
+      payload: { atSeconds: number; atTime: string; label: string };
     };
 
-// ============================================================================
-// 持久化数据结构 / Persisted data shapes
-// ============================================================================
+//  ============================================================================
+// Persisted data shapes
+//  ============================================================================
 
-/** 单条文件记录 / A per-file record entry. */
+/** A per-file record entry. */
 export interface RecordEntry {
   fileName: string;
+  /** total reading time = in-window + out-of-window */
   totalReadTime: number;
   lastReadAt: string;
+  /**
+   * Optional: records written before this refactor lack it; read as 0.
+   */
+  unfocusedReadTime?: number;
 }
 
-/** timeline 事件类型 / Timeline event types. */
+/** Timeline event types. */
 export type TimelineEventType =
   | 'start'
   | 'pause'
@@ -233,8 +397,7 @@ export type TimelineEventType =
   | 'switch';
 
 /**
- * 挂载在单个文件上的事件 / Events that hang off a single file.
- * 字段组合取自真实数据实测结果。
+ * Events that hang off a single file.
  * Field combinations taken from the measured real data.
  */
 export interface FileTimelineEvent {
@@ -242,14 +405,17 @@ export interface FileTimelineEvent {
   type: 'start' | 'pause' | 'resume' | 'save' | 'auto-save' | 'blur' | 'focus';
   file: string;
   state?: string;
-  /** blur/focus 事件的成因 / cause for blur/focus events */
+  /** cause for blur/focus events */
   reason?: string;
-  /** save/auto-save 事件的墙钟秒数 / wall-clock seconds on save events */
+  /** wall-clock seconds on save events */
   duration?: number;
+  /** in-window seconds on save events */
   activeSeconds?: number;
+
+  unfocusedSeconds?: number;
 }
 
-/** 会话被丢弃 / A discarded session (no `state` field in real data). */
+/** A discarded session (no `state` field in real data). */
 export interface DiscardTimelineEvent {
   time: string;
   type: 'discard';
@@ -257,7 +423,7 @@ export interface DiscardTimelineEvent {
   state?: string;
 }
 
-/** 文件切换，用 from/to 而非 file / A file switch, keyed by from/to rather than file. */
+/** A file switch, keyed by from/to rather than file. */
 export interface SwitchTimelineEvent {
   time: string;
   type: 'switch';
@@ -273,23 +439,25 @@ export type TimelineEvent =
   | SwitchTimelineEvent;
 
 /**
- * 派生出的文件视图模型 / Derived per-file view model.
+ * Derived per-file view model.
  *
- * 由 timeline 现算，不落盘（持久化的 records 只有三个统计字段）。
  * Computed from the timeline on demand; never persisted (records holds only 3 fields).
  */
 export interface FileRecord {
   fileName: string;
+  /** total reading time = in-window + out-of-window */
   totalReadTime: number;
+  /** out-of-window part, shown separately */
+  unfocusedReadTime: number;
   readTimeToday: number;
   lastReadAt: string;
-  /** 旧格式的会话时间轴，供 HeatmapView / TimelineView 渲染 / legacy per-session maps */
+
   readTimeLine: SessionStateMap[];
-  /** 是否存在异常未闭合会话（超过 24 小时）/ any unfinished session older than 24h */
+
   hasAbnormalSession: boolean;
 }
 
-/** 自定义数据文件的整体结构 / The whole on-disk data file. */
+/** The whole on-disk data file. */
 export interface HistoryCache {
   version?: number;
   records: Record<string, RecordEntry>;
@@ -297,7 +465,7 @@ export interface HistoryCache {
   settings?: Partial<PluginSettings>;
 }
 
-/** 迁移报告，取代原先直接 new Notice 的 UI 泄漏 / replaces the original Notice side effect. */
+/** replaces the original Notice side effect. */
 export interface MigrationReport {
   migrated: boolean;
   fromVersion: number;
@@ -306,8 +474,8 @@ export interface MigrationReport {
   recordsAfter: number;
   timelineBefore: number;
   timelineAfter: number;
-  /** 因缺少 time 字段而丢弃的事件数 / events dropped for lacking a usable `time` */
+  /** events dropped for lacking a usable `time` */
   droppedMalformed: number;
-  /** 出现但不在已知类型表里的事件类型（保留不丢，仅供诊断） */
+
   unknownEventTypes: string[];
 }

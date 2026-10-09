@@ -1,36 +1,35 @@
 /**
- * 计时状态机 / The timer state machine
+ * The timer state machine
  *
- * 来源：vault 版 main.js 第 166-449 行的 `timerReducer`，B 版的 Redux 架构保留，
- * 本文件在其上做了四处改写（见下）。
  * Origin: vault main.js lines 166-449. The Redux architecture is kept; four changes:
  *
- *   1. **时间与日志注入**：原 reducer 内有 6 处环境依赖（Date.now()、nowFullStr()、
- *      nowStr()、console.warn/console.log），使其无法确定性测试。现改为依赖注入。
  *      Time and logging are injected, making the reducer deterministically testable.
  *
- *   2. **双秒数字段合并**：原实现同时维护 accumulatedSeconds（墙钟）与 activeSeconds
- *      （纯活跃），二者并非恒等。现合并为 activeSeconds + pausedSeconds，
- *      墙钟按需派生（wallClockSeconds）。语义等价，见 types.ts。
  *      The duplicated second-counters are merged into active + paused, with wall clock derived.
  *
- *   3. **跨日处理**：原 DAY_ROLLOVER 只有常量声明、reducer 无对应 case（跨日逻辑
- *      停留在旧版引擎里未迁移）。本次补上实现。
  *      DAY_ROLLOVER was declared but never implemented; now implemented.
  *
- *   4. **待写入队列的消费语义**：CLEAR_PENDING_WRITES（清空）改为 CONSUME_PENDING_WRITES
- *      （按条数消费队首），并新增 REQUEUE_PENDING_WRITES。这是消除 flushPendingWrites
- *      并发重复写入的关键，见 TimerService。
  *      The pending-write queue now supports count-based consumption plus requeue-on-failure.
  *
- * 本模块是第 0 层，只依赖 constants / types / time，不触碰 window/document/localStorage。
+ * Note: every timestamp is second-precision (`nowFull`), taken once at session start and
+ * shared by the state and the event log. Minute precision would inflate derived durations
+ * by up to 59s per session.
+ *
  * L0 module: depends only on constants, types and time; no window/document/localStorage.
  */
 
-import { ActionTypes, STATUS, TICK_GAP_LIMIT_MS } from './constants';
-import { nowFullStr, nowStr, todayStr } from './time';
 import {
+  ActionTypes,
+  MANUAL_STATUS,
+  STATUS,
+  TICK_GAP_LIMIT_MS,
+  UNFOCUSED_GAP_LIMIT_MS,
+} from './constants';
+import { nowFullStr, todayStr } from './time';
+import {
+  readingSeconds,
   wallClockSeconds,
+  type ManualTimerState,
   type SessionStateMap,
   type TimerAction,
   type TimerFileState,
@@ -38,14 +37,11 @@ import {
 } from './types';
 
 /**
- * reducer 所需的全部环境能力 / Every ambient capability the reducer needs.
- * 生产环境用 SystemClock，测试用 FakeClock，从而可确定性重放。
+ * Every ambient capability the reducer needs.
  */
 export interface ReducerDeps {
-  /** 毫秒时间戳 / milliseconds since epoch */
+  /** milliseconds since epoch */
   now(): number;
-  /** "YYYY-MM-DD HH:mm" */
-  nowMinute(): string;
   /** "YYYY-MM-DD HH:mm:ss" */
   nowFull(): string;
   /** "YYYY-MM-DD" */
@@ -56,10 +52,9 @@ export interface ReducerDeps {
   };
 }
 
-/** 默认依赖：直接使用系统时间与 console / Default deps backed by the system clock. */
+/** Default deps backed by the system clock. */
 export const systemDeps: ReducerDeps = {
   now: () => Date.now(),
-  nowMinute: nowStr,
   nowFull: nowFullStr,
   today: todayStr,
   log: {
@@ -68,13 +63,62 @@ export const systemDeps: ReducerDeps = {
   },
 };
 
-/** 构造初始状态 / Build a fresh initial state. */
+/**
+ * Milliseconds of gap to whole seconds.
+ *
+ * A non-zero gap banks at least 1s (a throttled tick may be a few hundred ms short and
+ * would round to zero), but a zero gap must bank nothing — otherwise every channel
+ * switch would invent a second.
+ */
+function gapToSeconds(gapMs: number): number {
+  if (gapMs <= 0) return 0;
+  return Math.max(1, Math.round(gapMs / 1000));
+}
+
+/**
+ * Reset the active file's tick baseline.
+ *
+ * Used when counting resumes after idle. Without it, the first tick afterwards would
+ * bank the whole idle stretch as a gap; the gap-integrating unfocused channel is
+ * especially prone to this, silently turning idle time into reading time.
+ */
+function refreshTickBaseline(state: TimerState, now: number): TimerState {
+  const path = state.activeFilePath;
+  if (!path) return state;
+
+  const file = state.files.get(path);
+  if (!file || file.status !== STATUS.TRACKING || file.lastTickTimestamp === null) {
+    return state;
+  }
+
+  const newFiles = new Map(state.files);
+  newFiles.set(path, { ...file, lastTickTimestamp: now });
+  return { ...state, files: newFiles };
+}
+
+/** An idle manual-timer state. */
+export function createIdleManualState(): ManualTimerState {
+  return {
+    status: MANUAL_STATUS.IDLE,
+    startTimestamp: null,
+    startedAt: '',
+    pausedMs: 0,
+    pauseStartTimestamp: null,
+    flags: [],
+  };
+}
+
+/** Build a fresh initial state. */
 export function createInitialState(deps: ReducerDeps): TimerState {
   return {
     activeFilePath: null,
     files: new Map(),
     isPaused: false,
     isIdle: false,
+
+    //  The window is necessarily focused at load time — the plugin loads inside it
+    isWindowFocused: true,
+    manual: createIdleManualState(),
     lastActivityTime: deps.now(),
     lastTickTime: null,
     lastCheckDay: deps.today(),
@@ -82,13 +126,14 @@ export function createInitialState(deps: ReducerDeps): TimerState {
   };
 }
 
-/** 把某个文件的会话计数清零 / Reset one file's session counters. */
+/** Reset one file's session counters. */
 function clearedFile(file: TimerFileState): TimerFileState {
   return {
     ...file,
     status: STATUS.IDLE,
     sessionObject: null,
     activeSeconds: 0,
+    unfocusedSeconds: 0,
     pausedSeconds: 0,
     pausedRanges: [],
     pauseStartTimestamp: null,
@@ -97,35 +142,41 @@ function clearedFile(file: TimerFileState): TimerFileState {
 }
 
 /**
- * 创建 reducer / Create the reducer.
+ * Create the reducer.
  *
- * 返回闭包而非直接导出函数，是为了把 `deps` 固化进来，同时保持 reducer 本身
- * 是纯函数（同样的 state + action + deps 必得同样的结果）。
  * Returns a closure so `deps` is captured while the reducer itself stays pure.
  */
 export function createTimerReducer(deps: ReducerDeps) {
   return function timerReducer(state: TimerState, action: TimerAction): TimerState {
     switch (action.type) {
-      // ----------------------------------------------------------------------
-      // 每秒心跳 / The one-second tick
-      // ----------------------------------------------------------------------
+      //  ----------------------------------------------------------------------
+      // The one-second tick
+      //
+
+      //
+      //    focused   -> activeSeconds,   1s per tick, 5s guard (unchanged)
+      //    unfocused -> unfocusedSeconds, actual gap, 90s guard (throttling-aware)
+      //  ----------------------------------------------------------------------
       case ActionTypes.TICK: {
         const { filePath } = action.payload;
         const file = state.files.get(filePath);
 
-        // 防呆：文件不存在、非追踪态、全局暂停或空闲时不累加
         if (!file || file.status !== STATUS.TRACKING) return state;
         if (state.isPaused || state.isIdle) return state;
 
         const currentTime = deps.now();
-
-        // 间隔检测：超过阈值的间隔说明系统休眠过，本 tick 丢弃以防错误累加
-        // Gap check: a gap beyond the limit means the machine slept; drop this tick.
         const lastTick = file.lastTickTimestamp;
-        if (lastTick && currentTime - lastTick > TICK_GAP_LIMIT_MS) {
+        const gap = lastTick === null ? 0 : currentTime - lastTick;
+        const focused = state.isWindowFocused;
+        const limit = focused ? TICK_GAP_LIMIT_MS : UNFOCUSED_GAP_LIMIT_MS;
+
+        //  Gap check: a gap beyond the limit means the machine slept; drop this tick.
+        if (lastTick !== null && gap > limit) {
           deps.log.warn(
-            '[TimerReducer] Tick 间隔过长，丢弃 / tick gap too large, dropped:',
-            (currentTime - lastTick) / 1000,
+            focused
+              ? '[TimerReducer] Tick 间隔过长，丢弃 / tick gap too large, dropped:'
+              : '[TimerReducer] 失焦 Tick 间隔过长（疑似休眠），丢弃 / unfocused tick gap too large, dropped:',
+            gap / 1000,
             '秒 / s',
           );
           const newFiles = new Map(state.files);
@@ -135,22 +186,191 @@ export function createTimerReducer(deps: ReducerDeps) {
 
         const newFiles = new Map(state.files);
         const timeStr = deps.nowFull();
+
+        //  The unfocused channel settles the actual gap: a throttled tick stands for a
+        //  whole minute, so 1s/tick would under-count badly. The first tick has no gap to
+        //  measure and starts at 1s, mirroring the focused channel.
+        const gained = focused ? 1 : lastTick === null ? 1 : gapToSeconds(gap);
+
+        const nextFile: TimerFileState = focused
+          ? { ...file, activeSeconds: file.activeSeconds + gained }
+          : { ...file, unfocusedSeconds: file.unfocusedSeconds + gained };
+
         newFiles.set(filePath, {
-          ...file,
-          activeSeconds: file.activeSeconds + 1,
+          ...nextFile,
           lastTickTimestamp: currentTime,
+
+          //  Blur writes 'inactive' rather than 'tracking' so derived durations (which
+          //  count only `tracking`) and the heatmap's three-way stats cannot mistake
+          //  unfocused time for active time.
           sessionObject: {
             ...(file.sessionObject ?? {}),
-            [timeStr]: 'tracking',
+            [timeStr]: focused ? 'tracking' : 'inactive',
           },
         });
 
         return { ...state, files: newFiles, lastTickTime: currentTime };
       }
 
-      // ----------------------------------------------------------------------
-      // 暂停 / 继续
-      // ----------------------------------------------------------------------
+      //  ----------------------------------------------------------------------
+      // window focus change
+      //
+
+      //
+      //  Settles the elapsed time into the channel being left before switching, so the
+      //  minute represented by a throttled tick is not lost at the transition.
+      //  ----------------------------------------------------------------------
+      case ActionTypes.SET_WINDOW_FOCUS: {
+        const { focused } = action.payload;
+        if (state.isWindowFocused === focused) return state;
+
+        const leavingFocused = state.isWindowFocused;
+        const currentTime = deps.now();
+        const activePath = state.activeFilePath;
+        const file = activePath ? state.files.get(activePath) : undefined;
+
+        //  Only a running, unpaused, non-idle session has a gap worth settling
+        const shouldSettle =
+          !!file && file.status === STATUS.TRACKING && !state.isPaused && !state.isIdle;
+
+        if (!shouldSettle || !file || file.lastTickTimestamp === null) {
+          return { ...state, isWindowFocused: focused };
+        }
+
+        const gap = currentTime - file.lastTickTimestamp;
+        const limit = leavingFocused ? TICK_GAP_LIMIT_MS : UNFOCUSED_GAP_LIMIT_MS;
+        const newFiles = new Map(state.files);
+
+        if (gap > limit) {
+
+          //  A gap beyond the limit means sleep: reset the baseline, settle nothing
+          newFiles.set(activePath!, { ...file, lastTickTimestamp: currentTime });
+        } else if (leavingFocused) {
+
+          //  The focused channel ticks reliably at 1Hz, so rounding is enough
+          newFiles.set(activePath!, {
+            ...file,
+            activeSeconds: file.activeSeconds + Math.round(gap / 1000),
+            lastTickTimestamp: currentTime,
+          });
+        } else {
+
+          //  The unfocused channel banks the whole throttled stretch
+          newFiles.set(activePath!, {
+            ...file,
+            unfocusedSeconds: file.unfocusedSeconds + gapToSeconds(gap),
+            lastTickTimestamp: currentTime,
+          });
+        }
+
+        return { ...state, files: newFiles, isWindowFocused: focused };
+      }
+
+      //  ----------------------------------------------------------------------
+      // unbind the active file
+      //
+
+      //
+      //  Semantics: nothing trackable is open any more. Status goes IDLE and
+      //  activeFilePath is cleared; whether the session becomes a record is the caller's
+      //  call, since only it knows whether to write save or auto-save.
+      //  ----------------------------------------------------------------------
+      case ActionTypes.UNBIND_FILE: {
+        const fromPath = state.activeFilePath;
+        if (fromPath === null) return state;
+
+        const file = state.files.get(fromPath);
+        if (!file || file.status === STATUS.IDLE) {
+          return { ...state, activeFilePath: null };
+        }
+
+        const newFiles = new Map(state.files);
+        newFiles.set(fromPath, { ...file, status: STATUS.IDLE });
+        return { ...state, activeFilePath: null, files: newFiles };
+      }
+
+      //  ----------------------------------------------------------------------
+      // manual timer
+      //
+
+      //
+      //  Independent of document tracking: touches only the `manual` sub-state. Elapsed
+      //  time is derived from startTimestamp + pausedMs rather than counted per tick, so
+      //  window throttling cannot skew it.
+      //  ----------------------------------------------------------------------
+      case ActionTypes.MANUAL_START: {
+        if (state.manual.status !== MANUAL_STATUS.IDLE) return state;
+        return {
+          ...state,
+          manual: {
+            status: MANUAL_STATUS.RUNNING,
+            startTimestamp: deps.now(),
+            startedAt: deps.nowFull(),
+            pausedMs: 0,
+            pauseStartTimestamp: null,
+
+            //  Each run starts empty: the previous run's marks must not carry over
+            flags: [],
+          },
+        };
+      }
+
+      case ActionTypes.MANUAL_PAUSE: {
+        if (state.manual.status !== MANUAL_STATUS.RUNNING) return state;
+        return {
+          ...state,
+          manual: {
+            ...state.manual,
+            status: MANUAL_STATUS.PAUSED,
+            pauseStartTimestamp: deps.now(),
+          },
+        };
+      }
+
+      case ActionTypes.MANUAL_RESUME: {
+        if (state.manual.status !== MANUAL_STATUS.PAUSED) return state;
+        const currentTime = deps.now();
+        const pauseDuration = currentTime - (state.manual.pauseStartTimestamp ?? currentTime);
+        return {
+          ...state,
+          manual: {
+            ...state.manual,
+            status: MANUAL_STATUS.RUNNING,
+            pausedMs: state.manual.pausedMs + Math.max(0, pauseDuration),
+            pauseStartTimestamp: null,
+          },
+        };
+      }
+
+      case ActionTypes.MANUAL_STOP: {
+        if (state.manual.status === MANUAL_STATUS.IDLE) return state;
+
+        //  Only resets the sub-state: the caller reads the net duration via
+        //  selectManualElapsedSeconds before dispatching, since persisting waits for the
+        //  user to fill in the note.
+        return { ...state, manual: createIdleManualState() };
+      }
+
+      case ActionTypes.MANUAL_FLAG: {
+
+        //  Only a run in progress can carry a mark; an idle state has nothing to attach to
+        if (state.manual.status === MANUAL_STATUS.IDLE) return state;
+        const { atSeconds, atTime, label } = action.payload;
+        return {
+          ...state,
+          manual: {
+            ...state.manual,
+            flags: [
+              ...state.manual.flags,
+              { atSeconds: Math.max(0, Math.round(atSeconds)), atTime, label },
+            ],
+          },
+        };
+      }
+
+      //  ----------------------------------------------------------------------
+
+      //  ----------------------------------------------------------------------
       case ActionTypes.TOGGLE_PAUSE: {
         const { filePath } = action.payload;
         const file = state.files.get(filePath);
@@ -161,7 +381,7 @@ export function createTimerReducer(deps: ReducerDeps) {
         const timeStr = deps.nowFull();
 
         if (file.status === STATUS.TRACKING) {
-          // 暂停：记下暂停起点，供恢复时结算与热力图渲染
+
           newFiles.set(filePath, {
             ...file,
             status: STATUS.PAUSED,
@@ -172,11 +392,9 @@ export function createTimerReducer(deps: ReducerDeps) {
         }
 
         if (file.status === STATUS.PAUSED) {
-          // 恢复：把这段暂停按秒取整计入 pausedSeconds。
-          // 原实现把它加进 accumulatedSeconds；由于墙钟 = 活跃 + 暂停，
-          // 这里改记 pausedSeconds 后 wallClockSeconds() 与原值完全一致。
-          // Resume: bank the pause, rounded down to whole seconds. The original added it
-          // to accumulatedSeconds; since wall = active + paused, wallClockSeconds() matches.
+
+          //  Resume: bank the pause, rounded down to whole seconds. The original added it
+          //  to accumulatedSeconds; since wall = active + paused, wallClockSeconds() matches.
           const pauseDuration = currentTime - (file.pauseStartTimestamp ?? currentTime);
           newFiles.set(filePath, {
             ...file,
@@ -193,43 +411,73 @@ export function createTimerReducer(deps: ReducerDeps) {
         return state;
       }
 
-      // ----------------------------------------------------------------------
-      // 切换文件
-      // ----------------------------------------------------------------------
+      //  ----------------------------------------------------------------------
+
+      //  ----------------------------------------------------------------------
       case ActionTypes.SWITCH_FILE: {
         const { fromPath, toPath, autoStart } = action.payload;
         const newFiles = new Map(state.files);
         const newPendingWrites = [...state.pendingWrites];
 
-        // 旧文件转为 IDLE（不结算，结算由调用方先调 saveSession 完成）
-        // The old file goes IDLE; settlement is the caller's job via saveSession first.
-        if (fromPath) {
+        //  The old file goes IDLE; settlement is the caller's job via saveSession first.
+        //
+
+        //  `fromPath !== toPath` is load-bearing: switching to the file already being tracked
+        //  would otherwise flip it to IDLE first, and the IDLE→TRACKING branch right below
+        //  would then treat it as a brand-new session and reset its counters.
+        if (fromPath && fromPath !== toPath) {
           const oldFile = newFiles.get(fromPath);
           if (oldFile && oldFile.status === STATUS.TRACKING) {
             newFiles.set(fromPath, { ...oldFile, status: STATUS.IDLE });
           }
         }
 
+        //
+
+        //
+        //  The session start is fixed once, here: the state's sessionStartTime and the start
+        //  event in the log must be the same instant, to the second. The original wrote
+        //  sessionStartTime at minute precision while every other event carried seconds, so
+        //  gap-based attribution started from :00 and invented up to 59s per session
+        //  (measured: a 4s session derived as 62s, shown as "1 minute").
+        const startTimeStr = deps.nowFull();
+
         let newFile = newFiles.get(toPath);
-        const needWriteStart = !newFile && autoStart;
+        let needWriteStart = !newFile && autoStart;
 
         if (!newFile) {
           newFile = {
             filePath: toPath,
             status: autoStart ? STATUS.TRACKING : STATUS.IDLE,
-            sessionStartTime: deps.nowMinute(),
+            sessionStartTime: startTimeStr,
             activeSeconds: 0,
+            unfocusedSeconds: 0,
             pausedSeconds: 0,
             lastTickTimestamp: autoStart ? deps.now() : null,
             pauseStartTimestamp: null,
-            sessionObject: autoStart ? { [deps.nowFull()]: 'tracking' } : null,
+            sessionObject: autoStart
+              ? {
+                  [deps.nowFull()]: state.isWindowFocused ? 'tracking' : 'inactive',
+                }
+              : null,
             pausedRanges: [],
           };
         } else if (autoStart && newFile.status === STATUS.IDLE) {
+
+          //
+          //  IDLE -> TRACKING begins a new session and must emit a start event. The original
+          //  wrote none here (to suppress duplicated starts), which left sessions with no
+          //  start in the stream — and since buildFileRecords splits sessions on `start`,
+          //  every event of such a session was dropped from the derived view.
+          needWriteStart = true;
           newFile = {
             ...newFile,
             status: STATUS.TRACKING,
+            sessionStartTime: startTimeStr,
             lastTickTimestamp: deps.now(),
+            sessionObject: {
+              [deps.nowFull()]: state.isWindowFocused ? 'tracking' : 'inactive',
+            },
           };
         }
 
@@ -239,7 +487,7 @@ export function createTimerReducer(deps: ReducerDeps) {
           newPendingWrites.push({
             type: 'timeline-start',
             filePath: toPath,
-            time: newFile.sessionStartTime ?? deps.nowMinute(),
+            time: startTimeStr,
             state: 'tracking',
           });
         }
@@ -252,21 +500,23 @@ export function createTimerReducer(deps: ReducerDeps) {
         };
       }
 
-      // ----------------------------------------------------------------------
-      // 保存会话
-      // ----------------------------------------------------------------------
+      //  ----------------------------------------------------------------------
+
+      //  ----------------------------------------------------------------------
       case ActionTypes.SAVE_SESSION: {
-        const { filePath, minReadSeconds } = action.payload;
+        const { filePath, minReadSeconds, eventType } = action.payload;
         const file = state.files.get(filePath);
         if (!file) return state;
 
         const newFiles = new Map(state.files);
 
-        // 阈值检查：活跃时长不足则直接丢弃，不写记录
-        if (file.activeSeconds < minReadSeconds) {
+        //  Threshold uses readingSeconds (in-window + out-of-window): unfocused time is
+        //  reading time too.
+        const reading = readingSeconds(file);
+        if (reading < minReadSeconds) {
           deps.log.info(
             '[TimerReducer] 会话时长不足，丢弃 / session below threshold, dropped:',
-            file.activeSeconds,
+            reading,
           );
           newFiles.set(filePath, clearedFile(file));
           return { ...state, files: newFiles };
@@ -289,17 +539,20 @@ export function createTimerReducer(deps: ReducerDeps) {
               type: 'session',
               filePath,
               session: savedSession,
+
+              eventType: eventType ?? 'save',
               activeSeconds: file.activeSeconds,
-              // 墙钟值，写入 timeline 事件的 duration 字段，语义与原 accumulatedSeconds 一致
+              unfocusedSeconds: file.unfocusedSeconds,
+
               totalSeconds: wallClockSeconds(file),
             },
           ],
         };
       }
 
-      // ----------------------------------------------------------------------
-      // 丢弃会话
-      // ----------------------------------------------------------------------
+      //  ----------------------------------------------------------------------
+
+      //  ----------------------------------------------------------------------
       case ActionTypes.DISCARD_SESSION: {
         const { filePath } = action.payload;
         const file = state.files.get(filePath);
@@ -313,28 +566,28 @@ export function createTimerReducer(deps: ReducerDeps) {
           files: newFiles,
           pendingWrites: [
             ...state.pendingWrites,
-            { type: 'timeline-discard', filePath, time: deps.nowMinute() },
+            { type: 'timeline-discard', filePath, time: deps.nowFull() },
           ],
         };
       }
 
-      // ----------------------------------------------------------------------
-      // 跨日处理（原实现缺失 / previously unimplemented）
-      // ----------------------------------------------------------------------
+      //  ----------------------------------------------------------------------
+
+      //  ----------------------------------------------------------------------
       case ActionTypes.DAY_ROLLOVER: {
         const today = deps.today();
-        if (state.lastCheckDay === today) return state; // 幂等：同日重复触发无副作用
+        if (state.lastCheckDay === today) return state;
 
         const newFiles = new Map(state.files);
         const newPendingWrites = [...state.pendingWrites];
         let changed = false;
 
         for (const [filePath, file] of state.files) {
-          // 只处理仍在进行中的会话 / only sessions still in progress
+          // only sessions still in progress
           if (!file.sessionObject || !file.sessionStartTime) continue;
           if (file.sessionStartTime.slice(0, 10) === today) continue;
 
-          // 1) 闭合昨日会话 / close yesterday's session
+          // close yesterday's session
           const closedSession: SessionStateMap = {
             ...file.sessionObject,
             [deps.nowFull()]: 'saved',
@@ -343,22 +596,31 @@ export function createTimerReducer(deps: ReducerDeps) {
             type: 'session',
             filePath,
             session: closedSession,
+
+            //  Day rollover is automatic, so it writes auto-save
+            eventType: 'auto-save',
             activeSeconds: file.activeSeconds,
+            unfocusedSeconds: file.unfocusedSeconds,
             totalSeconds: wallClockSeconds(file),
           });
 
-          // 2) 若是追踪中，另开一个新会话 / if tracking, open a fresh session
+          // if tracking, open a fresh session
           const stillTracking = file.status === STATUS.TRACKING;
-          const startTime = deps.nowMinute();
+          const startTime = deps.nowFull();
           newFiles.set(filePath, {
             ...file,
             sessionStartTime: startTime,
             activeSeconds: 0,
+            unfocusedSeconds: 0,
             pausedSeconds: 0,
             pausedRanges: [],
             pauseStartTimestamp: null,
             lastTickTimestamp: stillTracking ? deps.now() : null,
-            sessionObject: stillTracking ? { [deps.nowFull()]: 'tracking' } : null,
+            sessionObject: stillTracking
+              ? {
+                  [deps.nowFull()]: state.isWindowFocused ? 'tracking' : 'inactive',
+                }
+              : null,
           });
 
           if (stillTracking) {
@@ -373,7 +635,7 @@ export function createTimerReducer(deps: ReducerDeps) {
         }
 
         if (!changed) {
-          // 没有任何跨日中的会话，仅推进日期标记
+
           return { ...state, lastCheckDay: today };
         }
 
@@ -386,24 +648,35 @@ export function createTimerReducer(deps: ReducerDeps) {
         };
       }
 
-      // ----------------------------------------------------------------------
-      // 用户活动与空闲
-      // ----------------------------------------------------------------------
+      //  ----------------------------------------------------------------------
+
+      //  ----------------------------------------------------------------------
       case ActionTypes.USER_ACTIVITY: {
-        return { ...state, lastActivityTime: deps.now(), isIdle: false };
+        const currentTime = deps.now();
+        const next: TimerState = {
+          ...state,
+          lastActivityTime: currentTime,
+          isIdle: false,
+        };
+
+        //  Reset the baseline only when leaving idle: USER_ACTIVITY fires on every mouse
+        //  move, and resetting unconditionally would make the baseline meaningless.
+        return state.isIdle ? refreshTickBaseline(next, currentTime) : next;
       }
 
       case ActionTypes.SET_IDLE: {
+        if (state.isIdle) return state;
         return { ...state, isIdle: true };
       }
 
       case ActionTypes.CLEAR_IDLE: {
-        return { ...state, isIdle: false };
+        if (!state.isIdle) return { ...state, isIdle: false };
+        return refreshTickBaseline({ ...state, isIdle: false }, deps.now());
       }
 
-      // ----------------------------------------------------------------------
-      // 待写入队列 / pending-write queue
-      // ----------------------------------------------------------------------
+      //  ----------------------------------------------------------------------
+      // pending-write queue
+      //  ----------------------------------------------------------------------
       case ActionTypes.CONSUME_PENDING_WRITES: {
         const { count } = action.payload;
         if (count <= 0 || state.pendingWrites.length === 0) return state;
@@ -413,13 +686,13 @@ export function createTimerReducer(deps: ReducerDeps) {
       case ActionTypes.REQUEUE_PENDING_WRITES: {
         const { writes } = action.payload;
         if (writes.length === 0) return state;
-        // 写回队首，保证顺序与失败前一致 / requeue at the head to preserve ordering
+        // requeue at the head to preserve ordering
         return { ...state, pendingWrites: [...writes, ...state.pendingWrites] };
       }
 
-      // ----------------------------------------------------------------------
-      // 从快照恢复单个文件
-      // ----------------------------------------------------------------------
+      //  ----------------------------------------------------------------------
+
+      //  ----------------------------------------------------------------------
       case ActionTypes.RESTORE_FILE: {
         const { filePath, fileState } = action.payload;
         const newFiles = new Map(state.files);
@@ -433,5 +706,5 @@ export function createTimerReducer(deps: ReducerDeps) {
   };
 }
 
-/** 生产环境使用的 reducer / The reducer used in production. */
+/** The reducer used in production. */
 export const timerReducer = createTimerReducer(systemDeps);
