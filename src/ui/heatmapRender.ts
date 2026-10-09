@@ -92,7 +92,9 @@ export function renderHeatmap<S extends HeatmapSegment>(
   const tickWrap = axis.createDiv({ cls: 'rtt-hm-tick-wrap' });
   for (const minute of TICKS) {
     const tick = tickWrap.createDiv({ cls: 'rtt-hm-tick', text: `${minute}` });
-    tick.style.left = `${(minute / 60) * 100}%`;
+    // setCssProps, not `style.left = ...`: Obsidian's review rejects direct style
+    // assignment, and the helper writes through the same style object.
+    tick.setCssProps({ left: `${(minute / 60) * 100}%` });
   }
 
   const firstHour = Math.max(0, interesting[0]!.hour - 1);
@@ -106,13 +108,19 @@ export function renderHeatmap<S extends HeatmapSegment>(
     const bar = rowEl.createDiv({ cls: 'rtt-hm-bar' });
     for (const segment of row.segments) {
       const seg = bar.createDiv({ cls: `rtt-hm-seg ${classOf(segment)}` });
-      seg.style.left = `${(segment.startMinute / 60) * 100}%`;
 
-      //  A very short segment gets a floor width, or it is invisible on screen
-      seg.style.width = `${Math.max(0.4, (segment.durationMinutes / 60) * 100)}%`;
+      // Geometry is per-segment data, not a style variant, so it cannot live in a CSS
+      // class; `setCssProps` is the sanctioned way to write it. Keys are kebab-case
+      // because the helper writes through `style.setProperty`.
+      const props: Record<string, string> = {
+        left: `${(segment.startMinute / 60) * 100}%`,
+        // A very short segment gets a floor width, or it is invisible on screen
+        width: `${Math.max(0.4, (segment.durationMinutes / 60) * 100)}%`,
+      };
+      // A clipped slice loses its rounding so the stretch still reads as one
+      if (segment.clipped) props['border-radius'] = '0';
 
-      //  A clipped slice loses its rounding so the stretch still reads as one
-      if (segment.clipped) seg.style.borderRadius = '0';
+      seg.setCssProps(props);
       seg.setAttribute('aria-label', labelOf(segment));
     }
   }

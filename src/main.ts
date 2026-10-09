@@ -260,10 +260,15 @@ export default class ReadTimeTrackerPlugin extends Plugin {
     //  rather than settings so the settings contract stays clean. The flag is written only
     //  once the open actually succeeded — otherwise a first attempt that fails because the
     //  layout is not ready yet would never be retried.
+    //
+    //  Plain `window.localStorage` rather than `app.loadLocalStorage`, which is @since
+    //  1.8.7 while this plugin declares minAppVersion 1.7.2. The flag is cosmetic — if the
+    //  store is unavailable the worst case is one extra auto-open — so it is not worth
+    //  raising the install floor for.
     this.app.workspace.onLayoutReady(() => {
       const HINT_KEY = 'rtt_sidebar_hint_shown';
       try {
-        if (this.app.loadLocalStorage(HINT_KEY)) return;
+        if (window.localStorage.getItem(HINT_KEY)) return;
       } catch (error) {
         this.log.warn('[RTT] 侧栏首次提示读取失败 / hint read failed:', error);
         return;
@@ -272,7 +277,7 @@ export default class ReadTimeTrackerPlugin extends Plugin {
       void this.activateSidebar().then((opened) => {
         if (!opened) return;
         try {
-          this.app.saveLocalStorage(HINT_KEY, true);
+          window.localStorage.setItem(HINT_KEY, '1');
         } catch (error) {
           this.log.warn('[RTT] 侧栏首次提示写入失败 / hint write failed:', error);
         }

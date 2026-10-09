@@ -107,9 +107,6 @@
     font-size: 13px;
     min-width: 80px;
 }
-    color: var(--text-normal);
-    font-size: 12px;
-}
 
 .rtt-timeline-duration {
     color: var(--text-accent);

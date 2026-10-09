@@ -1,7 +1,7 @@
 {
   "id": "documents-activity-tracker",
   "name": "Documents Activity Tracker",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "minAppVersion": "1.7.2",
   "description": "跟踪每个文档的阅读时长（区分窗口内/脱离窗口），并提供独立的手动计时；侧栏统一查看，数据存于 SQLite。",
   "author": "PrimeCore",

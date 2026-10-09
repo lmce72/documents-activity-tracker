@@ -84,13 +84,18 @@ const CSS_MODULES_EXTRA: readonly string[] = [
 const CSS_MODULES: readonly string[] = [...CSS_MODULES_BASE, ...CSS_MODULES_EXTRA];
 
 /**
- * Style equivalence gate.
+ * Style regression gate.
  *
- * md5 of the monolithic styles.css before the split, covering `CSS_MODULES_BASE` only.
- * Concatenation is byte-for-byte, so those 13 modules must still concatenate to it; any
- * mismatch means the pre-existing styles were changed.
+ * md5 of the concatenation of `CSS_MODULES_BASE`, so any edit to one of those 13 modules
+ * fails the build until the value is updated deliberately.
+ *
+ * It used to hold the md5 of the pre-split monolithic styles.css, proving the split had
+ * been byte-faithful. That proof is spent: `90-session-detail.css` carried an orphaned
+ * declaration block and a stray `}` (a CSS parser drops both, so nothing rendered
+ * differently, but a linter rejects the file). Removing them was deliberate, so the
+ * reference now simply records the concatenation as of that fix.
  */
-const CSS_REFERENCE_MD5 = 'd15dfb090e8fb907527dba913edf353c';
+const CSS_REFERENCE_MD5 = 'e7530c7666b9b8899604bc76651d0a49';
 
 const md5 = (data: Uint8Array | string): string =>
   createHash('md5').update(data).digest('hex');
