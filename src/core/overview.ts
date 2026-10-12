@@ -12,11 +12,11 @@
  * Pure L0 logic: no DOM, no environment, testable offline.
  */
 
-import { MINUTES_PER_DAY, toAbsoluteMinutes } from './recordsTimeline';
+import { MINUTES_PER_DAY, toAbsoluteMinutes, weekStart } from './recordsTimeline';
 import type { ManualSession } from './types';
 
 /** which ledger an interval came from. */
-export type OverviewSource = 'document' | 'manual';
+export type OverviewSource = 'document' | 'manual' | 'view';
 
 export interface OverviewInterval {
   startAbs: number;
@@ -53,18 +53,29 @@ export interface OverviewTotals {
   /** Minutes covered by the union, counted once - never double counted. */
   unionMinutes: number;
 
+  /** Markdown notes. */
   documentMinutes: number;
-  /** manual total */
+  /** The manual stopwatch. */
   manualMinutes: number;
-  /** minutes covered by both ledgers at once */
+  /** Plugin views: the RSS dashboard, the translator, a canvas. */
+  viewMinutes: number;
+  /** minutes covered by more than one ledger at once */
   overlapMinutes: number;
 }
 
 /** collect a file's timeline into absolute intervals. */
 export function documentIntervals(
   readTimeLines: Iterable<readonly import('./types').SessionStateMap[]>,
-  options: { includePaused?: boolean } = {},
+  options: {
+    includePaused?: boolean;
+    source?: OverviewSource;
+    /** Set false to keep out-of-window stretches out of the union entirely. */
+    includeUnfocused?: boolean;
+  } = {},
 ): OverviewInterval[] {
+  // Plugin views are collected by the same walk; only the label differs, so the caller
+  // chooses the source rather than duplicating the loop.
+  const source = options.source ?? 'document';
   const out: OverviewInterval[] = [];
   for (const readTimeLine of readTimeLines) {
     const parsed = new Map<string, number | null>();
@@ -75,6 +86,8 @@ export function documentIntervals(
 
         //  Reading totals exclude pauses; the overview includes them by default
         if (!options.includePaused && state === 'pausing') continue;
+        //  Out-of-window stretches only join the union when the user counts them as reading
+        if (options.includeUnfocused === false && state === 'inactive') continue;
         if (state !== 'tracking' && state !== 'inactive' && state !== 'pausing') continue;
 
         const readAbs = (time: string): number | null => {
@@ -85,7 +98,7 @@ export function documentIntervals(
         const endAbs = readAbs(times[i + 1]!);
         if (startAbs === null || endAbs === null || endAbs <= startAbs) continue;
 
-        out.push({ startAbs, endAbs, source: 'document' });
+        out.push({ startAbs, endAbs, source });
       }
     }
   }
@@ -170,16 +183,50 @@ export function overviewTotals(
   intervals: readonly OverviewInterval[],
   day: string,
 ): OverviewTotals {
-  const dayMinutes = dayOf(day);
-  const inDay = intervals.filter((interval) => overlapsDay(interval, dayMinutes));
-  const clipped = inDay.map((interval) => clipToDay(interval, dayMinutes));
+  const from = dayOf(day);
+  return totalsInWindow(intervals, from, from + MINUTES_PER_DAY);
+}
+
+/**
+ * 该日所在整周的总计 / the totals for the seven days containing `day`.
+ *
+ * 与单日口径同源：同一个窗口函数，只是窗口从一天放大到一周，所以「一周 = 七天之和」在跨午夜的
+ * 会话上也成立（按绝对分钟切，而不是把七次单日结果相加）。
+ *
+ * Same basis as the single day: one window function, with the window widened from a day to a week,
+ * so "a week = its seven days" also holds for a session that crosses midnight — the interval is cut
+ * on the absolute minute line rather than seven day-scoped results being added up.
+ */
+export function overviewWeekTotals(
+  intervals: readonly OverviewInterval[],
+  day: string,
+): OverviewTotals {
+  const from = dayOf(weekStart(day));
+  return totalsInWindow(intervals, from, from + 7 * MINUTES_PER_DAY);
+}
+
+/** 窗口内的总计 / the totals inside one absolute-minute window `[from, to)`. */
+function totalsInWindow(
+  intervals: readonly OverviewInterval[],
+  from: number,
+  to: number,
+): OverviewTotals {
+  const clipped = intervals
+    .filter((interval) => interval.startAbs < to && interval.endAbs > from)
+    .map((interval) => ({
+      startAbs: Math.max(interval.startAbs, from),
+      endAbs: Math.min(interval.endAbs, to),
+      source: interval.source,
+    }));
 
   let documentMinutes = 0;
   let manualMinutes = 0;
+  let viewMinutes = 0;
   for (const interval of clipped) {
     const length = interval.endAbs - interval.startAbs;
     if (interval.source === 'document') documentMinutes += length;
-    else manualMinutes += length;
+    else if (interval.source === 'manual') manualMinutes += length;
+    else viewMinutes += length;
   }
 
   const merged = mergeIntervals(clipped);
@@ -189,10 +236,15 @@ export function overviewTotals(
     unionMinutes,
     documentMinutes,
     manualMinutes,
+    viewMinutes,
 
-    //  Overlap = both totals minus the union. The union never exceeds the sum, so this
-    //  cannot go negative; max(0, …) absorbs floating-point noise.
-    overlapMinutes: Math.max(0, documentMinutes + manualMinutes - unionMinutes),
+    //  Overlap = every ledger's own total minus the union. The union never exceeds the sum,
+    //  so this cannot go negative; max(0, …) absorbs floating-point noise. With three
+    //  ledgers this reads as "minutes counted more than once", which is the useful figure.
+    overlapMinutes: Math.max(
+      0,
+      documentMinutes + manualMinutes + viewMinutes - unionMinutes,
+    ),
   };
 }
 

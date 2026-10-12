@@ -315,6 +315,37 @@ export function weekStart(day: string): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
+/**
+ * 一周之内的阅读秒数 / reading seconds inside one week.
+ *
+ * 侧栏统计卡与记录面板用的是同一个数，所以定义只留这一份。
+ * The sidebar's stat card and the records browser show the same figure, so it is defined once.
+ */
+export function weekReadingSeconds(
+  readTimeLines: Iterable<readonly SessionStateMap[]>,
+  day: string,
+): number {
+  let total = 0;
+
+  for (const readTimeLine of readTimeLines) {
+
+    //  只看这个文件真正有记录的那几天，而不是固定扫七天
+    //  Only the days the file actually has records on, instead of seven full scans
+    const days = new Set<string>();
+    for (const session of readTimeLine) {
+      for (const time of Object.keys(session)) {
+        days.add(time.slice(0, 10));
+      }
+    }
+
+    for (const candidate of days) {
+      if (isInWeekOf(candidate, day)) total += recordDaySeconds(readTimeLine, candidate);
+    }
+  }
+
+  return total;
+}
+
 /** whether `candidate` falls in `day`'s week. */
 export function isInWeekOf(candidate: string, day: string): boolean {
   const start = weekStart(day);

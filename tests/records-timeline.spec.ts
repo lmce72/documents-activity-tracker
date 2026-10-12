@@ -16,6 +16,7 @@ import {
   isInWeekOf,
   recordDayChannels,
   recordDaySeconds,
+  weekReadingSeconds,
   weekStart,
 } from '../src/core/recordsTimeline';
 import type { SessionStateMap } from '../src/core/types';
@@ -227,5 +228,23 @@ describe('周口径 / week boundaries', () => {
     expect(isInWeekOf('2026-09-20', anchor)).toBe(true);
     expect(isInWeekOf('2026-09-21', anchor)).toBe(false);
     expect(isInWeekOf('2026-09-13', anchor)).toBe(false);
+  });
+
+  it('weekReadingSeconds 只累计本周、且排除暂停', () => {
+    const inWeek: SessionStateMap = {
+      [`${D} 10:00:00`]: 'tracking',
+      [`${D} 10:06:00`]: 'pausing',
+      [`${D} 10:12:00`]: 'saved',
+    };
+
+    //  The Monday of the previous week: outside the window, so it must not be counted
+    const previousWeek: SessionStateMap = {
+      ['2026-09-07 10:00:00']: 'tracking',
+      ['2026-09-07 10:30:00']: 'saved',
+    };
+
+    //  360s in-window, 120s paused → 360 counted; 1800s ignored
+    expect(weekReadingSeconds([[inWeek]], D)).toBe(360);
+    expect(weekReadingSeconds([[inWeek], [previousWeek]], D)).toBe(360);
   });
 });

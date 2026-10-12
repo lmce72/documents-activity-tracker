@@ -74,6 +74,35 @@ export interface PluginSettings {
    * recorded.
    */
   manualRecordDocActivity: boolean;
+
+  /**
+   * Whether unfocused time counts as reading time. On by default.
+   *
+   * On: `reading = in-window + out-of-window`, the behaviour the unfocused channel was added
+   * for. Off: out-of-window stretches are still recorded and still shown in their own card,
+   * but no total anywhere includes them — which is what you want if the note simply stayed
+   * open while you were in another application.
+   *
+   * The toggle only changes accounting, never recording, so flipping it re-reads the same
+   * history rather than losing the stretches.
+   */
+  countUnfocusedAsReading: boolean;
+
+  /**
+   * Which durations the status bar pins, as exactly {@link MAX_STATUS_METRICS} slots.
+   *
+   * An array rather than four named fields so adding a metric needs no new setting, and so
+   * the slots stay ordered — the status bar renders them left to right. An empty string
+   * means the slot is unused.
+   */
+  statusBarMetrics: string[];
+
+  /**
+   * Desktop: show the status bar entries as icons instead of label + duration.
+   *
+   * Mobile always shows a single icon regardless — there is no room for more.
+   */
+  statusBarIconsOnly: boolean;
 }
 
 //  ============================================================================
@@ -174,6 +203,15 @@ export interface ManualTimerState {
   pausedMs: number;
   /** start of the current pause, null when not paused */
   pauseStartTimestamp: number | null;
+  /** 本段暂停的起点（本地全时间串），与上面那个毫秒值同时设置 / local timestamp of the current pause */
+  pauseStartFull: string;
+  /**
+   * 已结束的暂停区间 / pauses that have already ended.
+   * 总暂停毫秒数（`pausedMs`）说明停了多久，这里说明**停在哪一段** —— 热力图要画暂停块就必须知道
+   * 位置，光有一个总数是画不出来的。
+   * `pausedMs` says how long; this says *where*, which is what a heatmap needs to place a block.
+   */
+  pauses: ManualPause[];
   /**
    * marks placed during this run.
    * Saved with the session on stop; `MANUAL_START` clears it, so each run starts empty.
@@ -197,6 +235,14 @@ export interface ManualFlag {
   label: string;
 }
 
+/** 一段暂停的起止 / one pause, by wall clock. */
+export interface ManualPause {
+  /** 暂停开始 / when the pause began */
+  from: string;
+  /** 恢复 / when it ended */
+  to: string;
+}
+
 /**
  * A completed manual session.
  * The unit of persistence; `note` is what the user fills in after stopping.
@@ -212,6 +258,12 @@ export interface ManualSession {
   note: string;
 
   flags: ManualFlag[];
+  /**
+   * 本轮的暂停区间 / this run's pauses, in order.
+   * 只存总暂停毫秒数的话，热力图上无处落笔 —— 它是"多久"，不是"哪里"。
+   * A total says how long, not where, and a heatmap needs where.
+   */
+  pauses: ManualPause[];
 }
 
 //  ============================================================================
@@ -447,9 +499,18 @@ export interface FileRecord {
   fileName: string;
   /** total reading time = in-window + out-of-window */
   totalReadTime: number;
-  /** out-of-window part, shown separately */
+  /** out-of-window part, across ALL time — the counterpart of `totalReadTime` */
   unfocusedReadTime: number;
   readTimeToday: number;
+  /**
+   * Out-of-window part **today only** — the counterpart of `readTimeToday`.
+   *
+   * Needed because the two all-time figures and the two today figures are different scopes,
+   * and a today-scoped view that pairs `readTimeToday` with the all-time `unfocusedReadTime`
+   * can print a part larger than the whole ("today 5 min · out of window 2 h") as soon as the
+   * vault has more than one day of history.
+   */
+  unfocusedReadTimeToday: number;
   lastReadAt: string;
 
   readTimeLine: SessionStateMap[];

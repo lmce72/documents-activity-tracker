@@ -18,6 +18,20 @@
     padding: 3px;
     background: var(--background-secondary);
     border-radius: 8px;
+
+    /* 吸顶 / pinned to the top.
+     *
+     * 侧栏内容比视口高时是可以滚动的，而这三个标签是**唯一**的面板入口 —— 一滚就走，
+     * 用户看到的只剩顶部一条紫色残边（实测：scrollTop 42.6 时标签 top = -15）。
+     * 底色本就有，所以吸顶时不会透出下面的内容。
+     *
+     * The content scrolls when it is taller than the view, and these three tabs are the only
+     * way to switch panels — scrolled away, all that is left is a purple sliver at the top
+     * (measured: at scrollTop 42.6 the tab row sits at top = -15). The fill is already set,
+     * so nothing shows through while pinned. */
+    position: sticky;
+    top: 0;
+    z-index: 3;
 }
 
 .rtt-panel-tab {
@@ -207,8 +221,10 @@
 }
 
 .rtt-stopwatch-time {
-    font-family: var(--font-monospace);
-    font-size: 1.35em;
+    /* 不用等宽字体：秒表数字用界面字体更协调；等宽数字已经能防止逐秒抖动 */
+    /* Not the monospace font: the interface face suits the stopwatch better, and
+       `tabular-nums` already stops the digits jittering each second. */
+    font-size: 1.65em;
     font-variant-numeric: tabular-nums;
     color: var(--text-normal);
 }
@@ -298,6 +314,16 @@
     background: var(--color-green);
 }
 
+/* Plugin views (RSS dashboard, translator, canvas): their own colour, so "reading in a
+   pane" is separable from "reading a note" at a glance. */
+.rtt-hm-seg.rtt-ov-view {
+    background: var(--color-blue);
+}
+
+.rtt-ov-swatch.rtt-ov-view {
+    background: var(--color-blue);
+}
+
 .rtt-ov-swatch.rtt-ov-both {
     background: var(--color-purple);
 }
@@ -311,6 +337,256 @@
 /* 不能点击的行不该有手型光标 / a row that cannot be clicked must not show a pointer */
 .rtt-list-item.is-static {
     cursor: default;
+}
+
+/* ── 右下角状态栏 / status bar ─────────────────────────────────────────── */
+
+.rtt-statusbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.rtt-statusbar-item {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 4px;
+    padding: 0 2px;
+    border-radius: var(--radius-s);
+    cursor: pointer;
+}
+
+.rtt-statusbar-item:hover,
+.rtt-statusbar-item:focus-visible {
+    color: var(--text-accent);
+}
+
+.rtt-statusbar-label {
+    color: var(--text-muted);
+    font-size: var(--font-ui-smaller);
+}
+
+.rtt-statusbar-item:hover .rtt-statusbar-label {
+    color: inherit;
+}
+
+.rtt-statusbar-value {
+    /* 数字每秒变一次，等宽数字避免整行抖动 */
+    /* The figure changes every second; tabular digits stop the row jittering */
+    font-variant-numeric: tabular-nums;
+}
+
+.rtt-statusbar-empty {
+    color: var(--text-faint);
+    font-size: var(--font-ui-smaller);
+}
+
+/* ── 垂直节点时间轴 / vertical node timeline ─────────────────────────────
+ *
+ * 连线画在**节点之间**（每个节点用 ::before 连到下一个），而不是贯穿整列再拿底色盖住
+ * 图标 —— 后者要求图标背景色与面板底色完全一致，换个主题就会露出色块。
+ *
+ * The connector runs *between* nodes (each node draws a stub to the next) rather than as one
+ * full-height line masked by the icon's background. The masked version needs the icon
+ * background to match the panel exactly, and any theme change exposes the patch.
+ */
+.rtt-vtl {
+    display: flex;
+    flex-direction: column;
+}
+
+.rtt-vtl-node {
+    position: relative;
+    display: flex;
+    gap: 8px;
+    padding: 5px 0 5px 22px;
+}
+
+.rtt-vtl-node::before {
+    content: '';
+    position: absolute;
+    left: 7px;
+    top: 22px;
+    bottom: -5px;
+    width: 1px;
+    background: var(--background-modifier-border);
+}
+
+.rtt-vtl-node:last-child::before {
+    display: none;
+}
+
+.rtt-vtl-icon {
+    position: absolute;
+    left: 0;
+    top: 3px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 15px;
+    height: 15px;
+    color: var(--text-muted);
+}
+
+.rtt-vtl-icon svg {
+    width: 14px;
+    height: 14px;
+}
+
+/* 每一类一个颜色，与热力图、图例保持一致 / one colour per kind, matching the heatmap */
+.rtt-vtl-node.is-document .rtt-vtl-icon {
+    color: var(--interactive-accent);
+}
+
+.rtt-vtl-node.is-view .rtt-vtl-icon {
+    color: var(--color-blue);
+}
+
+.rtt-vtl-node.is-manual .rtt-vtl-icon {
+    color: var(--color-green);
+}
+
+.rtt-vtl-body {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.rtt-vtl-title {
+    color: var(--text-normal);
+    font-size: var(--font-ui-small);
+    overflow-wrap: anywhere;
+}
+
+.rtt-vtl-meta {
+    color: var(--text-muted);
+    font-size: var(--font-ui-smaller);
+}
+
+/* 行可点：显示该条目的时段 / a row click reveals that entry's stretch */
+.rtt-vtl-node.is-clickable {
+    cursor: pointer;
+}
+
+.rtt-vtl-node.is-clickable:hover .rtt-vtl-title {
+    color: var(--text-accent);
+}
+
+/* 连接节点：只表示"从这一个切到了下一个"，不是一条独立记录
+   A connector marks a hand-over, not an entry of its own — same line, quieter treatment. */
+.rtt-vtl-node.is-connector {
+    padding-top: 0;
+    padding-bottom: 0;
+}
+
+.rtt-vtl-node.is-connector::before {
+    top: 14px;
+    bottom: -2px;
+}
+
+.rtt-vtl-node.is-connector .rtt-vtl-icon {
+    top: 0;
+    width: 13px;
+    height: 13px;
+    color: var(--text-faint);
+}
+
+.rtt-vtl-node.is-connector .rtt-vtl-icon svg {
+    width: 12px;
+    height: 12px;
+}
+
+.rtt-vtl-connector {
+    color: var(--text-faint);
+    font-size: var(--font-ui-smaller);
+    overflow-wrap: anywhere;
+}
+
+/* 打开文件是独立按钮，贴在最右侧，不随标题换行移动
+   The open control is its own button, pinned to the right edge so a wrapping title cannot
+   move it. */
+.rtt-vtl-open {
+    flex: 0 0 auto;
+    align-self: flex-start;
+}
+
+/* ── 点击热力图某段后的过程块 / the block behind a clicked stretch ─────── */
+
+.rtt-hm-detail {
+    margin-top: 8px;
+    padding: 6px 8px;
+    border-radius: var(--radius-s);
+    background: var(--background-secondary);
+}
+
+.rtt-hm-detail:empty {
+    display: none;
+}
+
+.rtt-hm-seg.is-clickable {
+    cursor: pointer;
+}
+
+/* 选中的段加一圈描边，在密集的图里也能一眼找到 / a ring so the picked stretch stands out */
+.rtt-hm-seg.is-selected {
+    outline: 2px solid var(--text-normal);
+    outline-offset: 1px;
+    z-index: 2;
+}
+
+/* ── 时长：数字高亮，单位缩小变灰 / duration: loud figure, quiet unit ──────
+ *
+ * 数字用 `inherit`，因此它沿用容器给的颜色（统计卡是强调色、警告是错误色），
+ * 只有单位被压下去。这样"哪个数大"一眼可读，而单位不抢视线。
+ *
+ * The figure inherits, so it keeps whatever colour its container set (accent in a stat card,
+ * error in a warning) and only the unit is pushed back. The magnitude reads at a glance and
+ * the unit stays out of the way.
+ */
+.rtt-dur {
+    white-space: nowrap;
+}
+
+.rtt-dur-num {
+    font-variant-numeric: tabular-nums;
+}
+
+.rtt-dur-unit {
+    /* 单位**始终**比数字小 —— 这是这套时长显示的基本设计，每一处都成立。
+     * 小字体处按比例收一档即可，够用且不会小到难读。
+     *
+     * The unit is *always* smaller than the figure — that is the whole point of the treatment,
+     * and it holds everywhere. In small text a proportional step is enough and stays legible. */
+    font-size: 0.8em;
+    color: var(--text-muted);
+    margin-left: 0.5px;
+}
+
+/* 时长字号整体调大 —— 这两个是面板里最该一眼读到的数字。
+ * 原值在受守门的模块里（`.rtt-stats-value` 是 1.25em），所以在这里覆盖。 */
+/* Larger duration figures: these are the numbers a panel should be readable at a glance.
+ * The original lives in a gated module (`.rtt-stats-value` at 1.25em), so it is overridden
+ * here rather than edited there. */
+.rtt-stats-value.rtt-dur {
+    font-size: 1.5em;
+}
+
+/* 大数字处（四宫格统计、手动秒表）：单位大约只有数字的**一半**。
+ *
+ * 这两个地方的数字最大，单位只需要交代量纲，占半格高度最平衡 —— 数字保持满格抢眼，
+ * 单位退到旁边不争视线。此前的 `calc(1em - 4px)` 只收到 ~79%，肉眼几乎看不出差别。
+ *
+ * Where the figure is large — the stat grid and the manual stopwatch — the unit is about
+ * *half* its size: the number keeps the full height and the unit steps aside to name the unit.
+ * The earlier `calc(1em - 4px)` only reached ~79%, which reads as no change at all. */
+.rtt-stats-value.rtt-dur .rtt-dur-unit,
+.rtt-stats-value .rtt-dur-unit,
+.rtt-stopwatch-time .rtt-dur-unit {
+    font-size: 0.5em;
+}
+
+.rtt-dur-gap {
+    /* 与数字同号：单位不再缩小，空隙跟着缩就没有意义 */
+    font-size: 1em;
 }
 
 /* ── 纯图标操作按钮 / icon-only control buttons ───────────────────────────
@@ -618,4 +894,448 @@ button.rtt-cal-today.is-disabled {
     .rtt-cal {
         width: min(300px, 100%);
     }
+}
+
+/* ── 手动热力图上的标记 / flag marks on the manual heatmap ──────────────────
+ *
+ * 一枚标记是时间轴上的一个点，不是一段：所以画成一条红色竖线而不是色块。暂停块沿用既有
+ * 的橙色 `.rtt-hm-pause-block`（见受守门的 50-heatmap.css），配色不变。
+ *
+ * A mark is a point on the timeline, not a span, so it is a red tick rather than a block. The
+ * pause blocks reuse the existing orange `.rtt-hm-pause-block` from the gated stylesheet, so
+ * the colours stay as they were.
+ */
+.rtt-hm-flag {
+    position: absolute;
+    top: -1px;
+    bottom: -1px;
+    width: 2px;
+    margin-left: -1px;
+    background: var(--color-red);
+    border-radius: 1px;
+    z-index: 3;
+    pointer-events: auto;
+    cursor: help;
+}
+
+/* ── 状态栏：图标模式 / status bar, icon modes ─────────────────────────── */
+
+/* 类型图标 + 紧贴其后的状态图标 / a type icon with its state icon attached.
+ *
+ * 用 grid 而不是 flex：flex 默认按基线对齐，两个大小不同的 svg 会**底边对齐**，12px 的状态图标
+ * 于是沉在大图标的右下角，看着像是没对齐（实测 book-open 中心 10.6，play 中心 12.6）。grid 的两条
+ * 轨道各自居中，尺寸换了也不会再错位。
+ *
+ * A grid rather than a flex row: flex's default baseline alignment puts two differently sized SVGs
+ * on a shared *bottom* edge, so the 12px state icon sinks to the lower right of the 16px one and
+ * reads as misaligned (measured: book-open's centre at 10.6, play's at 12.6). A grid centres each
+ * track on its own, so a change of size cannot reintroduce the offset. */
+.rtt-statusbar-group {
+    display: inline-grid;
+    grid-auto-flow: column;
+    grid-auto-columns: auto;
+    align-items: center;
+    justify-items: center;
+    gap: 2px;
+}
+
+/* 类型图标那格也要是个盒子，不能只是裸 span —— 裸 span 的行框比图标高（16px 的图标坐落在
+ * 18.87px 的行框里），svg 又是 inline，于是被顶到格子上方：实测图标中心 10.57、格子中心 12.00。
+ * 变成 flex 之后 svg 被块级化并居中，两格各就各位。
+ *
+ * The type icon's cell has to be a box rather than a bare span: a bare span's line box is taller than
+ * the glyph (a 16px icon sitting in an 18.87px line box), and an inline SVG is pushed to the top of
+ * it — measured: the icon's centre at 10.57 against the cell's 12.00. As a flex container the SVG is
+ * blockified and centred, and each cell lands where the grid puts it. */
+.rtt-statusbar-type {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--icon-s, 16px);
+    height: var(--icon-s, 16px);
+}
+
+.rtt-statusbar-type svg,
+.rtt-statusbar-state svg {
+    display: block;
+    width: var(--icon-s, 16px);
+    height: var(--icon-s, 16px);
+}
+
+/* 状态图标比类型图标小一号、颜色更弱，读起来是"附着"而不是并列
+   The state icon is a step smaller and quieter, so it reads as attached rather than as a peer.
+
+   计时中这个槽位换成 60 秒圆饼（见 secondPie.ts），尺寸比图标略大一档，不然饼太小看不出转。
+   While a clock runs this slot holds the 60-second pie instead (see secondPie.ts) and is a step
+   larger than the glyph was, or the sweep would be too small to read. */
+.rtt-statusbar-state {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    color: var(--text-muted);
+
+    /* 圆饼在这个尺寸下的几何 / the pie's geometry at this size */
+    --rtt-pie-ring-w: 1.5px;
+    --rtt-pie-inset: 2.5px;
+}
+
+.rtt-statusbar-state svg {
+    width: 12px;
+    height: 12px;
+}
+
+/* 两组之间的竖线 / the bar between the two groups.
+ *
+ * 竖线两侧原本是状态栏自身的 10px gap 再加 2px 外边距 = 各 12px，两根图标之间空出 24px，看着像断开
+ * 成两项。负外边距把 gap 抵掉大半，各留 4px：竖线贴着两组，读起来还是一组里的分隔。
+ *
+ * The rule used to sit inside the bar's own 10px gap plus a 2px margin — 12px a side, 24px between
+ * the two icon groups, which read as two separate status-bar items. A negative margin eats most of
+ * that gap, leaving 4px a side: the rule hugs its groups and reads as a separator inside one item.
+ */
+.rtt-statusbar-sep {
+    color: var(--text-faint);
+    margin: 0 -6px;
+}
+
+/* 移动端：单个图标 + 角标 / mobile: one icon with a state badge */
+.rtt-statusbar-single {
+    position: relative;
+}
+
+.rtt-statusbar-badge {
+    position: absolute;
+    right: 1px;
+    bottom: 1px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-muted);
+}
+
+.rtt-statusbar-badge svg {
+    width: 9px;
+    height: 9px;
+}
+
+/* 移动端浮层 / the mobile menu. 贴着状态栏往上弹。 */
+.rtt-statusbar-menu {
+    position: absolute;
+    bottom: calc(100% + 6px);
+    right: 0;
+    z-index: var(--layer-popover, 30);
+    min-width: 168px;
+    padding: 6px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-m);
+    background: var(--background-secondary);
+    box-shadow: var(--shadow-s);
+}
+
+.rtt-statusbar-menu-title {
+    margin-bottom: 4px;
+    color: var(--text-faint);
+    font-size: var(--font-ui-smaller);
+}
+
+.rtt-statusbar-menu-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 4px 6px;
+    border-radius: var(--radius-s);
+    cursor: pointer;
+}
+
+.rtt-statusbar-menu-row:hover {
+    background: var(--background-modifier-hover);
+}
+
+.rtt-statusbar-menu-label {
+    color: var(--text-muted);
+    font-size: var(--font-ui-smaller);
+}
+
+.rtt-statusbar-menu-value {
+    color: var(--text-normal);
+    font-variant-numeric: tabular-nums;
+}
+
+/* ── 可点的统计卡（轮数入口）/ a clickable stat card ────────────────────── */
+.rtt-stats-card.is-clickable {
+    cursor: pointer;
+}
+
+.rtt-stats-card.is-clickable:hover {
+    background: var(--background-modifier-hover);
+}
+
+/* ── 确认弹窗的按钮排 / the confirm dialog's button row ─────────────────── */
+.rtt-confirm-bar {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 12px;
+}
+
+.rtt-confirm-bar .setting-item {
+    border: none;
+    padding: 0;
+}
+
+/* ── 记录面板底部的保存入口 / the save entry at the foot of the browser ── */
+.rtt-records-savebar {
+    display: flex;
+    justify-content: center;
+    margin-top: 14px;
+    padding-top: 10px;
+    border-top: 1px solid var(--background-modifier-border);
+}
+
+/* ── 移动端浮层里的"之前有 n 轮"提示 / the earlier-rounds hint ───────────── */
+.rtt-statusbar-menu-hint {
+    margin-bottom: 4px;
+    padding: 4px 6px;
+    border-radius: var(--radius-s);
+    color: var(--text-accent);
+    font-size: var(--font-ui-smaller);
+    cursor: pointer;
+}
+
+/* ── 当前计时状态卡 / the current-session card ───────────────────────────
+ *
+ * 左边一枚状态图标，右边三行：本轮时长 / 文件名 · 第几轮 · -空窗与暂停 / 该文件今日合计。
+ * 图标与状态栏用的是同一套映射与同一个图标（见 StatusBar 的 stateIcon），状态在两处必须长得一样。
+ *
+ * An icon on the left, three lines on the right: the round's duration, the file name with its
+ * round number and the away-and-paused deduction, then the file's total today. The icon shares
+ * its mapping with the status bar (`stateIcon` in StatusBar) — one state must look the same
+ * wherever it is shown.
+ */
+.rtt-live-card {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 8px 10px;
+    border-radius: var(--radius-m);
+    background: var(--background-secondary);
+}
+
+/* 没有文档可跟随时：图标留在左边，**文案**在整个卡片里居中
+   With nothing to follow: the icon stays on the left and the *sentence* is centred on the card.
+ *
+ * 图标与文案一起居中的话，文案会被图标挤到中线右边（30px 图标 + 10px 间距的一半）。这里让正文占满整卡
+ * 再居中，负外边距正好抵消图标与间距占掉的 40px，所以文案中心就是卡片中线。
+ * Centring the icon and the sentence as one group pushes the sentence off the card's centre line by
+ * half of the icon-plus-gap (40px). Here the body spans the whole card instead, with a negative
+ * margin cancelling exactly that 40px, so the sentence's centre *is* the card's centre.
+ */
+.rtt-live-card.is-empty .rtt-live-body {
+    flex: 1 1 auto;
+    margin-left: -40px;
+    text-align: center;
+}
+
+.rtt-live-icon {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    background: var(--background-modifier-hover);
+    color: var(--text-muted);
+}
+
+.rtt-live-icon svg {
+    width: 18px;
+    height: 18px;
+}
+
+/* 计时中：不画图标，画圆环 + 60 秒圆饼 / while timing: a ring with a 60-second pie, no glyph.
+ *
+ * 底色交给圆环，徽标本身不再填色 —— 否则环里套一层灰底，饼的进度在暗色主题下几乎看不出来。
+ * The ring carries the outline and the badge drops its fill: with the fill left on, the pie's
+ * progress sits on a grey disc and is near invisible in a dark theme.
+ */
+.rtt-live-icon.is-running {
+    background: none;
+}
+
+/* ── 60 秒圆饼 / the 60-second pie ─────────────────────────────────────────
+ *
+ * 宿主（状态卡的徽标、状态栏的图标槽）只管尺寸，环与饼都相对它绝对定位。尺寸靠两个变量：
+ * `--rtt-pie-ring-w` 环宽、`--rtt-pie-inset` 饼的内缩，没设就用徽标那一档（30px 的圆）。
+ *
+ * The host — the card's badge, the status bar's icon slot — only decides the size; the ring and the
+ * pie are placed against it. Two variables carry the geometry: `--rtt-pie-ring-w` and
+ * `--rtt-pie-inset`, falling back to the badge's values (a 30px circle).
+ */
+.rtt-pie-ring {
+    position: absolute;
+    inset: 0;
+    border: var(--rtt-pie-ring-w, 2px) solid var(--background-modifier-border);
+    border-radius: 50%;
+}
+
+/* 饼按当前这一分钟的进度转，60 秒一整圈；起点在 12 点方向（conic-gradient 的默认起点）。
+   The pie follows progress through the current minute, one turn per 60 seconds, starting at twelve
+   o'clock — where conic-gradient starts by default. */
+.rtt-pie-disc {
+    --rtt-pie-pct: 0;
+    position: absolute;
+    inset: var(--rtt-pie-inset, 4px);
+    border-radius: 50%;
+    background: conic-gradient(
+        var(--interactive-accent) calc(var(--rtt-pie-pct) * 1%),
+        transparent 0
+    );
+}
+
+/* 状态即颜色 / the state is the colour: running, paused, stopped */
+.rtt-live-icon.is-running {
+    color: var(--interactive-accent);
+}
+
+.rtt-live-icon.is-paused {
+    color: var(--color-orange);
+}
+
+.rtt-live-icon.is-idle {
+    color: var(--text-faint);
+}
+
+.rtt-live-body {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+/* 第一行：本轮时长，无标签，整张卡最大的数字。字号与配色跟四宫格的数字一致（见
+   30-records-list.css 的 .rtt-stats-value），两处读起来才是同一个层级。
+   Line 1: the round's duration, unlabelled and the card's largest figure, matching the grid's
+   values in size and colour so the two read as one tier. 单位照旧只有数字的一半。 */
+.rtt-live-time {
+    font-size: 1.5em;
+    font-weight: 600;
+    line-height: 1.3;
+    color: var(--text-accent);
+}
+
+.rtt-live-time .rtt-dur-unit {
+    font-size: 0.5em;
+}
+
+/* 未计时时第一行写"未开始"：占同一格、同一字号，只是不抢视线 —— 版式两种状态完全一致。
+   While idle, line 1 reads "not started": same cell, same size, only quieter, so the two states
+   share one layout exactly. */
+.rtt-live-time.is-idle {
+    color: var(--text-faint);
+}
+
+/* 没在计时时标题让给文件名 / with nothing running, the headline is the file name */
+.rtt-live-title {
+    font-size: 1em;
+    font-weight: 600;
+    color: var(--text-normal);
+    overflow-wrap: anywhere;
+}
+
+.rtt-live-title.is-muted {
+    font-weight: 400;
+    color: var(--text-faint);
+}
+
+.rtt-live-line {
+    color: var(--text-muted);
+    font-size: var(--font-ui-smaller);
+    overflow-wrap: anywhere;
+}
+
+.rtt-live-line.is-muted {
+    color: var(--text-faint);
+}
+
+/* 单行不让折：一行放不下就横向滚，轮数与被扣掉的时间留在原位
+   One line that never wraps: an over-wide name scrolls along it while the round number and the
+   deduction stay where they are. */
+.rtt-live-line.is-one-line {
+    display: flex;
+    align-items: baseline;
+    overflow: hidden;
+    white-space: nowrap;
+    overflow-wrap: normal;
+}
+
+/* 文件名占的那一格：放得下就按内容宽，放不下才收缩，于是轮数永远紧跟其后而不是被推到最右
+   The file name's cell: content-width while it fits and shrinking only when it does not, so the
+   round number stays next to it instead of being pushed to the far edge. */
+.rtt-live-name {
+    display: inline-block;
+    flex: 0 1 auto;
+    /* flex 项默认 min-width:auto 会拒绝收缩到内容宽以下，正是这里要允许的 */
+    /* A flex item defaults to min-width:auto and refuses to shrink below its content, which is
+       exactly what has to be allowed here. */
+    min-width: 0;
+    overflow: hidden;
+    color: var(--text-normal);
+}
+
+/* 会移动的那条 / the strip that moves */
+.rtt-live-name-track {
+    display: inline-block;
+    white-space: nowrap;
+    will-change: transform;
+}
+
+.rtt-live-sep,
+.rtt-live-label {
+    color: var(--text-faint);
+}
+
+/* 轮数仍可点：打开这个文件的每一轮 / the round count still opens the file's rounds */
+.rtt-live-round {
+    flex: 0 0 auto;
+    color: var(--text-muted);
+    cursor: pointer;
+    /* 避免移动端滚动被当成点击 / keeps mobile scrolling from registering as a tap */
+    touch-action: manipulation;
+}
+
+.rtt-live-round:hover {
+    color: var(--text-accent);
+    text-decoration: underline;
+}
+
+/* 触屏：把轮数这一小段文字的命中区撑开。负外边距抵消内边距，所以版式一点没动 —— 只是手指更容易
+   点中（实测原本只有 44×16.6px）。
+   Touch: grow the hit area of the round label. The negative margin cancels the padding, so the
+   layout does not move at all — the finger just lands more often (measured at 44×16.6px before). */
+@media (pointer: coarse) {
+    .rtt-live-round {
+        padding: 4px 6px;
+        margin: -4px -6px;
+    }
+}
+
+/* 负数用橙色：与热力图上"脱离窗口"那一段同色，读到就知道扣的是什么
+   The deduction is orange, the same colour the heatmap gives an out-of-window stretch, so what
+   is being taken off is obvious. */
+.rtt-live-deduct {
+    flex: 0 0 auto;
+    color: var(--color-orange);
+}
+
+/* 为 0 时整段收起，不留一个常驻的"-0 秒" / collapses at zero rather than parking a "-0秒" */
+.rtt-live-deduct.is-empty {
+    display: none;
+}
+
+.rtt-statusbar-menu-hint:hover {
+    background: var(--background-modifier-hover);
 }

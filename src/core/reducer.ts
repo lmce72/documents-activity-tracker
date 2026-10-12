@@ -104,6 +104,8 @@ export function createIdleManualState(): ManualTimerState {
     startedAt: '',
     pausedMs: 0,
     pauseStartTimestamp: null,
+    pauseStartFull: '',
+    pauses: [],
     flags: [],
   };
 }
@@ -308,6 +310,8 @@ export function createTimerReducer(deps: ReducerDeps) {
             startedAt: deps.nowFull(),
             pausedMs: 0,
             pauseStartTimestamp: null,
+            pauseStartFull: '',
+            pauses: [],
 
             //  Each run starts empty: the previous run's marks must not carry over
             flags: [],
@@ -323,6 +327,9 @@ export function createTimerReducer(deps: ReducerDeps) {
             ...state.manual,
             status: MANUAL_STATUS.PAUSED,
             pauseStartTimestamp: deps.now(),
+            // 同时记下可读时间串：恢复时要用它拼出暂停区间的起点
+            // The readable timestamp is kept alongside: resuming needs it to open the interval
+            pauseStartFull: deps.nowFull(),
           },
         };
       }
@@ -330,7 +337,9 @@ export function createTimerReducer(deps: ReducerDeps) {
       case ActionTypes.MANUAL_RESUME: {
         if (state.manual.status !== MANUAL_STATUS.PAUSED) return state;
         const currentTime = deps.now();
-        const pauseDuration = currentTime - (state.manual.pauseStartTimestamp ?? currentTime);
+        const pausedAt = state.manual.pauseStartTimestamp;
+        const pauseDuration = currentTime - (pausedAt ?? currentTime);
+        const resumedAt = deps.nowFull();
         return {
           ...state,
           manual: {
@@ -338,6 +347,17 @@ export function createTimerReducer(deps: ReducerDeps) {
             status: MANUAL_STATUS.RUNNING,
             pausedMs: state.manual.pausedMs + Math.max(0, pauseDuration),
             pauseStartTimestamp: null,
+            // 记下这一段暂停的起止，热力图才有位置可画；总毫秒数仍然照旧累加
+            // The span is recorded so the heatmap has somewhere to draw it; the running total
+            // still accumulates exactly as before.
+            pauses:
+              state.manual.pauseStartFull.length > 0
+                ? [
+                    ...state.manual.pauses,
+                    { from: state.manual.pauseStartFull, to: resumedAt },
+                  ]
+                : state.manual.pauses,
+            pauseStartFull: '',
           },
         };
       }

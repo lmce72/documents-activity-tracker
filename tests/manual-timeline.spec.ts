@@ -25,7 +25,7 @@ function session(
   durationSeconds: number,
   note = '',
 ): ManualSession {
-  return { id, startTime, endTime, durationSeconds, note, flags: [] };
+  return { id, startTime, endTime, durationSeconds, note, flags: [], pauses: [] };
 }
 
 describe('buildManualDayRows', () => {

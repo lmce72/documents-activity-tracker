@@ -15,19 +15,25 @@
  *
  */
 
-import { Modal, Notice, Setting, setIcon, type App } from 'obsidian';
+import { Modal, Notice, Setting, setIcon, setTooltip, type App } from 'obsidian';
 
 import { t } from '../core/i18n';
 import type { Logger } from '../core/logger';
 import { shiftDay } from '../core/manualTimeline';
 import {
   buildRecordDayRows,
-  isInWeekOf,
   recordDayChannels,
-  recordDaySeconds,
+  weekReadingSeconds,
 } from '../core/recordsTimeline';
-import { formatDurationWithSeconds, formatReadTime, todayStr } from '../core/time';
+import {
+  formatDurationWithSeconds,
+  formatReadTime,
+  formatReadTimeParts,
+  todayStr,
+} from '../core/time';
+import { countsUnfocusedAsReading } from '../core/settings';
 import { buildFileRecords } from '../core/timeline';
+import { appendDurationParts, setReadTime } from './durationText';
 import {
   readingChannelClass,
   readingChannelLabel,
@@ -55,6 +61,8 @@ export interface RecordsModalDeps {
   log: Logger;
 
   onChanged?: () => void;
+  /** 手动保存记录 / force the running session to disk */
+  onSaveRecords?: () => void;
   /** a file to preselect */
   initialFilePath?: string | null;
 }
@@ -101,6 +109,7 @@ export class RecordsModal extends Modal {
       this.deps.history.getEvents(),
       this.deps.clock.now(),
       todayStr(),
+      { countUnfocused: countsUnfocusedAsReading(this.deps.settings()) },
     );
   }
 
@@ -135,26 +144,29 @@ export class RecordsModal extends Modal {
     return entries;
   }
 
-  /** reading seconds this week. */
+  /**
+   * 本周阅读秒数 / reading seconds this week.
+   * 与侧栏统计卡共用同一个实现 / shares one implementation with the sidebar's stat card.
+   */
   private weekSeconds(all: Record<string, FileRecord>): number {
-    const today = todayStr();
-    let total = 0;
+    return weekReadingSeconds(
+      Object.values(all).map((record) => record.readTimeLine),
+      todayStr(),
+    );
+  }
 
-    for (const record of Object.values(all)) {
-
-      //  Only the days the file actually has records on, instead of seven full scans
-      const days = new Set<string>();
-      for (const session of record.readTimeLine) {
-        for (const time of Object.keys(session)) {
-          days.add(time.slice(0, 10));
-        }
-      }
-      for (const day of days) {
-        if (isInWeekOf(day, today)) total += recordDaySeconds(record.readTimeLine, day);
-      }
-    }
-
-    return total;
+  /**
+   * 底部的「立即保存记录」/ the save control at the foot of the panel.
+   *
+   * 放在最下方且不抢眼：它是保险措施，不是每次打开都要按的动作。
+   * At the foot and unemphatic: it is a safety net, not something to press on every open.
+   */
+  private renderSaveBar(root: HTMLElement): void {
+    if (!this.deps.onSaveRecords) return;
+    const bar = root.createDiv({ cls: 'rtt-records-savebar' });
+    const button = bar.createEl('button', { text: t('manualSave') });
+    setTooltip(button, t('manualSaveConfirm'));
+    button.addEventListener('click', () => this.deps.onSaveRecords?.());
   }
 
   //  ==========================================================================
@@ -177,6 +189,7 @@ export class RecordsModal extends Modal {
       //  detail underneath it.
       this.renderDetail(root, all, mode);
       this.renderList(root, all, mode);
+      this.renderSaveBar(root);
     } catch (error) {
       this.deps.log.warn('[RTT][records] 渲染失败 / render failed:', error);
       this.contentEl.empty();
@@ -207,10 +220,10 @@ export class RecordsModal extends Modal {
       0,
     );
 
-    const cards: Array<{ label: string; value: string }> = [
-      { label: t('statsToday'), value: formatReadTime(todaySeconds, mode) },
+    const cards: Array<{ label: string; value?: string; seconds?: number }> = [
+      { label: t('statsToday'), seconds: todaySeconds },
       { label: t('statsTodaySessions'), value: String(todaySessions) },
-      { label: t('statsWeek'), value: formatReadTime(this.weekSeconds(all), mode) },
+      { label: t('statsWeek'), seconds: this.weekSeconds(all) },
       { label: t('recTotalFiles').replace('{n}', String(Object.keys(all).length)), value: '' },
     ];
 
@@ -218,7 +231,9 @@ export class RecordsModal extends Modal {
     for (const card of cards) {
       const el = bar.createDiv({ cls: 'rtt-stats-card' });
       el.createDiv({ cls: 'rtt-stats-label', text: card.label });
-      if (card.value) el.createDiv({ cls: 'rtt-stats-value', text: card.value });
+      const value = el.createDiv({ cls: 'rtt-stats-value' });
+      if (card.seconds !== undefined) setReadTime(value, card.seconds, mode);
+      else if (card.value) value.setText(card.value);
     }
   }
 
@@ -287,10 +302,8 @@ export class RecordsModal extends Modal {
       text.createDiv({ cls: 'rtt-item-name', text: record.fileName });
 
       const stats = text.createDiv({ cls: 'rtt-item-stats' });
-      stats.createSpan({
-        cls: 'rtt-item-session-val',
-        text: formatReadTime(record.totalReadTime, mode),
-      });
+      const total = stats.createSpan({ cls: 'rtt-item-session-val rtt-dur' });
+      appendDurationParts(total, formatReadTimeParts(record.totalReadTime, mode));
 
       //  The out-of-window part is listed separately so the split stays visible here too
       if (record.unfocusedReadTime > 0) {
@@ -299,10 +312,8 @@ export class RecordsModal extends Modal {
         //  A non-breaking space: an ordinary space collapses at a span boundary and glues
 
         stats.createSpan({ cls: 'rtt-item-session-label', text: `${t('tabUnfocused')} ` });
-        stats.createSpan({
-          cls: 'rtt-item-session-val',
-          text: formatReadTime(record.unfocusedReadTime, mode),
-        });
+        const out = stats.createSpan({ cls: 'rtt-item-session-val rtt-dur' });
+        appendDurationParts(out, formatReadTimeParts(record.unfocusedReadTime, mode));
       }
 
       const meta = text.createDiv({ cls: 'rtt-records-meta' });

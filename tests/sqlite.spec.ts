@@ -282,6 +282,7 @@ describe('SqliteStore — 手动计时 / manual sessions', () => {
       durationSeconds: 1500,
       note: '写周报',
       flags: [],
+      pauses: [],
     },
     {
       id: 'm2',
@@ -290,6 +291,7 @@ describe('SqliteStore — 手动计时 / manual sessions', () => {
       durationSeconds: 600,
       note: '复习英语',
       flags: [],
+      pauses: [],
     },
   ];
 

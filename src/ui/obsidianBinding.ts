@@ -11,6 +11,8 @@
 
 import { MarkdownView, type App, type EventRef, type Plugin } from 'obsidian';
 
+import { isPluginViewKey, resolveActiveTarget } from '../core/activePath';
+
 import type { Logger } from '../core/logger';
 import type { TimerService } from '../services/TimerService';
 
@@ -29,6 +31,13 @@ export interface BindingDeps {
   plugin: Plugin;
   service: TimerService;
   log: Logger;
+  /**
+   * This plugin's own view type(s), e.g. the sidebar.
+   *
+   * Passed in rather than imported so this module keeps its single runtime dependency on
+   * obsidian (`MarkdownView`) and does not pull in the whole view tree.
+   */
+  ownViewTypes?: readonly string[];
 }
 
 /** A handle to the installed bindings. */
@@ -47,6 +56,7 @@ export interface Binding {
  */
 export function installBindings(deps: BindingDeps): Binding {
   const { app, plugin, service, log } = deps;
+  const ownViewTypes = new Set(deps.ownViewTypes ?? []);
 
   const registered: EventRef[] = [];
   let lastActivityAt = 0;
@@ -56,17 +66,28 @@ export function installBindings(deps: BindingDeps): Binding {
     app.workspace.getActiveViewOfType(MarkdownView);
 
   /**
-   * the active markdown file.
+   * the active markdown file, or null when nothing is being read.
    *
-   * Not `getActiveViewOfType(MarkdownView)` alone: that asks whether the *focused leaf* is a
-   * markdown view, and the user has just given focus to the sidebar in order to click "start"
-   * — so it returns null, the path never binds, the whole control row is not rendered, and
-   * the button does not exist. Measured: with the sidebar focused, `startCurrent()` returns
-   * immediately and nothing happens. `getActiveFile()` reports which file is active
-   * regardless of which leaf holds focus, so it is the fallback.
+   * `getActiveViewOfType(MarkdownView)` answers "is the *focused leaf* a markdown view", so
+   * it returns null whenever focus sits anywhere else. Two opposite mistakes come from
+   * treating that null naively:
+   *
+   *   - Falling back to `getActiveFile()` unconditionally keeps the timer running on the
+   *     last note while the user is actually reading a *plugin view* — an RSS reader, a
+   *     translator pane. Measured: those panes were credited to the previously focused note.
+   *   - Not falling back at all unbinds the file the moment the user clicks our own sidebar,
+   *     which is exactly when they are trying to start the timer.
+   *
+   * So the fallback is scoped to our own views: focus anywhere else that is not a markdown
+   * view means nothing is being read, and the session ends.
    */
   const getActivePath = (): string | null =>
-    activeView()?.file?.path ?? app.workspace.getActiveFile()?.path ?? null;
+    resolveActiveTarget({
+      markdownPath: activeView()?.file?.path ?? null,
+      focusedViewType: app.workspace.activeLeaf?.view?.getViewType?.() ?? null,
+      ownViewTypes: [...ownViewTypes],
+      activeFilePath: app.workspace.getActiveFile()?.path ?? null,
+    });
 
   const getOpenPaths = (): string[] => {
     const paths: string[] = [];
@@ -74,6 +95,15 @@ export function installBindings(deps: BindingDeps): Binding {
       const view = leaf.view;
       if (view instanceof MarkdownView && view.file) paths.push(view.file.path);
     });
+
+    // A plugin view has no file, so it can never appear in the walk above. Without adding it
+    // here it looks like a tab that has been closed, and `closeOrphanSessions` auto-saves and
+    // unbinds it the instant it starts — measured: the canvas session was killed within the
+    // same second it began. Once the view loses focus the key stops being returned, so
+    // closing the leaf still ends the session.
+    const active = getActivePath();
+    if (active !== null && isPluginViewKey(active)) paths.push(active);
+
     return paths;
   };
 
@@ -124,6 +154,49 @@ export function installBindings(deps: BindingDeps): Binding {
     void service.onWindowFocusChange(document.visibilityState === 'visible');
   });
 
+  // Mobile: neither `window.blur/focus` nor `visibilitychange` is reliable once the app is
+  // backgrounded — the WebView is frozen and may never deliver the event, so the whole
+  // unfocused channel silently never fires on a phone. Capacitor's App plugin reports the
+  // *native* activity state instead (Android `onResume`/`onStop`, iOS
+  // `didBecomeActive`/`willResignActive`), which is the mobile equivalent of a window losing
+  // focus. Reached through `window.Capacitor` because Obsidian ships the runtime; there is no
+  // package to import, and a desktop build simply does not have it.
+  //
+  // 移动端一旦退到后台，WebView 会被冻结，blur/focus 与 visibilitychange 都可能永远不来，
+  // 于是整个"脱离窗口"通道在手机上根本不触发。Capacitor 的 App 插件报告的是**原生**活动状态
+  // （Android onResume/onStop、iOS didBecomeActive/willResignActive），正是窗口失焦的对应物。
+  const capacitorApp = (
+    window as unknown as {
+      Capacitor?: {
+        Plugins?: {
+          App?: {
+            addListener?: (
+              event: string,
+              handler: (state: { isActive?: boolean }) => void,
+            ) => Promise<{ remove?: () => Promise<void> }>;
+          };
+        };
+      };
+    }
+  ).Capacitor?.Plugins?.App;
+
+  let capacitorListener: { remove?: () => Promise<void> } | null = null;
+
+  if (typeof capacitorApp?.addListener === 'function') {
+    capacitorApp
+      .addListener('appStateChange', (state) => {
+        // `isActive` is the only field; treat a missing payload as "still active" rather than
+        // inventing an out-of-window stretch.
+        void service.onWindowFocusChange(state?.isActive !== false);
+      })
+      .then((handle) => {
+        capacitorListener = handle;
+      })
+      .catch((error: unknown) => {
+        log.warn('[RTT][binding] Capacitor 状态监听注册失败 / app-state listener failed:', error);
+      });
+  }
+
   // user activity ───────────────────────────────────────────
   for (const type of ['mousedown', 'keydown', 'mousemove', 'touchstart', 'wheel'] as const) {
     plugin.registerDomEvent(document, type, reportActivity, { passive: true });
@@ -171,6 +244,10 @@ export function installBindings(deps: BindingDeps): Binding {
       window.clearInterval(timer);
       for (const ref of registered) app.workspace.offref(ref);
       registered.length = 0;
+      // A native listener is not covered by `registerDomEvent`; without this it survives the
+      // plugin and keeps writing to a dead service.
+      void capacitorListener?.remove?.().catch(() => undefined);
+      capacitorListener = null;
     },
   };
 }

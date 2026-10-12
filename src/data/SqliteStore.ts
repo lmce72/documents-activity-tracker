@@ -36,6 +36,7 @@ import type { HistoryStore } from './historyStore';
 import {
   META_SCHEMA_VERSION,
   SQL_MIGRATE_V1_TO_V2,
+  SQL_MIGRATE_V2_TO_V3,
   SQL_CREATE_SCHEMA,
   SQLITE_SCHEMA_VERSION,
   eventToRow,
@@ -310,15 +311,24 @@ export class SqliteStore implements HistoryStore {
   appendManualSession(session: ManualSession): void {
     const row = manualSessionToRow(session);
     this.requireDb().run(
-      `INSERT INTO manual_sessions (id, start_time, end_time, duration_seconds, note, flags)
-       VALUES (?, ?, ?, ?, ?, ?)
+      `INSERT INTO manual_sessions (id, start_time, end_time, duration_seconds, note, flags, pauses)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          start_time       = excluded.start_time,
          end_time         = excluded.end_time,
          duration_seconds = excluded.duration_seconds,
          note             = excluded.note,
-         flags            = excluded.flags`,
-      [row.id, row.start_time, row.end_time, row.duration_seconds, row.note, row.flags ?? '[]'],
+         flags            = excluded.flags,
+         pauses           = excluded.pauses`,
+      [
+        row.id,
+        row.start_time,
+        row.end_time,
+        row.duration_seconds,
+        row.note,
+        row.flags ?? '[]',
+        row.pauses ?? '[]',
+      ],
     );
     this.markDirty();
   }
@@ -508,6 +518,12 @@ export class SqliteStore implements HistoryStore {
     if (current >= 1 && !this.hasColumn('manual_sessions', 'flags')) {
       this.requireDb().run(SQL_MIGRATE_V1_TO_V2);
       this.log.info('[RTT][sqlite] 补列 / added column: manual_sessions.flags');
+    }
+
+    // v2 lacks `pauses`; a fresh database already has it from the DDL above
+    if (current >= 2 && !this.hasColumn('manual_sessions', 'pauses')) {
+      this.requireDb().run(SQL_MIGRATE_V2_TO_V3);
+      this.log.info('[RTT][sqlite] 补列 / added column: manual_sessions.pauses');
     }
 
     this.setMeta(META_SCHEMA_VERSION, String(SQLITE_SCHEMA_VERSION));

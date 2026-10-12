@@ -39,6 +39,9 @@ const SQL_WASM_NAME = 'sql-wasm.wasm';
 
 const OUT_DIR = process.env.RTT_OUT_DIR ?? path.join(ROOT, 'dist');
 
+/** 插件清单 / the plugin manifest. Lives at the repo root, not in the output directory. */
+const MANIFEST_PATH = path.join(ROOT, 'manifest.json');
+
 const PROD = process.argv.includes('--prod') || process.argv.includes('--deploy');
 const DEPLOY = process.argv.includes('--deploy');
 const WATCH = process.argv.includes('--watch');
@@ -231,6 +234,17 @@ async function deploy(): Promise<void> {
     if (!existsSync(from)) throw new Error(`产物不存在 / Missing artifact: ${from}`);
     await Bun.write(to, Bun.file(from));
     console.log(`[deploy] ${name} -> ${to}`);
+  }
+
+  //  清单也跟着走：它住在仓库根目录，不在产物目录里。漏掉它，vault 里显示的版本号就永远停在上一
+  //  次手抄的值，Obsidian 据此以为装的是旧版（也可能提示更新）。
+  //  The manifest comes along too: it lives at the repo root rather than in the output directory, and
+  //  leaving it behind pins the vault's reported version to whatever was copied by hand last time —
+  //  Obsidian then believes an older build is installed.
+  if (existsSync(MANIFEST_PATH)) {
+    const to = path.join(VAULT_PLUGIN_DIR, 'manifest.json');
+    await Bun.write(to, Bun.file(MANIFEST_PATH));
+    console.log(`[deploy] manifest.json -> ${to}`);
   }
   console.log('[deploy] 完成。请在 Obsidian 中重新启用插件以加载新版本。');
   console.log('[deploy] Done. Re-enable the plugin in Obsidian to load the new build.');

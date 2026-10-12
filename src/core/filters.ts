@@ -6,10 +6,40 @@
  * L0 module; depends only on types.
  */
 
+import { isPluginViewKey } from './activePath';
 import type { PluginSettings } from './types';
 
 /** Filter mode. */
 export type FilterMode = 'blacklist' | 'whitelist';
+
+/**
+ * Whether a path is a markdown note.
+ *
+ * Only markdown notes count as documents for this plugin. A canvas or a `.base` file is a
+ * different kind of view, and the active file is not always a note — `getActiveFile()`
+ * returns whatever leaf holds focus, so focus landing on a canvas handed the tracker a
+ * `.canvas` path to "read". Measured in a real vault: `未命名.canvas` (6 events) and
+ * `未命名.base` (3 events) had been recorded as documents, and worse, opening one closed
+ * the session of the note the user was actually reading.
+ *
+ * Enforced here, at the single predicate every path passes through, so no call site can
+ * reintroduce it.
+ */
+export function isMarkdownPath(filePath: string): boolean {
+  return filePath.toLowerCase().endsWith('.md');
+}
+
+/**
+ * Whether a tracking target should be recorded.
+ *
+ * A plugin view (`view:<type>`) is a reading surface with no path, so the folder rules do
+ * not apply to it — it is always recorded. Everything else must be a markdown note that the
+ * filter rules accept.
+ */
+export function isTrackableTarget(target: string, settings: PluginSettings): boolean {
+  if (isPluginViewKey(target)) return true;
+  return shouldTrackFile(target, settings);
+}
 
 /**
  * Decide whether a file path should be tracked.
@@ -22,6 +52,9 @@ export type FilterMode = 'blacklist' | 'whitelist';
  * plugin settings
  */
 export function shouldTrackFile(filePath: string, settings: PluginSettings): boolean {
+  //  Not a note: never tracked, whatever the rules say. The whitelist matches by folder
+  //  prefix, so a canvas sitting inside a whitelisted folder used to pass straight through.
+  if (!isMarkdownPath(filePath)) return false;
 
   //  Tolerate the legacy excludePatterns key. It still exists in real configs (empty
   //  string). The original's `filterPatterns || excludePatterns || ''` fallback is kept

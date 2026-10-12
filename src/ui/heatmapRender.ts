@@ -12,9 +12,18 @@
  *
  */
 
+import { isPluginViewKey, pluginViewLabel } from '../core/activePath';
 import { t } from '../core/i18n';
 import type { RecordChannel } from '../core/recordsTimeline';
-import { formatDurationWithSeconds } from '../core/time';
+import {
+  formatDurationParts,
+  formatDurationWithSeconds,
+  parseSessionStartTime,
+  todayStr,
+  type DurationPart,
+} from '../core/time';
+import type { TimelineEvent } from '../core/types';
+import { renderTimelineList, type TimelineNode } from './timelineList';
 
 /** the minimal geometry a segment must expose. */
 export interface HeatmapSegment {
@@ -33,7 +42,64 @@ export interface HeatmapRow<S extends HeatmapSegment> {
   segments: S[];
 }
 
+/**
+ * Touching, same-class segments fused into one clickable block.
+ *
+ * A run of activity is usually stored as many short segments — a blur/focus flicker, or a
+ * session the tick kept re-opening — and drawn one-per-segment the chart reads as noise while
+ * every target is a sliver too small to hit and too short to be worth a detail panel. Fusing
+ * them means one click selects the whole run.
+ *
+ * `members` keeps the originals, so a call site can still describe what it was looking at.
+ */
+export interface HeatmapBlock<S extends HeatmapSegment> extends HeatmapSegment {
+  members: S[];
+}
+
 const TICKS = [0, 15, 30, 45] as const;
+
+/** 判定"相接"的容差（分钟）/ tolerance for calling two segments touching. */
+const TOUCH_EPSILON = 1e-6;
+
+/**
+ * Fuse touching, same-class segments.
+ *
+ * Only same-class runs fuse: an in-window stretch and an out-of-window one that happen to
+ * touch are different things and stay separately visible, for the colour and for the union
+ * maths behind the overview.
+ */
+export function mergeSegments<S extends HeatmapSegment>(
+  segments: readonly S[],
+  classOf: (segment: S) => string,
+): Array<HeatmapBlock<S>> {
+  const blocks: Array<HeatmapBlock<S>> = [];
+
+  for (const segment of [...segments].sort((a, b) => a.startMinute - b.startMinute)) {
+    const cls = classOf(segment);
+    const last = blocks[blocks.length - 1];
+
+    if (last && classOf(last.members[0]!) === cls) {
+      const lastEnd = last.startMinute + last.durationMinutes;
+      if (segment.startMinute <= lastEnd + TOUCH_EPSILON) {
+        last.durationMinutes =
+          Math.max(lastEnd, segment.startMinute + segment.durationMinutes) -
+          last.startMinute;
+        last.clipped = last.clipped || segment.clipped;
+        last.members.push(segment);
+        continue;
+      }
+    }
+
+    blocks.push({
+      startMinute: segment.startMinute,
+      durationMinutes: segment.durationMinutes,
+      clipped: segment.clipped,
+      members: [segment],
+    });
+  }
+
+  return blocks;
+}
 
 /** Shared by both reading-record call sites so the colouring cannot drift apart. */
 export const CHANNEL_CLASSES: Record<RecordChannel, string> = {
@@ -65,21 +131,337 @@ export function readingChannelLabel(segment: {
 }
 
 /**
+ * Highlight the clicked segment and clear the previous one.
+ *
+ * Clicking the same segment again clears the highlight, so the detail block can be dismissed
+ * without hunting for a close button.
+ */
+export function selectSegment(scope: HTMLElement, element: HTMLElement): boolean {
+  const wasSelected = element.hasClass('is-selected');
+  for (const previous of Array.from(scope.querySelectorAll('.rtt-hm-seg.is-selected'))) {
+    previous.removeClass('is-selected');
+  }
+  if (wasSelected) return false;
+  element.addClass('is-selected');
+  return true;
+}
+
+/**
+ * Render the "what happened during this stretch" block.
+ *
+ * A segment knows only its offset inside its hour, so the hour is required to recover the
+ * wall clock — which is the part a user actually wants ("09:40–09:52"), not a percentage.
+ */
+export interface SegmentDetail {
+  hour: number;
+  segment: HeatmapSegment;
+  what: string;
+  icon: string;
+  /** Class modifier for the summary node. */
+  kind?: string;
+  /** How many recorded pieces the run was fused from; omitted for a single one. */
+  pieces?: number;
+  /**
+   * The whole event log. When given, every operation recorded inside the stretch is listed
+   * under the summary — a stretch is not just "how long", it is what happened: a file switch,
+   * the window losing focus, a pause.
+   */
+  events?: readonly TimelineEvent[];
+  /** The day the chart was drawn for, as YYYY-MM-DD. */
+  day: string;
+}
+
+/**
+ * Render the "what happened during this stretch" block.
+ *
+ * A segment knows only its offset inside its hour, so the hour and the day are both required to
+ * recover the wall clock — which is the part a user actually wants ("09:40–09:52"), not a
+ * percentage.
+ */
+export function renderSegmentDetail(container: HTMLElement, options: SegmentDetail): void {
+  const { hour, segment, what, icon, kind, pieces, events, day } = options;
+
+  const pad = (value: number): string => String(Math.floor(value)).padStart(2, '0');
+  const clock = (minutes: number): string => `${pad((minutes / 60) % 24)}:${pad(minutes % 60)}`;
+  const startMinute = hour * 60 + segment.startMinute;
+  const endMinute = startMinute + segment.durationMinutes;
+
+  const summaryLines: Array<string | readonly DurationPart[]> = [
+    `${t('heatmapDetailDuration')} ${formatDurationWithSeconds(
+      Math.round(segment.durationMinutes * 60),
+    )}`,
+    what,
+  ];
+  // 合并来的一整段说明它是由多少小段拼的，否则用户会以为记录本身就这么粗
+  // A fused run says how many pieces it came from, or the record looks coarser than it is
+  if (pieces !== undefined && pieces > 1) {
+    summaryLines.push(t('heatmapDetailPieces').replace('{n}', String(pieces)));
+  }
+
+  const summary: TimelineNode = {
+    icon,
+    kind,
+    title: `${clock(startMinute)} – ${clock(endMinute)}`,
+    lines: summaryLines,
+  };
+
+  let visits: TimelineNode[] = [];
+
+  if (events) {
+    // The window is widened to whole minutes on both ends. A stretch is measured in minutes and
+    // then rounded, so an exact comparison would drop the very events that define it — measured:
+    // a stretch labelled 14:20–14:20 matched nothing, because its events sit at 14:20:06.
+    const at = (minutes: number, seconds: number): string =>
+      `${day} ${pad((minutes / 60) % 24)}:${pad(minutes % 60)}:${pad(seconds)}`;
+
+    visits = processNodes(events, at(Math.floor(startMinute), 0), at(Math.ceil(endMinute), 59), clock);
+  }
+
+  // A single visit already says everything the summary would: its own node carries the range and
+  // the duration, and the icon carries the source. Printing both put the same two values on two
+  // consecutive lines.
+  const nodes = visits.length === 1 ? visits : [summary, ...visits];
+  if (visits.length === 0) nodes.push(summary);
+
+  // One timeline: the summary and every visit hang off the same line, so the run reads as a
+  // sequence rather than a fact plus an appendix.
+  renderTimelineList(container, nodes);
+}
+
+/** One visit to a target: from becoming active to handing over. */
+interface TargetVisit {
+  target: string;
+  from: string;
+  to: string;
+  activeSeconds: number;
+  unfocusedSeconds: number;
+  pausedSeconds: number;
+  /** Whether a transition out of this visit led to another target. */
+  nextTarget: string | null;
+}
+
+/** Split a "YYYY-MM-DD HH:mm:ss" into milliseconds for arithmetic. */
+function timeMs(value: string): number {
+  return parseSessionStartTime(value)?.getTime() ?? 0;
+}
+
+/**
+ * The stretch as a sequence of visits / 这段时间读过的目标序列.
+ *
+ * A visit runs from the moment a target became active until it was handed over — by a switch,
+ * or by a save that closed it. Blur, focus and pause do not start a visit: they change what the
+ * time *means*, so they are accumulated into the visit that contains them rather than becoming
+ * nodes of their own.
+ */
+function buildVisits(events: readonly TimelineEvent[], from: string, to: string): TargetVisit[] {
+  const visits: TargetVisit[] = [];
+  // A holder rather than a captured `let`: TypeScript narrows a mutable capture to `never`
+  // once a helper assigns null to it, and every read afterwards fails to type-check.
+  const holder: { visit: TargetVisit | null } = { visit: null };
+  let state: 'active' | 'unfocused' | 'paused' = 'active';
+  let stateSince = '';
+
+  const bank = (until: string): void => {
+    const visit = holder.visit;
+    if (!visit || !stateSince) return;
+    const seconds = Math.max(0, (timeMs(until) - timeMs(stateSince)) / 1000);
+    if (state === 'active') visit.activeSeconds += seconds;
+    else if (state === 'unfocused') visit.unfocusedSeconds += seconds;
+    else visit.pausedSeconds += seconds;
+  };
+
+  const open = (target: string, at: string): void => {
+    if (!target) return;
+
+    // Already reading this target: a second `start`, or a `switch` that names the file it is
+    // already on. The log really contains those (an older build wrote every switch twice), and
+    // honouring them would split one visit into several identical nodes.
+    if (holder.visit?.target === target) return;
+
+    // The file was closed by a save and immediately started again. Reopening the previous visit
+    // keeps it one node; anything else would print the same target twice in a row with nothing
+    // between them to explain the split.
+    const last = visits[visits.length - 1];
+    if (!holder.visit && last && last.target === target) {
+      holder.visit = last;
+      state = 'active';
+      stateSince = at;
+      return;
+    }
+
+    bank(at);
+    const visit: TargetVisit = {
+      target,
+      from: at,
+      to: at,
+      activeSeconds: 0,
+      unfocusedSeconds: 0,
+      pausedSeconds: 0,
+      nextTarget: null,
+    };
+    holder.visit = visit;
+    visits.push(visit);
+    state = 'active';
+    stateSince = at;
+  };
+
+  const close = (at: string): void => {
+    const visit = holder.visit;
+    if (!visit) return;
+    bank(at);
+    visit.to = at;
+    holder.visit = null;
+    stateSince = '';
+  };
+
+  for (const event of events) {
+    if (event.time < from || event.time > to) continue;
+
+    switch (event.type) {
+      case 'start':
+        open((event as { file?: string }).file ?? '', event.time);
+        break;
+      case 'switch': {
+        const previous = holder.visit;
+        const next = event.to ?? '';
+        close(event.time);
+        if (previous && next && previous.target !== next) previous.nextTarget = next;
+        open(next, event.time);
+        break;
+      }
+      case 'blur':
+        bank(event.time);
+        state = 'unfocused';
+        stateSince = event.time;
+        break;
+      case 'focus':
+        bank(event.time);
+        state = 'active';
+        stateSince = event.time;
+        break;
+      case 'pause':
+        bank(event.time);
+        state = 'paused';
+        stateSince = event.time;
+        break;
+      case 'resume':
+        bank(event.time);
+        state = 'active';
+        stateSince = event.time;
+        break;
+      case 'save':
+      case 'auto-save':
+      case 'discard':
+        close(event.time);
+        break;
+      default:
+        break;
+    }
+  }
+
+  // The last visit runs to the end of the stretch: nothing closed it.
+  if (holder.visit) {
+    bank(to);
+    holder.visit.to = to;
+  }
+
+  // A visit that banked nothing is a leftover boundary, not a reading stretch.
+  const withTime = visits.filter((visit) => visit.activeSeconds + visit.unfocusedSeconds + visit.pausedSeconds > 0);
+  return withTime.length > 0 ? withTime : visits;
+}
+
+/**
+ * Render the stretch's visits as timeline nodes, with a connector between them.
+ *
+ * The connector carries the switch — it belongs *between* two targets, not inside either, and
+ * drawing it beside the line keeps the target sequence as the thing the eye follows.
+ */
+function processNodes(
+  events: readonly TimelineEvent[],
+  from: string,
+  to: string,
+  clock: (minutes: number) => string,
+): TimelineNode[] {
+  const nodes: TimelineNode[] = [];
+
+  for (const visit of buildVisits(events, from, to)) {
+    const isView = isPluginViewKey(visit.target);
+    const total = visit.activeSeconds + visit.unfocusedSeconds;
+
+    const lines: Array<string | readonly DurationPart[]> = [
+      `${visit.from.slice(11, 16)} – ${visit.to.slice(11, 16)}`,
+      formatDurationParts(Math.round(total)),
+    ];
+
+    // A visit that was interrupted explains itself: without the split the number looks low for
+    // the span it covers.
+    if (visit.unfocusedSeconds > 0 || visit.pausedSeconds > 0) {
+      const parts = [`${t('tabInWindow')} ${formatDurationWithSeconds(Math.round(visit.activeSeconds))}`];
+      if (visit.unfocusedSeconds > 0) {
+        parts.push(`${t('tabUnfocused')} ${formatDurationWithSeconds(Math.round(visit.unfocusedSeconds))}`);
+      }
+      if (visit.pausedSeconds > 0) {
+        parts.push(`${t('recChannelPaused')} ${formatDurationWithSeconds(Math.round(visit.pausedSeconds))}`);
+      }
+      lines.push(parts.join(' · '));
+    }
+
+    nodes.push({
+      icon: isView ? 'app-window' : 'file-text',
+      kind: isView ? 'view' : 'document',
+      title: isView
+        ? `${t('ovView')} · ${pluginViewLabel(visit.target)}`
+        : `${t('ovKindDocument')} · ${visit.target.split('/').pop() ?? visit.target}`,
+      lines,
+    });
+
+    if (visit.nextTarget) {
+      const nextIsView = isPluginViewKey(visit.nextTarget);
+      nodes.push({
+        icon: 'arrow-right-left',
+        variant: 'connector',
+        title: `${t('evSwitchTo')} ${
+          nextIsView
+            ? `${t('ovView')} · ${pluginViewLabel(visit.nextTarget)}`
+            : (visit.nextTarget.split('/').pop() ?? visit.nextTarget)
+        }`,
+      });
+    }
+  }
+
+  void clock;
+  return nodes;
+}
+
+/**
  * Draw the heatmap.
  *
- * Only hours with segments and their neighbours are drawn: most of the 24 rows are empty
- * and unreadable in a narrow sidebar.
+ * Only hours with segments and their neighbours are drawn: most of the 24 rows are empty and
+ * unreadable in a narrow sidebar.
  *
- * the 24 rows
- * extra classes for a segment
- * the accessible label for a segment
- * whether anything was drawn
+ * @param parent the container, written into directly
+ * @param rows   the 24 rows
+ * @param classOf  extra classes for a segment
+ * @param labelOf  the accessible label for a segment
+ * @param onSelect called when a block is clicked, with the hour it belongs to. Passing the hour
+ *                 matters: a block knows only its offset inside its hour, so the wall clock of
+ *                 a stretch can only be recovered by the caller.
+ * @returns whether anything was drawn
  */
 export function renderHeatmap<S extends HeatmapSegment>(
   parent: HTMLElement,
   rows: readonly HeatmapRow<S>[],
   classOf: (segment: S) => string,
   labelOf: (segment: S) => string,
+  onSelect?: (block: HeatmapBlock<S>, hour: number, element: HTMLElement) => void,
+  /**
+   * Draw an extra layer inside a row's track, after its segments.
+   *
+   * The manual panel overlays pause blocks and flag marks this way rather than post-processing
+   * the DOM: the track element exists only here, and finding it again by selector would break
+   * the moment this markup changes.
+   */
+  overlay?: (bar: HTMLElement, hour: number) => void,
 ): boolean {
   const interesting = rows.filter((row) => row.segments.length > 0);
   if (interesting.length === 0) return false;
@@ -92,8 +474,8 @@ export function renderHeatmap<S extends HeatmapSegment>(
   const tickWrap = axis.createDiv({ cls: 'rtt-hm-tick-wrap' });
   for (const minute of TICKS) {
     const tick = tickWrap.createDiv({ cls: 'rtt-hm-tick', text: `${minute}` });
-    // setCssProps, not `style.left = ...`: Obsidian's review rejects direct style
-    // assignment, and the helper writes through the same style object.
+    // setCssProps, not `style.left = ...`: Obsidian's review rejects direct style assignment,
+    // and the helper writes through the same style object.
     tick.setCssProps({ left: `${(minute / 60) * 100}%` });
   }
 
@@ -106,23 +488,34 @@ export function renderHeatmap<S extends HeatmapSegment>(
     rowEl.createDiv({ cls: 'rtt-hm-hlabel', text: String(hour).padStart(2, '0') });
 
     const bar = rowEl.createDiv({ cls: 'rtt-hm-bar' });
-    for (const segment of row.segments) {
-      const seg = bar.createDiv({ cls: `rtt-hm-seg ${classOf(segment)}` });
 
-      // Geometry is per-segment data, not a style variant, so it cannot live in a CSS
-      // class; `setCssProps` is the sanctioned way to write it. Keys are kebab-case
-      // because the helper writes through `style.setProperty`.
+    // Touching same-class segments become one block: a run of activity is stored as many short
+    // pieces, and one-click-per-piece is both unreadable and unhittable.
+    for (const block of mergeSegments(row.segments, classOf)) {
+      const representative = block.members[0]!;
+      const seg = bar.createDiv({ cls: `rtt-hm-seg ${classOf(representative)}` });
+
+      // Geometry is per-segment data, not a style variant, so it cannot live in a CSS class;
+      // `setCssProps` is the sanctioned way to write it. Keys are kebab-case because the helper
+      // writes through `style.setProperty`.
       const props: Record<string, string> = {
-        left: `${(segment.startMinute / 60) * 100}%`,
-        // A very short segment gets a floor width, or it is invisible on screen
-        width: `${Math.max(0.4, (segment.durationMinutes / 60) * 100)}%`,
+        left: `${(block.startMinute / 60) * 100}%`,
+        // A very short block gets a floor width, or it is invisible on screen
+        width: `${Math.max(0.4, (block.durationMinutes / 60) * 100)}%`,
       };
       // A clipped slice loses its rounding so the stretch still reads as one
-      if (segment.clipped) props['border-radius'] = '0';
+      if (block.clipped) props['border-radius'] = '0';
 
       seg.setCssProps(props);
-      seg.setAttribute('aria-label', labelOf(segment));
+      seg.setAttribute('aria-label', labelOf(representative));
+
+      if (onSelect) {
+        seg.addClass('is-clickable');
+        seg.addEventListener('click', () => onSelect(block, hour, seg));
+      }
     }
+
+    overlay?.(bar, hour);
   }
 
   return true;

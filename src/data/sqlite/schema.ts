@@ -20,6 +20,7 @@
 
 import type {
   ManualFlag,
+  ManualPause,
   ManualSession,
   RecordEntry,
   TimelineEvent,
@@ -29,7 +30,7 @@ import type {
  * schema version, kept in the meta table.
  * 1 → 2: manual_sessions gains the `flags` column for manual-timer marks.
  */
-export const SQLITE_SCHEMA_VERSION = 2;
+export const SQLITE_SCHEMA_VERSION = 3;
 
 /** the meta key holding the schema version. */
 export const META_SCHEMA_VERSION = 'schema_version';
@@ -76,7 +77,8 @@ CREATE TABLE IF NOT EXISTS manual_sessions (
   end_time         TEXT NOT NULL,
   duration_seconds REAL NOT NULL,
   note             TEXT NOT NULL DEFAULT '',
-  flags            TEXT NOT NULL DEFAULT '[]'
+  flags            TEXT NOT NULL DEFAULT '[]',
+  pauses           TEXT NOT NULL DEFAULT '[]'
 );
 
 CREATE INDEX IF NOT EXISTS idx_manual_start ON manual_sessions(start_time);
@@ -89,6 +91,11 @@ CREATE INDEX IF NOT EXISTS idx_manual_start ON manual_sessions(start_time);
  * does nothing to an existing table and never adds a column, so a v1 database would keep
  * the old shape and every insert carrying `flags` would fail with "no such column".
  */
+/** v2 -> v3: the `pauses` column. Same reasoning as v1 -> v2: `CREATE TABLE IF NOT EXISTS`
+ *  never adds a column, so an existing table needs the explicit ALTER. */
+export const SQL_MIGRATE_V2_TO_V3 =
+  "ALTER TABLE manual_sessions ADD COLUMN pauses TEXT NOT NULL DEFAULT '[]';";
+
 export const SQL_MIGRATE_V1_TO_V2 =
   "ALTER TABLE manual_sessions ADD COLUMN flags TEXT NOT NULL DEFAULT '[]';";
 
@@ -125,6 +132,8 @@ export interface ManualSessionRow {
   note: string;
   /** the marks, as JSON text */
   flags?: string;
+  /** the pauses, as JSON text */
+  pauses?: string;
 }
 
 /** Read an optional numeric field off an event. */
@@ -221,6 +230,7 @@ export function manualSessionToRow(session: ManualSession): ManualSessionRow {
     duration_seconds: session.durationSeconds,
     note: session.note ?? '',
     flags: JSON.stringify(session.flags ?? []),
+    pauses: JSON.stringify(session.pauses ?? []),
   };
 }
 
@@ -230,16 +240,16 @@ export function manualSessionToRow(session: ManualSession): ManualSessionRow {
  * A v1 database has no such column and the JSON could be corrupt, so this always degrades
  * to an empty array: failing to read one session's marks must not break the whole list.
  */
-function parseFlags(raw: string | undefined | null): ManualFlag[] {
+function parseArray<T>(
+  raw: string | undefined | null,
+  isItem: (item: T) => boolean,
+): T[] {
   if (!raw) return [];
   try {
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
     return parsed.filter(
-      (item): item is ManualFlag =>
-        !!item &&
-        typeof item === 'object' &&
-        typeof (item as ManualFlag).atSeconds === 'number',
+      (item): item is T => !!item && typeof item === 'object' && isItem(item as T),
     );
   } catch {
     return [];
@@ -254,6 +264,7 @@ export function rowToManualSession(row: ManualSessionRow): ManualSession {
     endTime: row.end_time,
     durationSeconds: row.duration_seconds,
     note: row.note,
-    flags: parseFlags(row.flags),
+    flags: parseArray<ManualFlag>(row.flags, (item) => typeof item.atSeconds === 'number'),
+    pauses: parseArray<ManualPause>(row.pauses, (item) => typeof item.from === 'string'),
   };
 }

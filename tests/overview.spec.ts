@@ -14,6 +14,7 @@ import {
   manualIntervals,
   mergeIntervals,
   overviewTotals,
+  overviewWeekTotals,
   type OverviewInterval,
 } from '../src/core/overview';
 import { toAbsoluteMinutes } from '../src/core/recordsTimeline';
@@ -31,7 +32,7 @@ const BASE_ABS = toAbsoluteMinutes(`${D} 00:00`)!;
 function iv(
   startMinute: number,
   durationMinutes: number,
-  source: 'document' | 'manual' = 'document',
+  source: 'document' | 'manual' | 'view' = 'document',
 ): OverviewInterval {
   return {
     startAbs: BASE_ABS + startMinute,
@@ -50,6 +51,7 @@ function session(startMinute: number, endMinute: number, state = 'tracking'): Ma
     durationSeconds: (endMinute - startMinute) * 60,
     note: '',
     flags: [],
+    pauses: [],
   };
 }
 
@@ -94,6 +96,7 @@ describe('overviewTotals / 当日合计', () => {
       unionMinutes: 0,
       documentMinutes: 0,
       manualMinutes: 0,
+      viewMinutes: 0,
       overlapMinutes: 0,
     });
   });
@@ -138,6 +141,74 @@ describe('overviewTotals / 当日合计', () => {
   it('落在该日之外的区间不计入', () => {
     const totals = overviewTotals([iv(600, 30, 'document')], '2026-09-20');
     expect(totals.unionMinutes).toBe(0);
+  });
+
+  it('插件视图是第三个来源，与另外两本账一起进并集', () => {
+    // 笔记 10:00–10:30，插件视图 10:15–10:45，手动 11:00–11:10
+    const totals = overviewTotals(
+      [iv(600, 30, 'document'), iv(615, 30, 'view'), iv(660, 10, 'manual')],
+      D,
+    );
+    expect(totals.documentMinutes).toBeCloseTo(30, 5);
+    expect(totals.viewMinutes).toBeCloseTo(30, 5);
+    expect(totals.manualMinutes).toBeCloseTo(10, 5);
+    // 并集 = 10:00–10:45 (45) + 11:00–11:10 (10) = 55
+    expect(totals.unionMinutes).toBeCloseTo(55, 5);
+    // 重叠 = 30+30+10 − 55 = 15
+    expect(totals.overlapMinutes).toBeCloseTo(15, 5);
+  });
+
+  it('只有插件视图时并集等于它本身', () => {
+    const totals = overviewTotals([iv(600, 20, 'view')], D);
+    expect(totals.viewMinutes).toBeCloseTo(20, 5);
+    expect(totals.unionMinutes).toBeCloseTo(20, 5);
+    expect(totals.overlapMinutes).toBe(0);
+  });
+});
+
+describe('overviewWeekTotals / 本周合计', () => {
+  it('窗口是含该日的整周（周一起算），不含上一周与下一周', () => {
+    //  2026-09-15 是周二，本周 = 09-14(一) … 09-20(日)
+    const monday = toAbsoluteMinutes('2026-09-14 10:00')!;
+    const sunday = toAbsoluteMinutes('2026-09-20 10:00')!;
+    const before = toAbsoluteMinutes('2026-09-13 10:00')!;
+    const after = toAbsoluteMinutes('2026-09-21 10:00')!;
+
+    const totals = overviewWeekTotals(
+      [
+        { startAbs: monday, endAbs: monday + 30, source: 'document' },
+        { startAbs: sunday, endAbs: sunday + 30, source: 'document' },
+        { startAbs: before, endAbs: before + 30, source: 'document' },
+        { startAbs: after, endAbs: after + 30, source: 'document' },
+      ],
+      D,
+    );
+
+    expect(totals.documentMinutes).toBeCloseTo(60, 5);
+    expect(totals.unionMinutes).toBeCloseTo(60, 5);
+  });
+
+  it('跨午夜的会话按绝对分钟切，不会被算成两天各一段再加倍', () => {
+    const late = toAbsoluteMinutes(`${D} 23:30`)!;
+    const totals = overviewWeekTotals(
+      [{ startAbs: late, endAbs: late + 120, source: 'document' }],
+      D,
+    );
+    expect(totals.unionMinutes).toBeCloseTo(120, 5);
+  });
+
+  it('不同天的同一时段不重叠，各自计入并集', () => {
+    //  同一天同一时刻的先后两天：绝对分钟相差一天，永远不会被并成一段
+    const monday = iv(600, 30, 'document');
+    const tuesday: OverviewInterval = {
+      startAbs: monday.startAbs + 24 * 60,
+      endAbs: monday.endAbs + 24 * 60,
+      source: 'document',
+    };
+
+    const both = overviewWeekTotals([monday, tuesday], D);
+    expect(both.unionMinutes).toBeCloseTo(60, 5);
+    expect(both.overlapMinutes).toBe(0);
   });
 });
 

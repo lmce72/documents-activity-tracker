@@ -85,47 +85,100 @@ export function nowFullStr(): string {
 }
 
 /**
- * Seconds to a human-readable duration.
+ * A figure and its unit, kept apart so the UI can style them differently.
+ *
+ * The interface renders the number at full weight and the unit smaller and muted, which is
+ * impossible from a pre-joined string. Splitting here keeps one source of truth: the string
+ * formatters below are defined in terms of these parts, so the two can never disagree.
+ */
+export interface DurationPart {
+  value: string;
+  unit: string;
+}
+
+/**
+ * Seconds to duration parts.
  *
  * Note: the unit strings are hardcoded Chinese, matching the original and not
  * following the UI language. Preserved deliberately — changing it would alter UI text.
- *
  */
-export function formatReadTime(seconds: number, mode: string = 'compact'): string {
-  if (!seconds || seconds <= 0) return '0 秒';
-  if (seconds < 60) return `${Math.floor(seconds)} 秒`;
+export function formatReadTimeParts(
+  seconds: number,
+  mode: string = 'compact',
+): DurationPart[] {
+  if (!seconds || seconds <= 0) return [{ value: '0', unit: '秒' }];
+  if (seconds < 60) return [{ value: String(Math.floor(seconds)), unit: '秒' }];
 
   const totalMinutes = Math.floor(seconds / 60);
   const secs = seconds % 60;
 
   if (totalMinutes < 60) {
-    if (mode === 'precise' && secs > 0) return `${totalMinutes} 分 ${secs} 秒`;
-    return `${totalMinutes} 分钟`;
+    if (mode === 'precise' && secs > 0) {
+      return [
+        { value: String(totalMinutes), unit: '分' },
+        { value: String(secs), unit: '秒' },
+      ];
+    }
+    return [{ value: String(totalMinutes), unit: '分钟' }];
   }
 
   const hours = Math.floor(totalMinutes / 60);
   const mins = totalMinutes % 60;
   if (mode === 'precise' && secs > 0) {
     return mins > 0
-      ? `${hours} 小时 ${mins} 分 ${secs} 秒`
-      : `${hours} 小时 ${secs} 秒`;
+      ? [
+          { value: String(hours), unit: '小时' },
+          { value: String(mins), unit: '分' },
+          { value: String(secs), unit: '秒' },
+        ]
+      : [
+          { value: String(hours), unit: '小时' },
+          { value: String(secs), unit: '秒' },
+        ];
   }
-  return mins > 0 ? `${hours} 小时 ${mins} 分钟` : `${hours} 小时`;
+  return mins > 0
+    ? [
+        { value: String(hours), unit: '小时' },
+        { value: String(mins), unit: '分钟' },
+      ]
+    : [{ value: String(hours), unit: '小时' }];
 }
 
-/**
- */
-export function formatDurationWithSeconds(seconds: number): string {
-  if (!seconds || seconds <= 0) return '0秒';
+/** Seconds to duration parts, always showing seconds (the `M分N秒` form). */
+export function formatDurationParts(seconds: number): DurationPart[] {
+  if (!seconds || seconds <= 0) return [{ value: '0', unit: '秒' }];
 
   const s = Math.floor(seconds % 60);
   const totalMinutes = Math.floor(seconds / 60);
 
-  if (totalMinutes === 0) return `${s}秒`;
+  if (totalMinutes === 0) return [{ value: String(s), unit: '秒' }];
 
   const mins = totalMinutes % 60;
   const hours = Math.floor(totalMinutes / 60);
 
-  if (hours === 0) return `${mins}分${s}秒`;
-  return `${hours}小时${mins}分${s}秒`;
+  if (hours === 0) {
+    return [
+      { value: String(mins), unit: '分' },
+      { value: String(s), unit: '秒' },
+    ];
+  }
+  return [
+    { value: String(hours), unit: '小时' },
+    { value: String(mins), unit: '分' },
+    { value: String(s), unit: '秒' },
+  ];
+}
+
+/** Seconds to a human-readable duration. */
+export function formatReadTime(seconds: number, mode: string = 'compact'): string {
+  return formatReadTimeParts(seconds, mode)
+    .map((part) => `${part.value} ${part.unit}`)
+    .join(' ');
+}
+
+/** Seconds to the always-with-seconds duration string. */
+export function formatDurationWithSeconds(seconds: number): string {
+  return formatDurationParts(seconds)
+    .map((part) => `${part.value}${part.unit}`)
+    .join('');
 }

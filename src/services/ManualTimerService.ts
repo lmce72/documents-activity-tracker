@@ -118,6 +118,15 @@ export class ManualTimerService {
 
         //  Read before the dispatch too: stopping resets the sub-state, marks included
         flags: [...state.manual.flags],
+        // 结束那一刻若还停着，把这段未闭合的暂停也补上，否则最后一段暂停会丢
+        // A pause still open at the moment of stopping is closed here, or the final stretch of
+        // paused time would be lost.
+        pauses: [
+          ...state.manual.pauses,
+          ...(state.manual.pauseStartFull.length > 0
+            ? [{ from: state.manual.pauseStartFull, to: this.deps.clock.nowFull() }]
+            : []),
+        ],
       };
 
       this.deps.history.appendManualSession(session);

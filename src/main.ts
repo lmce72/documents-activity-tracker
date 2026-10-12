@@ -25,9 +25,12 @@ import { ManualTimerService } from './services/ManualTimerService';
 import { systemClock } from './services/clock';
 import { ActivitySidebarView, VIEW_TYPE_RTT_SIDEBAR } from './ui/SidebarView';
 import { RecordsModal } from './ui/RecordsModal';
+import { ConfirmModal } from './ui/ConfirmModal';
 import { ManualNoteModal } from './ui/ManualNoteModal';
 import { ReadTimeSettingTab } from './ui/SettingsTab';
 import { installBindings, type Binding } from './ui/obsidianBinding';
+import { StatusBarMetrics } from './ui/StatusBar';
+import type { PanelId } from './core/statusMetrics';
 import { t } from './core/i18n';
 
 /** Fallback display path for the legacy data file when settings.dataFilePath is empty. */
@@ -52,6 +55,7 @@ export default class ReadTimeTrackerPlugin extends Plugin {
   private timerService!: TimerService;
   private manualService!: ManualTimerService;
   private binding: Binding | null = null;
+  private statusBar: StatusBarMetrics | null = null;
 
   /**
    * the repository actually in use.
@@ -137,6 +141,7 @@ export default class ReadTimeTrackerPlugin extends Plugin {
       plugin: this,
       service: this.timerService,
       log: this.log,
+      ownViewTypes: [VIEW_TYPE_RTT_SIDEBAR],
     });
 
     await this.timerService.recoverUnfinishedSessions();
@@ -162,6 +167,21 @@ export default class ReadTimeTrackerPlugin extends Plugin {
     this.addRibbonIcon('activity', t('openSidebar'), () => {
       void this.activateSidebar();
     });
+
+    // Status bar (bottom right). Built after the binding so the first paint already has a
+    // live store to read.
+    this.statusBar = new StatusBarMetrics({
+      el: this.addStatusBarItem(),
+      store: this.timerStore,
+      history: this.history,
+      clock: systemClock,
+      settings: () => this.settings,
+      log: this.log,
+      openPanel: (panel) => {
+        void this.openPanel(panel);
+      },
+    });
+    this.statusBar.start();
 
     this.addSettingTab(
       new ReadTimeSettingTab(this.app, this, {
@@ -213,6 +233,16 @@ export default class ReadTimeTrackerPlugin extends Plugin {
 
     //  The old build had a `view-all-records` command whose body was a single
     //  "not implemented yet" Notice. It is wired to a real panel here.
+    // 命令面板与数据看板都能触发：谁也不敢保证意外关闭不会丢会话，用户需要一个自己能按的
+    // "现在就写盘"。
+    // Reachable from the palette and from the records browser: an unexpected shutdown cannot be
+    // ruled out, so the user needs a "write it now" they can press themselves.
+    this.addCommand({
+      id: 'save-records',
+      name: t('manualSave'),
+      callback: () => this.confirmAndSave(),
+    });
+
     this.addCommand({
       id: 'view-all-records',
       name: t('cmdAllRecords'),
@@ -292,6 +322,8 @@ export default class ReadTimeTrackerPlugin extends Plugin {
    */
   override async onunload(): Promise<void> {
     try {
+      this.statusBar?.stop();
+      this.statusBar = null;
       this.binding?.destroy();
       this.binding = null;
       await this.timerService?.shutdown();
@@ -374,6 +406,68 @@ export default class ReadTimeTrackerPlugin extends Plugin {
   }
 
   /**
+   * 先确认，再保存 / confirm, then save.
+   *
+   * 保存会结束当前会话并把所有计时器停下来，属于不可撤销的动作，所以必须先问一次。
+   * Saving ends the running session and stops every timer, which cannot be undone, so it asks
+   * first.
+   */
+  private confirmAndSave(): void {
+    new ConfirmModal(this.app, {
+      title: t('manualSave'),
+      message: t('manualSaveConfirm'),
+      confirmText: t('saveRecordsNow'),
+      cancelText: t('cancel'),
+      onConfirm: () => {
+        void this.saveAllRecords();
+      },
+    }).open();
+  }
+
+  /**
+   * 保存记录并把计时器归位 / write everything down and settle the timers.
+   *
+   * 文档会话直接落盘（保存即结束），手动计时只**暂停**而不是丢弃 —— 那一段是真实发生的专注时间，
+   * 丢掉才是数据损失。
+   * The document session is closed by saving; the manual timer is only *paused*, never
+   * discarded — that stretch really happened and throwing it away would be the data loss.
+   */
+  private async saveAllRecords(): Promise<void> {
+    try {
+      if (this.hasActiveSession()) {
+        await this.timerService.saveCurrent('save');
+      }
+      if (this.manualService.isActive()) {
+        this.manualService.pause();
+      }
+      await this.history.flushNow();
+      this.refreshSidebar();
+      new Notice(t('recordsSaved'), 3000);
+      this.log.info('[RTT] 手动保存记录 / manual save completed');
+    } catch (error) {
+      this.log.warn('[RTT] 手动保存失败 / manual save failed:', error);
+      new Notice(String(error), 6000);
+    }
+  }
+
+  /**
+   * Reveal the sidebar on a given panel / 打开侧栏并切到指定面板.
+   * The status bar's items use this so a duration leads to the panel it belongs to.
+   */
+  private async openPanel(panel: PanelId): Promise<void> {
+    try {
+      const opened = await this.activateSidebar();
+      if (!opened) return;
+      for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_RTT_SIDEBAR)) {
+        const view = leaf.view;
+        if (view instanceof ActivitySidebarView) view.showPanel(panel);
+      }
+    } catch (error) {
+      this.log.warn('[RTT] 打开面板失败 / failed to open the panel:', error);
+    }
+  }
+
+  /**
    * open the reading-records browser.
    *
    *                 the file to preselect; null follows the active file
@@ -386,6 +480,7 @@ export default class ReadTimeTrackerPlugin extends Plugin {
         settings: () => this.settings,
         log: this.log,
         onChanged: () => this.refreshSidebar(),
+        onSaveRecords: () => this.confirmAndSave(),
         initialFilePath: filePath ?? this.app.workspace.getActiveFile()?.path ?? null,
       }).open();
     } catch (error) {

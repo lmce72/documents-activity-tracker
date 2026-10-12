@@ -9,6 +9,7 @@
 import { PluginSettingTab, Setting, type App, type Plugin } from 'obsidian';
 
 import { t } from '../core/i18n';
+import { metricById, normalizeSelection, optionsForSlot } from '../core/statusMetrics';
 import type { PluginSettings } from '../core/types';
 
 /** Settings tab dependencies. */
@@ -109,6 +110,18 @@ export class ReadTimeSettingTab extends PluginSettingTab {
         }),
       );
 
+    // 失焦是否算作阅读 / whether out-of-window time is reading
+    new Setting(containerEl)
+      .setName(t('settingCountUnfocused'))
+      .setDesc(t('settingCountUnfocusedDesc'))
+      .addToggle((toggle) =>
+        toggle
+          .setValue(settings.countUnfocusedAsReading !== false)
+          .onChange(async (value) => {
+            await this.deps.save({ countUnfocusedAsReading: value });
+          }),
+      );
+
     // display ──────────────────────────────────────────────────
     new Setting(containerEl)
       .setName(t('displayMode'))
@@ -145,6 +158,46 @@ export class ReadTimeSettingTab extends PluginSettingTab {
           await this.deps.save({ useIconize: value });
         }),
       );
+
+    // status bar ────────────────────────────────────────────────
+    //
+    //  Four dropdowns over one shared selection. Each offers everything except what the
+    //  other slots hold, so the same duration cannot be pinned twice — and re-rendering the
+    //  whole tab on every change is what keeps the other three in step.
+    new Setting(containerEl)
+      .setName(t('settingStatusBar'))
+      .setDesc(t('settingStatusBarDesc'))
+      .setHeading();
+
+    // 桌面端的纯图标模式；移动端不看这个开关（那里始终只有一个图标）
+    // The desktop icon-only mode. Mobile ignores it — there is only ever one icon there.
+    new Setting(containerEl)
+      .setName(t('settingStatusBarIcons'))
+      .setDesc(t('settingStatusBarIconsDesc'))
+      .addToggle((toggle) =>
+        toggle.setValue(settings.statusBarIconsOnly === true).onChange(async (value) => {
+          await this.deps.save({ statusBarIconsOnly: value });
+        }),
+      );
+
+    const slots = normalizeSelection(settings.statusBarMetrics);
+    slots.forEach((value, index) => {
+      new Setting(containerEl)
+        .setName(t('statusBarSlot').replace('{n}', String(index + 1)))
+        .addDropdown((dropdown) => {
+          dropdown.addOption('', t('statusBarNone'));
+          for (const id of optionsForSlot(slots, index)) {
+            const metric = metricById(id);
+            if (metric) dropdown.addOption(id, t(metric.labelKey));
+          }
+          dropdown.setValue(value).onChange(async (next) => {
+            const updated = [...slots];
+            updated[index] = next;
+            await this.deps.save({ statusBarMetrics: updated });
+            this.display();
+          });
+        });
+    });
 
     // filtering ────────────────────────────────────────────────
     new Setting(containerEl)

@@ -12,6 +12,7 @@ import { shouldTrackFile } from '../src/core/filters';
 import {
   buildFileRecords,
   getAllTodaySeconds,
+  getDayChannelSeconds,
   getFileEvents,
   getTodaySeconds,
   getTodaySessionCount,
@@ -93,6 +94,183 @@ describe('buildFileRecords', () => {
   });
 });
 
+/**
+ * 被取代的未闭合会话 / superseded, never-closed sessions.
+ *
+ * The service skips writing a save event for a session below `minReadSeconds`, which leaves
+ * a lone `start` in the log. Treating that as a still-running session and extrapolating it
+ * to `now` invents every hour since. Measured on real data before the fix: a vault with 6.3
+ * hours of actual use reported 69.8 hours, and two sessions whose combined span was under
+ * two seconds were credited with 12.6 hours.
+ */
+describe('被取代的未闭合会话不外推 / superseded sessions must not extrapolate', () => {
+  const DAY = '2026-09-07';
+  const NOW = new Date('2026-09-07T15:00:00').getTime();
+
+  it('被后续 start 取代的会话结束于那一刻，而不是外推到 now', () => {
+    const events = [
+      { time: '2026-09-07 09:00:00', type: 'start', file: 'Notes/a.md', state: 'tracking' },
+      { time: '2026-09-07 09:00:10', type: 'start', file: 'Notes/b.md', state: 'tracking' },
+      { time: '2026-09-07 09:00:20', type: 'auto-save', file: 'Notes/b.md', state: 'saved' },
+    ] as TimelineEvent[];
+
+    const records = buildFileRecords(events, NOW, DAY);
+
+    // 10 秒，而不是 09:00 → 15:00 的 6 小时
+    expect(records['Notes/a.md']!.totalReadTime).toBe(10);
+  });
+
+  it('switch 离开即结束该会话', () => {
+    const events = [
+      { time: '2026-09-07 09:00:00', type: 'start', file: 'Notes/a.md', state: 'tracking' },
+      { time: '2026-09-07 09:00:30', type: 'switch', from: 'Notes/a.md', to: 'Notes/b.md', fromState: 'tracking', toState: 'tracking' },
+      { time: '2026-09-07 09:00:40', type: 'start', file: 'Notes/b.md', state: 'tracking' },
+      { time: '2026-09-07 09:00:50', type: 'auto-save', file: 'Notes/b.md', state: 'saved' },
+    ] as TimelineEvent[];
+
+    const records = buildFileRecords(events, NOW, DAY);
+    expect(records['Notes/a.md']!.totalReadTime).toBe(30);
+  });
+
+  it('真实形态回归：两个存活不到 2 秒的会话不能变成小时级', () => {
+    // 取自真实库的形态 / the shape observed in a real database
+    const events = [
+      { time: '2026-09-07 14:20:53', type: 'start', file: 'Notes/a.md', state: 'tracking' },
+      { time: '2026-09-07 14:20:59', type: 'switch', from: 'Notes/a.md', to: 'Notes/b.md', fromState: 'tracking', toState: 'tracking' },
+      { time: '2026-09-07 14:20:59', type: 'start', file: 'Notes/b.md', state: 'tracking' },
+      { time: '2026-09-07 14:21:00', type: 'switch', from: 'Notes/b.md', to: 'Notes/c.md', fromState: 'tracking', toState: 'tracking' },
+      { time: '2026-09-07 16:20:02', type: 'start', file: 'Notes/a.md', state: 'tracking' },
+      { time: '2026-09-07 16:20:10', type: 'discard', file: 'Notes/a.md' },
+    ] as TimelineEvent[];
+
+    const records = buildFileRecords(events, NOW, DAY);
+    const a = records['Notes/a.md']!;
+
+    // 修复前这里是 6.3 小时 / this used to read 6.3 hours
+    expect(a.totalReadTime).toBeLessThan(60);
+    expect(a.readTimeToday).toBeLessThan(60);
+  });
+
+  it('被收尾的会话在 readTimeLine 里留下尾段，热力图与总看板才量得到', () => {
+    // 一个只有 start 的会话在会话映射里只有一个时刻；而所有区间遍历都靠成对时刻夹出
+    // 区间，于是最后一段会被整个漏掉 —— 热力图画不出、总看板量不到。
+    // A start-only session holds a single timestamp, and every interval walk needs a pair,
+    // so its final stretch vanished from both the heatmaps and the overview.
+    const events = [
+      { time: '2026-09-07 09:00:00', type: 'start', file: 'Notes/a.md', state: 'tracking' },
+      { time: '2026-09-07 09:00:06', type: 'switch', from: 'Notes/a.md', to: 'Notes/b.md', fromState: 'tracking', toState: 'tracking' },
+      { time: '2026-09-07 09:00:06', type: 'start', file: 'Notes/b.md', state: 'tracking' },
+      { time: '2026-09-07 09:00:20', type: 'auto-save', file: 'Notes/b.md', state: 'saved' },
+    ] as TimelineEvent[];
+
+    const records = buildFileRecords(events, NOW, DAY);
+    const a = records['Notes/a.md']!;
+
+    // 会话映射里必须有两个时刻，才能夹出 09:00:00→09:00:06 这一段
+    expect(a.readTimeLine[0]!['2026-09-07 09:00:06']).toBe('saved');
+    expect(Object.keys(a.readTimeLine[0]!).length).toBe(2);
+    expect(a.totalReadTime).toBe(6);
+  });
+
+  it('只有最后一个会话会被外推到 now', () => {
+    const events = [
+      { time: '2026-09-07 09:00:00', type: 'start', file: 'Notes/a.md', state: 'tracking' },
+      { time: '2026-09-07 10:00:00', type: 'start', file: 'Notes/b.md', state: 'tracking' },
+    ] as TimelineEvent[];
+
+    const records = buildFileRecords(events, NOW, DAY);
+
+    // a 结束于 b 开始的那一刻，只有 b 一直算到 now
+    expect(records['Notes/a.md']!.totalReadTime).toBe(3600);
+    expect(records['Notes/b.md']!.totalReadTime).toBe(5 * 3600);
+  });
+});
+
+describe('今日口径与累计口径不可混用 / today scope vs all-time scope', () => {
+  const TODAY = '2026-09-07';
+  const YESTERDAY = '2026-09-06';
+  const NOW = new Date('2026-09-07T12:00:00').getTime();
+
+  /** One session with a four-minute unfocused stretch. */
+  const day = (d: string): TimelineEvent[] =>
+    [
+      { time: `${d} 09:00:00`, type: 'start', file: 'Notes/a.md', state: 'tracking' },
+      { time: `${d} 09:01:00`, type: 'blur', file: 'Notes/a.md', state: 'tracking', reason: 'window-blur' },
+      { time: `${d} 09:05:00`, type: 'focus', file: 'Notes/a.md', state: 'tracking', reason: 'window-focus' },
+      { time: `${d} 09:05:00`, type: 'auto-save', file: 'Notes/a.md', state: 'saved' },
+    ] as TimelineEvent[];
+
+  it('今日失焦单独累计，累计失焦跨天', () => {
+    const records = buildFileRecords([...day(YESTERDAY), ...day(TODAY)], NOW, TODAY);
+    const rec = records['Notes/a.md']!;
+
+    // 每天 1 分钟窗口内 + 4 分钟失焦 / one minute in-window plus four out-of-window per day
+    expect(rec.unfocusedReadTimeToday).toBe(4 * 60);
+    expect(rec.unfocusedReadTime).toBe(8 * 60);
+    expect(rec.readTimeToday).toBe(5 * 60);
+    expect(rec.totalReadTime).toBe(10 * 60);
+  });
+
+  it('今日口径里，失焦部分永远不超过整体', () => {
+    // 混用两种口径时，今日列表会打出"今日 5 分钟 · 脱离窗口 8 分钟"这种局部大于整体。
+    // Pairing a today figure with an all-time one is how a row ends up reading
+    // "today 5 min - out of window 8 min".
+    const records = buildFileRecords([...day(YESTERDAY), ...day(TODAY)], NOW, TODAY);
+    const rec = records['Notes/a.md']!;
+    expect(rec.unfocusedReadTimeToday).toBeLessThanOrEqual(rec.readTimeToday);
+    expect(rec.unfocusedReadTime).toBeLessThanOrEqual(rec.totalReadTime);
+  });
+
+  it('只有今天时两个口径相等', () => {
+    const records = buildFileRecords(day(TODAY), NOW, TODAY);
+    const rec = records['Notes/a.md']!;
+    expect(rec.unfocusedReadTimeToday).toBe(rec.unfocusedReadTime);
+    expect(rec.readTimeToday).toBe(rec.totalReadTime);
+  });
+});
+
+describe('失焦是否计入阅读 / counting out-of-window time as reading', () => {
+  const TODAY = '2026-09-07';
+  const NOW = new Date('2026-09-07T12:00:00').getTime();
+  const session = [
+    { time: `${TODAY} 09:00:00`, type: 'start', file: 'Notes/a.md', state: 'tracking' },
+    { time: `${TODAY} 09:01:00`, type: 'blur', file: 'Notes/a.md', state: 'tracking', reason: 'window-blur' },
+    { time: `${TODAY} 09:05:00`, type: 'focus', file: 'Notes/a.md', state: 'tracking', reason: 'window-focus' },
+    // 真实的保存事件自带计数器快照，getAllTodaySeconds 就是读它
+    // A real save event carries the counter snapshot, which is what getAllTodaySeconds reads
+    {
+      time: `${TODAY} 09:05:00`,
+      type: 'auto-save',
+      file: 'Notes/a.md',
+      state: 'saved',
+      activeSeconds: 60,
+      unfocusedSeconds: 240,
+    },
+  ] as TimelineEvent[];
+
+  it('默认计入：阅读 = 窗口内 + 脱离窗口', () => {
+    const rec = buildFileRecords(session, NOW, TODAY)['Notes/a.md']!;
+    expect(rec.readTimeToday).toBe(5 * 60);
+  });
+
+  it('关闭后脱离窗口不计入任何时长，但仍被记录', () => {
+    const rec = buildFileRecords(session, NOW, TODAY, { countUnfocused: false })['Notes/a.md']!;
+
+    // 只有 1 分钟窗口内计入 / only the in-window minute counts
+    expect(rec.readTimeToday).toBe(60);
+    expect(rec.totalReadTime).toBe(60);
+    // 但那段失焦仍然记着，好让"脱离窗口"那张卡照常显示
+    // The stretch is still recorded, so the out-of-window card keeps working
+    expect(rec.unfocusedReadTime).toBe(4 * 60);
+    expect(rec.unfocusedReadTimeToday).toBe(4 * 60);
+  });
+
+  it('关闭后，今日汇总同样不含失焦', () => {
+    expect(getAllTodaySeconds(session, [], TODAY, true)).toBe(5 * 60);
+    expect(getAllTodaySeconds(session, [], TODAY, false)).toBe(60);
+  });
+});
+
 describe('removeFileEvents', () => {
   it('移除该文件的全部事件', () => {
     const events = loadEvents();
@@ -154,18 +332,25 @@ describe('今日统计 / today figures', () => {
     expect(getTodaySeconds([], file, 'a.md', TODAY)).toBe(0);
   });
 
-  it('getTodaySessionCount 统计已结算轮次并加上进行中的一轮', () => {
+  it('getTodaySessionCount 返回轮号：已结算轮次加一', () => {
     const events: TimelineEvent[] = [
       { time: `${TODAY} 08:00:00`, type: 'save', file: 'a.md', state: 'saved' },
       { time: `${TODAY} 09:00:00`, type: 'auto-save', file: 'a.md', state: 'saved' },
     ];
-    expect(getTodaySessionCount(events, null, 'a.md', TODAY)).toBe(2);
-
-    expect(getTodaySessionCount(events, fakeFile(), 'a.md', TODAY)).toBe(3);
+    expect(getTodaySessionCount(events, 'a.md', TODAY)).toBe(3);
   });
 
-  it('毫无记录时至少返回 1（与原实现的 || 1 兜底一致）', () => {
-    expect(getTodaySessionCount([], null, 'a.md', TODAY)).toBe(1);
+  it('只数当天、且只数这个文件', () => {
+    const events: TimelineEvent[] = [
+      { time: `${TODAY} 08:00:00`, type: 'save', file: 'a.md', state: 'saved' },
+      { time: '2026-09-06 08:00:00', type: 'save', file: 'a.md', state: 'saved' },
+      { time: `${TODAY} 09:00:00`, type: 'save', file: 'b.md', state: 'saved' },
+    ];
+    expect(getTodaySessionCount(events, 'a.md', TODAY)).toBe(2);
+  });
+
+  it('毫无记录时是第 1 轮', () => {
+    expect(getTodaySessionCount([], 'a.md', TODAY)).toBe(1);
   });
 
   it('getAllTodaySeconds 汇总全库并忽略 switch 事件', () => {
@@ -175,6 +360,72 @@ describe('今日统计 / today figures', () => {
       { time: `${TODAY} 08:40:00`, type: 'switch', from: 'a.md', to: 'b.md' },
     ];
     expect(getAllTodaySeconds(events, [], TODAY)).toBe(50);
+  });
+});
+
+describe('按渠道拆分今日 / today split by channel', () => {
+  const TODAY = '2026-09-07';
+
+  it('保存事件按 active / unfocused 拆开，剩下的 duration 归暂停', () => {
+    const events: TimelineEvent[] = [
+      {
+        time: `${TODAY} 09:30:00`,
+        type: 'auto-save',
+        file: 'a.md',
+        state: 'saved',
+        // 墙钟 1800 = 专注 1500 + 空窗 200 + 暂停 100
+        duration: 1800,
+        activeSeconds: 1500,
+        unfocusedSeconds: 200,
+      },
+    ];
+
+    const channels = getDayChannelSeconds(events, [], TODAY);
+    expect(channels.activeSeconds).toBe(1500);
+    expect(channels.unfocusedSeconds).toBe(200);
+    expect(channels.pausedSeconds).toBe(100);
+  });
+
+  it('没有 duration 的旧事件不猜暂停时间', () => {
+    const events: TimelineEvent[] = [
+      { time: `${TODAY} 09:30:00`, type: 'save', file: 'a.md', state: 'saved', activeSeconds: 60 },
+    ];
+
+    const channels = getDayChannelSeconds(events, [], TODAY);
+    expect(channels.activeSeconds).toBe(60);
+    expect(channels.pausedSeconds).toBe(0);
+  });
+
+  it('只算当天，且把进行中的会话一并计入', () => {
+    const events: TimelineEvent[] = [
+      { time: '2026-09-06 09:00:00', type: 'save', file: 'a.md', state: 'saved', duration: 999, activeSeconds: 999 },
+      { time: `${TODAY} 08:00:00`, type: 'switch', from: 'a.md', to: 'b.md' },
+    ];
+    const live = fakeFile({ activeSeconds: 60, unfocusedSeconds: 10, pausedSeconds: 5 });
+
+    const channels = getDayChannelSeconds(events, [live], TODAY);
+    expect(channels.activeSeconds).toBe(60);
+    expect(channels.unfocusedSeconds).toBe(10);
+    expect(channels.pausedSeconds).toBe(5);
+  });
+
+  it('阅读 + 非阅读恒等于总时长', () => {
+    const events: TimelineEvent[] = [
+      {
+        time: `${TODAY} 09:30:00`,
+        type: 'save',
+        file: 'a.md',
+        state: 'saved',
+        duration: 900,
+        activeSeconds: 700,
+        unfocusedSeconds: 120,
+      },
+    ];
+    const channels = getDayChannelSeconds(events, [], TODAY);
+    const read = channels.activeSeconds;
+    const notRead = channels.unfocusedSeconds + channels.pausedSeconds;
+
+    expect(read + notRead).toBe(900);
   });
 });
 
@@ -237,6 +488,20 @@ describe('shouldTrackFile', () => {
     };
     expect(shouldTrackFile('Daily/2026-09-07.md', regex)).toBe(false);
     expect(shouldTrackFile('Notes/a.md', regex)).toBe(true);
+  });
+
+  it('非 markdown 文件永不追踪，白名单也不行', () => {
+    // 实测：打开画布/Base 时 getActiveFile() 会把它们当"当前文件"交回来，
+    // 而白名单按文件夹前缀匹配，于是白名单文件夹里的画布直接过关被"追踪"了。
+    // Measured: focusing a canvas/base handed the tracker that path, and a folder-prefix
+    // whitelist waved it through.
+    expect(shouldTrackFile('未命名.canvas', { ...DEFAULT_SETTINGS, filterMode: 'blacklist', filterPatterns: '' })).toBe(false);
+    expect(shouldTrackFile('20-Inbox储件箱/0-起草或撰写中/未命名.base', whitelist)).toBe(false);
+    expect(shouldTrackFile('未命名.canvas', whitelist)).toBe(false);
+    // 黑名单默认全追踪，但非 markdown 依然不追踪
+    expect(shouldTrackFile('some.canvas', { ...DEFAULT_SETTINGS, filterPatterns: '' })).toBe(false);
+    // 扩展名大小写不敏感
+    expect(shouldTrackFile('Notes/a.MD', { ...DEFAULT_SETTINGS, filterPatterns: '' })).toBe(true);
   });
 });
 

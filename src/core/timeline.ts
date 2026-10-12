@@ -10,6 +10,7 @@
  *
  */
 
+import { isPluginViewKey, pluginViewLabel } from './activePath';
 import { UNFOCUSED_ATTRIBUTION_CAP_SECONDS } from './constants';
 import { calculateSessionDuration } from './session';
 import { parseSessionStartTime, todayStr } from './time';
@@ -70,6 +71,7 @@ export function computeSessionDurations(
   events: readonly TimelineEvent[],
   nowMs: number | null,
   isOpen: boolean,
+  endBoundMs: number | null = null,
 ): SessionDurations {
   const empty: SessionDurations = {
     activeSeconds: 0,
@@ -101,9 +103,13 @@ export function computeSessionDurations(
     if (next) {
       endMs = parseSessionStartTime(next.time)?.getTime() ?? null;
     } else if (isOpen && nowMs !== null) {
-
       endMs = nowMs;
       extrapolated = true;
+    } else if (endBoundMs !== null) {
+      // A session that never received a closing event, but which a later event superseded.
+      // Ending the tail here is measured evidence; extrapolating it to `now` would invent
+      // whatever time passed since — hours, for a session that ended in the morning.
+      endMs = endBoundMs;
     }
     if (endMs === null) continue;
 
@@ -153,17 +159,28 @@ export function buildFileRecords(
   timeline: readonly TimelineEvent[],
   nowMs: number,
   today: string = todayStr(),
+  options: { countUnfocused?: boolean } = {},
 ): Record<string, FileRecord> {
+  //  Reading is "in-window plus out-of-window" unless the user turned that off. The
+  //  out-of-window figures are still collected either way — the toggle changes what counts
+  //  toward a total, never what is recorded or shown on its own.
+  const countUnfocused = options.countUnfocused !== false;
   const fileRecords: Record<string, FileRecord> = {};
   if (timeline.length === 0) return fileRecords;
 
   interface OpenSession {
     filePath: string;
     events: TimelineEvent[];
+    /**
+     * When the session was observed to end, i.e. the timestamp of the event that superseded
+     * it; null while it is still the running session.
+     */
+    endedAt: string | null;
   }
   const fileSessions: Record<string, OpenSession[]> = {};
 
-  const closeSession = (session: OpenSession): void => {
+  const closeSession = (session: OpenSession, endedAt: string | null): void => {
+    session.endedAt = endedAt;
     (fileSessions[session.filePath] ??= []).push(session);
   };
 
@@ -175,9 +192,11 @@ export function buildFileRecords(
     if (!filePath) continue;
 
     if (event.type === 'start') {
-
-      if (currentSession) closeSession(currentSession);
-      currentSession = { filePath: event.file, events: [event] };
+      // A new session begins, so whatever was running ended at this instant. Recording
+      // *when* it ended is what keeps a superseded session from being mistaken for a live
+      // one and extrapolated to `now` (see computeSessionDurations).
+      if (currentSession) closeSession(currentSession, event.time);
+      currentSession = { filePath: event.file, events: [event], endedAt: null };
       continue;
     }
 
@@ -190,22 +209,40 @@ export function buildFileRecords(
       currentSession.events.push(event);
     }
 
-    if (isSaveLike(event) || event.type === 'discard') {
+    // A switch AWAY from the running file ends that session.
+    //
+    // The service normally writes an auto-save first, but that save is skipped when the
+    // session falls below `minReadSeconds`, leaving the switch as the only evidence that
+    // the session ended. Without this, such a session stays "unclosed" for the rest of the
+    // day and its tail is extrapolated to `now` — measured on real data: two sessions whose
+    // combined span was under two seconds were reported as 12.6 hours.
+    const switchedAway =
+      event.type === 'switch' &&
+      event.from === currentSession.filePath &&
+      event.to !== currentSession.filePath;
+
+    if (isSaveLike(event) || event.type === 'discard' || switchedAway) {
       const belongsToCurrent =
-        event.type === 'switch' ? false : event.file === currentSession.filePath;
+        event.type === 'switch' ? switchedAway : event.file === currentSession.filePath;
       if (belongsToCurrent) {
-        if (isSaveLike(event)) closeSession(currentSession);
-        currentSession = null;
+        // discard drops the session wholesale, so it never needs an end bound.
+        if (event.type === 'discard') currentSession = null;
+        else {
+          closeSession(currentSession, event.time);
+          currentSession = null;
+        }
       }
     }
   }
 
-  if (currentSession) closeSession(currentSession);
+  // Only this last session is genuinely still running, and only it may be extrapolated.
+  if (currentSession) closeSession(currentSession, null);
 
   for (const [filePath, sessions] of Object.entries(fileSessions)) {
     const readTimeLine: SessionStateMap[] = [];
     let totalReadTime = 0;
     let unfocusedReadTime = 0;
+    let unfocusedReadTimeToday = 0;
     let readTimeToday = 0;
     let lastReadAt = '';
     let hasAbnormalSession = false;
@@ -214,7 +251,6 @@ export function buildFileRecords(
       if (session.events.length === 0) continue;
 
       const sessionObj: SessionStateMap = {};
-      let isUnfinishedSession = true;
 
       for (const event of session.events) {
         const state = (event as { state?: string }).state;
@@ -222,15 +258,24 @@ export function buildFileRecords(
           sessionObj[event.time] = state as SessionStateMap[string];
         } else if (event.type === 'save' || event.type === 'auto-save') {
           sessionObj[event.time] = 'saved';
-          isUnfinishedSession = false;
         } else if (event.type === 'discard') {
 
           //  The original wrote 'discarded' here, but this branch is unreachable: a session
           //  closed by discard is dropped wholesale and never enters readTimeLine, so the
           //  value is never read. 'saved' keeps it inside SessionState's domain.
           sessionObj[event.time] = 'saved';
-          isUnfinishedSession = false;
         }
+      }
+
+      //  A session that ended because a later event superseded it carries no closing entry
+      //  of its own, so `sessionObj` holds a single timestamp. Every interval walk needs a
+      //  pair, so the final stretch would be invisible: missing from the heatmaps, and
+      //  missing from the overview's ledgers — measured, a six-second canvas session that
+      //  `computeSessionDurations` counted correctly showed as 0 in the overview.
+      //  Recording the observed end the way a save does closes that gap, and keeps the two
+      //  accounting paths agreeing.
+      if (session.endedAt !== null && !(session.endedAt in sessionObj)) {
+        sessionObj[session.endedAt] = 'saved';
       }
 
       const keys = Object.keys(sessionObj);
@@ -242,30 +287,47 @@ export function buildFileRecords(
       //  "extrapolate only for a lone start" special case: once the service logs
       //  blur/focus/pause/resume, an in-progress session is no longer a lone start and
       //  that special case would report 0 for it.
+      //
+      //  `isOpen` is decided by `endedAt`, not by whether a save event was seen. A session
+      //  with no closing event that a later event superseded is finished — it just was not
+      //  worth a save (below `minReadSeconds`) — and must not be extrapolated to `now`.
       const durations = computeSessionDurations(
         session.events,
         nowMs,
-        isUnfinishedSession,
+        session.endedAt === null,
+        session.endedAt ? (parseSessionStartTime(session.endedAt)?.getTime() ?? null) : null,
       );
       if (durations.abnormal) hasAbnormalSession = true;
 
-      //  Total reading time = in-window + out-of-window
-      const sessionDuration = durations.activeSeconds + durations.unfocusedSeconds;
+      //  Total reading time = in-window + out-of-window, the second half only when the user
+      //  counts it as reading.
+      const sessionDuration =
+        durations.activeSeconds + (countUnfocused ? durations.unfocusedSeconds : 0);
       totalReadTime += sessionDuration;
       unfocusedReadTime += durations.unfocusedSeconds;
 
       const sorted = keys.slice().sort();
       const firstTime = sorted[0]!;
-      if (firstTime.startsWith(today)) readTimeToday += sessionDuration;
+      if (firstTime.startsWith(today)) {
+        readTimeToday += sessionDuration;
+        // Scoped to today like `readTimeToday`, so a today-only view never pairs a
+        // today figure with an all-time one.
+        unfocusedReadTimeToday += durations.unfocusedSeconds;
+      }
 
       const lastTime = sorted[sorted.length - 1]!;
       if (lastTime > lastReadAt) lastReadAt = lastTime;
     }
 
     fileRecords[filePath] = {
-      fileName: (filePath.split('/').pop() ?? filePath).replace(/\.md$/, ''),
+      //  Plugin views have no filename; naming them here means every consumer (lists, the
+      //  records browser, its search box, modal headings) reads well without special cases.
+      fileName: isPluginViewKey(filePath)
+        ? pluginViewLabel(filePath)
+        : (filePath.split('/').pop() ?? filePath).replace(/\.md$/, ''),
       totalReadTime,
       unfocusedReadTime,
+      unfocusedReadTimeToday,
       readTimeToday,
       lastReadAt: lastReadAt.slice(0, 10),
       readTimeLine,
@@ -310,6 +372,7 @@ export function getTodaySeconds(
   file: TimerFileState | null | undefined,
   filePath: string,
   today: string = todayStr(),
+  countUnfocused = true,
 ): number {
   let total = 0;
 
@@ -318,27 +381,33 @@ export function getTodaySeconds(
     if (event.file !== filePath || !event.time.startsWith(today)) continue;
     if (isSaveLike(event)) {
       const e = event as { activeSeconds?: number; unfocusedSeconds?: number };
-      total += (e.activeSeconds ?? 0) + (e.unfocusedSeconds ?? 0);
+      total += (e.activeSeconds ?? 0) + (countUnfocused ? (e.unfocusedSeconds ?? 0) : 0);
     }
   }
 
   if (file?.sessionStartTime?.startsWith(today)) {
-    total += file.activeSeconds + file.unfocusedSeconds;
+    total += file.activeSeconds + (countUnfocused ? file.unfocusedSeconds : 0);
   }
 
   return total;
 }
 
 /**
- * Today's session count for one file.
+ * 该文件今天的第几轮 / which round of the day this file is on.
+ *
+ * 返回的是**轮号**（从 1 起），不是"已完成的轮数"：已结算的轮次加一。正在计时时那加的一轮就是眼
+ * 下这一轮，没在计时时它就是接下来要开始的那一轮 —— 两种情况必须给出同一个数，否则按下开始的
+ * 瞬间数字会跳一下（3 → 4），看上去像丢了一轮。
+ *
+ * The **round number** (1-based), not a count of finished rounds: settled rounds plus one. While a
+ * session runs that one is the round in progress; while nothing runs it is the round about to start.
+ * Both cases have to name the same number, or the figure jumps the moment the user presses start
+ * (3 → 4) and reads as a lost round.
  */
 export function getTodaySessionCount(
   timeline: readonly TimelineEvent[],
-  file: TimerFileState | null | undefined,
   filePath: string,
   today: string = todayStr(),
-  statusTracking = 'tracking',
-  statusPaused = 'paused',
 ): number {
   let count = 0;
 
@@ -348,11 +417,11 @@ export function getTodaySessionCount(
     if (isSaveLike(event)) count++;
   }
 
-  if (file && (file.status === statusTracking || file.status === statusPaused)) {
-    count++;
-  }
-
-  return count || 1;
+  //  会话状态不再参与：轮号只由已结算的事件决定，于是"正在跑"和"还没开始"自动给出同一个数 ——
+  //  不必再区分，也就不会出现两处算法各自漂移。
+  //  The session state no longer takes part: the round number comes only from settled events, so
+  //  "running" and "not started yet" agree by construction rather than by two branches kept in step.
+  return count + 1;
 }
 
 /**
@@ -363,6 +432,7 @@ export function getAllTodaySeconds(
   timeline: readonly TimelineEvent[],
   files: Iterable<TimerFileState>,
   today: string = todayStr(),
+  countUnfocused = true,
 ): number {
   let total = 0;
 
@@ -370,17 +440,80 @@ export function getAllTodaySeconds(
     if (event.type === 'switch') continue;
     if (event.time.startsWith(today) && isSaveLike(event)) {
       const e = event as { activeSeconds?: number; unfocusedSeconds?: number };
-      total += (e.activeSeconds ?? 0) + (e.unfocusedSeconds ?? 0);
+      total += (e.activeSeconds ?? 0) + (countUnfocused ? (e.unfocusedSeconds ?? 0) : 0);
     }
   }
 
   for (const file of files) {
     if (file.sessionStartTime?.startsWith(today)) {
-      total += file.activeSeconds + file.unfocusedSeconds;
+      total += file.activeSeconds + (countUnfocused ? file.unfocusedSeconds : 0);
     }
   }
 
   return total;
+}
+
+/**
+ * 某一天三种渠道的秒数 / one day's seconds, split by channel.
+ *
+ * 统计卡要把"今日总时长"拆成阅读与非阅读，而 `getAllTodaySeconds` 只给合计，所以这里按渠道返回。
+ * 两个来源与它一致：已结算的保存事件，以及正在进行中的会话（其尾段尚未落盘）。
+ *
+ * The stat grid has to split "today total" into reading and non-reading, and
+ * `getAllTodaySeconds` only yields the sum, so this returns the channels. Same two sources as
+ * it: settled save events plus the session still in progress (whose tail is not on disk yet).
+ */
+export interface DayChannelSeconds {
+  /** 窗口内专注 / in-window focused seconds */
+  activeSeconds: number;
+  /** 脱离窗口 / out-of-window seconds */
+  unfocusedSeconds: number;
+  /** 暂停 / paused seconds */
+  pausedSeconds: number;
+}
+
+export function getDayChannelSeconds(
+  timeline: readonly TimelineEvent[],
+  files: Iterable<TimerFileState>,
+  day: string = todayStr(),
+): DayChannelSeconds {
+  const totals: DayChannelSeconds = {
+    activeSeconds: 0,
+    unfocusedSeconds: 0,
+    pausedSeconds: 0,
+  };
+
+  for (const event of timeline) {
+    if (event.type === 'switch' || event.type === 'discard') continue;
+    if (!event.time.startsWith(day) || !isSaveLike(event)) continue;
+
+    const e = event as {
+      activeSeconds?: number;
+      unfocusedSeconds?: number;
+      duration?: number;
+    };
+    const active = e.activeSeconds ?? 0;
+    const unfocused = e.unfocusedSeconds ?? 0;
+
+    totals.activeSeconds += active;
+    totals.unfocusedSeconds += unfocused;
+
+    //  duration 是这次会话的墙钟总时长，减去两条已知渠道，剩下的就是暂停；旧事件没有
+    //  duration，按"没有暂停"处理，不猜。
+    //  `duration` is the session's wall clock, so whatever is left after the two known
+    //  channels is paused time. Older events carry no `duration` and are treated as having no
+    //  paused part rather than being guessed at.
+    totals.pausedSeconds += Math.max(0, (e.duration ?? active + unfocused) - active - unfocused);
+  }
+
+  for (const file of files) {
+    if (!file.sessionStartTime?.startsWith(day)) continue;
+    totals.activeSeconds += file.activeSeconds;
+    totals.unfocusedSeconds += file.unfocusedSeconds;
+    totals.pausedSeconds += file.pausedSeconds;
+  }
+
+  return totals;
 }
 
 /**

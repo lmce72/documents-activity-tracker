@@ -10,6 +10,7 @@
  */
 
 import { DEFAULT_SETTINGS } from './defaults';
+import { normalizeSelection } from './statusMetrics';
 import type { PluginSettings } from './types';
 
 /**
@@ -48,6 +49,12 @@ function coerce<K extends keyof PluginSettings>(
     const num = typeof raw === 'number' ? raw : Number(raw);
     return (Number.isFinite(num) ? num : fallback) as PluginSettings[K];
   }
+  //  Arrays need their own branch: without it an array-valued setting falls through to the
+  //  string check, never matches, and silently reverts to the default on every load — the
+  //  user's choice would appear to save and then be gone next launch.
+  if (Array.isArray(fallback)) {
+    return (Array.isArray(raw) ? raw : fallback) as PluginSettings[K];
+  }
   return (typeof raw === 'string' ? raw : fallback) as PluginSettings[K];
 }
 
@@ -70,6 +77,14 @@ export function mergeSettings(loaded: unknown): PluginSettings {
   }
 
   merged.idleTimeout = normalizeIdleTimeoutSeconds(source.idleTimeout);
+  //  The status-bar slots come from a JSON file a user may have hand-edited, so unknown ids
+  //  and duplicates are dropped and the array is padded to a fixed width.
+  //  Only a real array from disk is normalised. Passing `undefined` through would produce
+  //  four empty slots and wipe the default selection — the status bar then renders nothing on
+  //  every install that predates this setting.
+  merged.statusBarMetrics = Array.isArray(source.statusBarMetrics)
+    ? normalizeSelection(source.statusBarMetrics)
+    : [...DEFAULT_SETTINGS.statusBarMetrics];
   return merged;
 }
 
@@ -96,4 +111,17 @@ export function isDocumentRecordingEnabled(settings: PluginSettings): boolean {
     settings.documentTrackingEnabled !== false &&
     settings.manualRecordDocActivity !== false
   );
+}
+
+/**
+ * Whether out-of-window stretches count toward reading totals.
+ *
+ * Reading is "in-window plus out-of-window" by default. Turning this off leaves the
+ * stretches recorded and displayed but keeps them out of every total, for when a note simply
+ * stayed open while the user was in another application.
+ *
+ * Defaults to on, so an unset value and an install that predates the setting behave as before.
+ */
+export function countsUnfocusedAsReading(settings: PluginSettings): boolean {
+  return settings.countUnfocusedAsReading !== false;
 }

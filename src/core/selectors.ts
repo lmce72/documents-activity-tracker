@@ -74,9 +74,15 @@ export function selectUnfocusedSeconds(state: TimerState, filePath: string): num
  * This is what the timer body shows: blur no longer stops counting, so a session
  * includes its unfocused part. Use selectUnfocusedSeconds for the split.
  */
-export function selectReadingSeconds(state: TimerState, filePath: string): number {
+export function selectReadingSeconds(
+  state: TimerState,
+  filePath: string,
+  /** Whether out-of-window seconds count toward reading; see `countsUnfocusedAsReading`. */
+  countUnfocused = true,
+): number {
   const file = selectFileState(state, filePath);
-  return file ? file.activeSeconds + file.unfocusedSeconds : 0;
+  if (!file) return 0;
+  return file.activeSeconds + (countUnfocused ? file.unfocusedSeconds : 0);
 }
 
 //  ============================================================================

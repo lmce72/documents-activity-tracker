@@ -34,4 +34,9 @@ export const DEFAULT_SETTINGS: PluginSettings = {
   manualTimerEnabled: true,
   manualShowSeconds: true,
   manualRecordDocActivity: true,
+  countUnfocusedAsReading: true,
+  // Two of four slots filled: enough to be useful out of the box, without crowding the
+  // status bar before the user has asked for anything.
+  statusBarMetrics: ['session', 'todayTotal', '', ''],
+  statusBarIconsOnly: false,
 };
