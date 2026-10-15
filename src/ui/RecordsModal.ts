@@ -16,6 +16,8 @@
  */
 
 import { Modal, Notice, Setting, setIcon, setTooltip, type App } from 'obsidian';
+import { UnfocusedModal } from './UnfocusedModal';
+import type { TimerService } from '../services/TimerService';
 
 import { t } from '../core/i18n';
 import type { Logger } from '../core/logger';
@@ -35,9 +37,13 @@ import { countsUnfocusedAsReading } from '../core/settings';
 import { buildFileRecords } from '../core/timeline';
 import { appendDurationParts, setReadTime } from './durationText';
 import {
+  CHANNEL_CLASSES,
+  filterRowsByClass,
   readingChannelClass,
   readingChannelLabel,
   renderHeatmap,
+  renderHeatmapLegend,
+  type LegendEntry,
 } from './heatmapRender';
 import type { FileRecord, PluginSettings } from '../core/types';
 import type { Clock } from '../services/clock';
@@ -56,6 +62,7 @@ const SORT_OPTIONS: ReadonlyArray<{ value: RecordSort; labelKey: 'sortLastReadDe
 /** what the modal needs. */
 export interface RecordsModalDeps {
   history: HistoryStore;
+  service?: TimerService;
   clock: Clock;
   settings: () => PluginSettings;
   log: Logger;
@@ -81,6 +88,12 @@ export class RecordsModal extends Modal {
   private day: string = todayStr();
   /** delete awaiting a second click */
   private pendingDelete: string | null = null;
+
+  /**
+   * 被图例关掉的那几类 / the kinds the legend has switched off.
+   * 与侧栏同名共用一套语义：键是段的取色类。
+   */
+  private hiddenHeatmap = new Set<string>();
 
   constructor(
     app: App,
@@ -456,6 +469,9 @@ export class RecordsModal extends Modal {
       return;
     }
 
+    if (this.deps.service) new Setting(root).setName(t('unfocusedManage')).addButton((button) => button.setButtonText(t('unfocusedManage')).onClick(() => {
+      new UnfocusedModal(this.app, { history: this.deps.history, service: this.deps.service!, log: this.deps.log, filePath, day: this.day, onChanged: () => { this.deps.onChanged?.(); this.render(); } }).open();
+    }));
     // day navigation
     const nav = root.createDiv({ cls: 'rtt-timeline-nav' });
     const prev = nav.createEl('button', { cls: 'rtt-nav-btn', text: '‹' });
@@ -499,7 +515,23 @@ export class RecordsModal extends Modal {
     summary.createSpan({ text: `${t('recChannelPaused')} ${formatDurationWithSeconds(channels.paused)}` });
 
     //  Shared with the sidebar's document panel — one template and one colouring, instead of
-    //  two copies that drift.
-    renderHeatmap(root, rows, readingChannelClass, readingChannelLabel);
+    //  two copies that drift. The legend is shared too: same entries, same toggles.
+    const legend: LegendEntry[] = [
+      { key: CHANNEL_CLASSES['in-window'], className: CHANNEL_CLASSES['in-window'], label: t('tabInWindow') },
+      { key: CHANNEL_CLASSES['out-of-window'], className: CHANNEL_CLASSES['out-of-window'], label: t('tabUnfocused') },
+      { key: CHANNEL_CLASSES.paused, className: CHANNEL_CLASSES.paused, label: t('recChannelPaused') },
+    ];
+    renderHeatmapLegend(root, legend, this.hiddenHeatmap, (key) => {
+      if (this.hiddenHeatmap.has(key)) this.hiddenHeatmap.delete(key);
+      else this.hiddenHeatmap.add(key);
+      this.render();
+    });
+
+    renderHeatmap(
+      root,
+      filterRowsByClass(rows, readingChannelClass, this.hiddenHeatmap),
+      readingChannelClass,
+      readingChannelLabel,
+    );
   }
 }

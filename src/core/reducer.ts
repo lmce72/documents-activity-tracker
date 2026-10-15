@@ -28,7 +28,7 @@ import {
 import { nowFullStr, todayStr } from './time';
 import {
   readingSeconds,
-  wallClockSeconds,
+  liveWallClockSeconds,
   type ManualTimerState,
   type SessionStateMap,
   type TimerAction,
@@ -115,7 +115,6 @@ export function createInitialState(deps: ReducerDeps): TimerState {
   return {
     activeFilePath: null,
     files: new Map(),
-    isPaused: false,
     isIdle: false,
 
     //  The window is necessarily focused at load time — the plugin loads inside it
@@ -133,6 +132,7 @@ function clearedFile(file: TimerFileState): TimerFileState {
   return {
     ...file,
     status: STATUS.IDLE,
+    splitReading: false,
     sessionObject: null,
     activeSeconds: 0,
     unfocusedSeconds: 0,
@@ -140,6 +140,8 @@ function clearedFile(file: TimerFileState): TimerFileState {
     pausedRanges: [],
     pauseStartTimestamp: null,
     lastTickTimestamp: null,
+    discardedByUser: false,
+    savedByUser: false,
   };
 }
 
@@ -164,7 +166,10 @@ export function createTimerReducer(deps: ReducerDeps) {
         const file = state.files.get(filePath);
 
         if (!file || file.status !== STATUS.TRACKING) return state;
-        if (state.isPaused || state.isIdle) return state;
+
+        //  `file.status !== TRACKING` 已经把暂停排除在外，所以这里只需要看"空闲"这一个全局标志。
+        //  The line above already excludes a paused session, so only the global idle flag is left.
+        if (state.isIdle && !(file.splitReading && !state.isWindowFocused)) return state;
 
         const currentTime = deps.now();
         const lastTick = file.lastTickTimestamp;
@@ -194,7 +199,7 @@ export function createTimerReducer(deps: ReducerDeps) {
         //  measure and starts at 1s, mirroring the focused channel.
         const gained = focused ? 1 : lastTick === null ? 1 : gapToSeconds(gap);
 
-        const nextFile: TimerFileState = focused
+        const nextFile: TimerFileState = (focused || file.splitReading)
           ? { ...file, activeSeconds: file.activeSeconds + gained }
           : { ...file, unfocusedSeconds: file.unfocusedSeconds + gained };
 
@@ -207,7 +212,7 @@ export function createTimerReducer(deps: ReducerDeps) {
           //  unfocused time for active time.
           sessionObject: {
             ...(file.sessionObject ?? {}),
-            [timeStr]: focused ? 'tracking' : 'inactive',
+            [timeStr]: (focused || file.splitReading) ? 'tracking' : 'inactive',
           },
         });
 
@@ -232,8 +237,7 @@ export function createTimerReducer(deps: ReducerDeps) {
         const file = activePath ? state.files.get(activePath) : undefined;
 
         //  Only a running, unpaused, non-idle session has a gap worth settling
-        const shouldSettle =
-          !!file && file.status === STATUS.TRACKING && !state.isPaused && !state.isIdle;
+        const shouldSettle = !!file && file.status === STATUS.TRACKING && (!state.isIdle || !!file.splitReading && !state.isWindowFocused);
 
         if (!shouldSettle || !file || file.lastTickTimestamp === null) {
           return { ...state, isWindowFocused: focused };
@@ -247,7 +251,7 @@ export function createTimerReducer(deps: ReducerDeps) {
 
           //  A gap beyond the limit means sleep: reset the baseline, settle nothing
           newFiles.set(activePath!, { ...file, lastTickTimestamp: currentTime });
-        } else if (leavingFocused) {
+        } else if (leavingFocused || file.splitReading) {
 
           //  The focused channel ticks reliably at 1Hz, so rounding is enough
           newFiles.set(activePath!, {
@@ -277,6 +281,24 @@ export function createTimerReducer(deps: ReducerDeps) {
       //  activeFilePath is cleared; whether the session becomes a record is the caller's
       //  call, since only it knows whether to write save or auto-save.
       //  ----------------------------------------------------------------------
+      case ActionTypes.SET_SPLIT_READING: {
+        const { filePath, enabled } = action.payload;
+        const file = state.files.get(filePath);
+        if (filePath !== state.activeFilePath || !file || file.status === STATUS.IDLE || !!file.splitReading === enabled) return state;
+        const now = deps.now();
+        const gap = file.lastTickTimestamp === null ? 0 : now - file.lastTickTimestamp;
+        const limit = state.isWindowFocused ? TICK_GAP_LIMIT_MS : UNFOCUSED_GAP_LIMIT_MS;
+        const seconds = file.status === STATUS.TRACKING && (!state.isIdle || !state.isWindowFocused) && gap >= 0 && gap <= limit ? Math.round(gap / 1000) : 0;
+        const reading = state.isWindowFocused || file.splitReading;
+        const files = new Map(state.files);
+        files.set(filePath, { ...file, splitReading: enabled,
+          activeSeconds: file.activeSeconds + (reading ? seconds : 0),
+          unfocusedSeconds: file.unfocusedSeconds + (reading ? 0 : seconds),
+          lastTickTimestamp: now,
+          sessionObject: { ...file.sessionObject, [deps.nowFull()]: file.status === STATUS.PAUSED ? 'pausing' : state.isWindowFocused || enabled ? 'tracking' : 'inactive' },
+        });
+        return { ...state, files };
+      }
       case ActionTypes.UNBIND_FILE: {
         const fromPath = state.activeFilePath;
         if (fromPath === null) return state;
@@ -287,7 +309,7 @@ export function createTimerReducer(deps: ReducerDeps) {
         }
 
         const newFiles = new Map(state.files);
-        newFiles.set(fromPath, { ...file, status: STATUS.IDLE });
+        newFiles.set(fromPath, { ...file, status: STATUS.IDLE, splitReading: false });
         return { ...state, activeFilePath: null, files: newFiles };
       }
 
@@ -408,7 +430,7 @@ export function createTimerReducer(deps: ReducerDeps) {
             pauseStartTimestamp: currentTime,
             sessionObject: { ...(file.sessionObject ?? {}), [timeStr]: 'pausing' },
           });
-          return { ...state, files: newFiles, isPaused: true };
+          return { ...state, files: newFiles };
         }
 
         if (file.status === STATUS.PAUSED) {
@@ -425,7 +447,7 @@ export function createTimerReducer(deps: ReducerDeps) {
             sessionObject: { ...(file.sessionObject ?? {}), [timeStr]: 'tracking' },
             lastTickTimestamp: currentTime,
           });
-          return { ...state, files: newFiles, isPaused: false };
+          return { ...state, files: newFiles };
         }
 
         return state;
@@ -447,8 +469,8 @@ export function createTimerReducer(deps: ReducerDeps) {
         //  would then treat it as a brand-new session and reset its counters.
         if (fromPath && fromPath !== toPath) {
           const oldFile = newFiles.get(fromPath);
-          if (oldFile && oldFile.status === STATUS.TRACKING) {
-            newFiles.set(fromPath, { ...oldFile, status: STATUS.IDLE });
+          if (oldFile) {
+            newFiles.set(fromPath, { ...oldFile, status: oldFile.status === STATUS.TRACKING ? STATUS.IDLE : oldFile.status, splitReading: false });
           }
         }
 
@@ -481,6 +503,7 @@ export function createTimerReducer(deps: ReducerDeps) {
                 }
               : null,
             pausedRanges: [],
+            discardedByUser: false,
           };
         } else if (autoStart && newFile.status === STATUS.IDLE) {
 
@@ -493,8 +516,11 @@ export function createTimerReducer(deps: ReducerDeps) {
           newFile = {
             ...newFile,
             status: STATUS.TRACKING,
+            splitReading: false,
+            savedByUser: false,
             sessionStartTime: startTimeStr,
             lastTickTimestamp: deps.now(),
+            discardedByUser: false,
             sessionObject: {
               [deps.nowFull()]: state.isWindowFocused ? 'tracking' : 'inactive',
             },
@@ -538,8 +564,12 @@ export function createTimerReducer(deps: ReducerDeps) {
             '[TimerReducer] 会话时长不足，丢弃 / session below threshold, dropped:',
             reading,
           );
-          newFiles.set(filePath, clearedFile(file));
-          return { ...state, files: newFiles };
+          newFiles.set(filePath, { ...clearedFile(file), savedByUser: eventType !== 'auto-save' });
+          // 没有闭合事件，统计会把被丢弃的短会话继续当作进行中。
+          // Close rejected sessions so derived history cannot keep extrapolating them.
+          return { ...state, files: newFiles, pendingWrites: [...state.pendingWrites,
+            { type: 'timeline-discard', filePath, time: deps.nowFull() },
+          ] };
         }
 
         const timeStr = deps.nowFull();
@@ -548,7 +578,7 @@ export function createTimerReducer(deps: ReducerDeps) {
           [timeStr]: 'saved',
         };
 
-        newFiles.set(filePath, clearedFile(file));
+        newFiles.set(filePath, { ...clearedFile(file), savedByUser: eventType !== 'auto-save' });
 
         return {
           ...state,
@@ -564,7 +594,7 @@ export function createTimerReducer(deps: ReducerDeps) {
               activeSeconds: file.activeSeconds,
               unfocusedSeconds: file.unfocusedSeconds,
 
-              totalSeconds: wallClockSeconds(file),
+              totalSeconds: liveWallClockSeconds(file, deps.now()),
             },
           ],
         };
@@ -579,7 +609,13 @@ export function createTimerReducer(deps: ReducerDeps) {
         if (!file) return state;
 
         const newFiles = new Map(state.files);
-        newFiles.set(filePath, clearedFile(file));
+        newFiles.set(filePath, {
+          ...clearedFile(file),
+
+          //  显式丢弃：压制这一文件之后的自动开始，见 TimerFileState.discardedByUser
+          //  An explicit discard suppresses auto-start for this file; see TimerFileState.discardedByUser
+          discardedByUser: true,
+        });
 
         return {
           ...state,
@@ -621,7 +657,7 @@ export function createTimerReducer(deps: ReducerDeps) {
             eventType: 'auto-save',
             activeSeconds: file.activeSeconds,
             unfocusedSeconds: file.unfocusedSeconds,
-            totalSeconds: wallClockSeconds(file),
+            totalSeconds: liveWallClockSeconds(file, deps.now()),
           });
 
           // if tracking, open a fresh session
@@ -630,6 +666,7 @@ export function createTimerReducer(deps: ReducerDeps) {
           newFiles.set(filePath, {
             ...file,
             sessionStartTime: startTime,
+            splitReading: false,
             activeSeconds: 0,
             unfocusedSeconds: 0,
             pausedSeconds: 0,

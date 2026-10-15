@@ -12,6 +12,8 @@
  *
  */
 
+import { setTooltip } from 'obsidian';
+
 import { isPluginViewKey, pluginViewLabel } from '../core/activePath';
 import { t } from '../core/i18n';
 import type { RecordChannel } from '../core/recordsTimeline';
@@ -19,7 +21,6 @@ import {
   formatDurationParts,
   formatDurationWithSeconds,
   parseSessionStartTime,
-  todayStr,
   type DurationPart,
 } from '../core/time';
 import type { TimelineEvent } from '../core/types';
@@ -71,6 +72,7 @@ const TOUCH_EPSILON = 1e-6;
 export function mergeSegments<S extends HeatmapSegment>(
   segments: readonly S[],
   classOf: (segment: S) => string,
+  groupOf?: (segment: S) => string,
 ): Array<HeatmapBlock<S>> {
   const blocks: Array<HeatmapBlock<S>> = [];
 
@@ -78,7 +80,7 @@ export function mergeSegments<S extends HeatmapSegment>(
     const cls = classOf(segment);
     const last = blocks[blocks.length - 1];
 
-    if (last && classOf(last.members[0]!) === cls) {
+    if (last && classOf(last.members[0]!) === cls && (!groupOf || groupOf(last.members[0]!) === groupOf(segment))) {
       const lastEnd = last.startMinute + last.durationMinutes;
       if (segment.startMinute <= lastEnd + TOUCH_EPSILON) {
         last.durationMinutes =
@@ -136,13 +138,16 @@ export function readingChannelLabel(segment: {
  * Clicking the same segment again clears the highlight, so the detail block can be dismissed
  * without hunting for a close button.
  */
-export function selectSegment(scope: HTMLElement, element: HTMLElement): boolean {
+export function selectSegment(scope: HTMLElement, element: HTMLElement, group?: string): boolean {
   const wasSelected = element.hasClass('is-selected');
   for (const previous of Array.from(scope.querySelectorAll('.rtt-hm-seg.is-selected'))) {
     previous.removeClass('is-selected');
   }
   if (wasSelected) return false;
-  element.addClass('is-selected');
+  if (group === undefined) element.addClass('is-selected');
+  else for (const candidate of Array.from(scope.querySelectorAll<HTMLElement>('.rtt-hm-seg'))) {
+    if (candidate.dataset.rttGroup === group) candidate.addClass('is-selected');
+  }
   return true;
 }
 
@@ -331,7 +336,7 @@ function buildVisits(events: readonly TimelineEvent[], from: string, to: string)
       }
       case 'blur':
         bank(event.time);
-        state = 'unfocused';
+        state = event.unfocusedDisposition === 'reading' ? 'active' : event.unfocusedDisposition === 'paused' ? 'paused' : 'unfocused';
         stateSince = event.time;
         break;
       case 'focus':
@@ -448,6 +453,76 @@ function processNodes(
  *                 a stretch can only be recovered by the caller.
  * @returns whether anything was drawn
  */
+/**
+ * 热力图上方的图例 / the legend above a heatmap.
+ *
+ * 一条颜色对应一个类型名，点名字可以把这一类从图里去掉 —— 密集的图里只想看某几类时用；再点一次
+ * 放回来。色块用的是图表自己那套取色类，所以图例与图永远不会对不上。
+ *
+ * One colour per type, named above the chart. Clicking a name drops that kind from the chart —
+ * what a dense chart needs when only part of it is interesting — and clicking again brings it
+ * back. The swatch reuses the chart's own colouring classes, so legend and chart cannot disagree.
+ */
+export interface LegendEntry {
+  /** 切换用的键；段用取色类做键，覆盖层（暂停块、标记）用自报名 / the toggle key */
+  key: string;
+  /** 取色用的类 / the class that carries the colour */
+  className: string;
+  label: string;
+}
+
+export function renderHeatmapLegend(
+  parent: HTMLElement,
+  entries: readonly LegendEntry[],
+  hidden: ReadonlySet<string>,
+  onToggle: (key: string) => void,
+): void {
+  const bar = parent.createDiv({ cls: 'rtt-hm-legend' });
+  bar.setAttribute('role', 'group');
+  bar.setAttribute('aria-label', t('heatmapLegend'));
+
+  for (const entry of entries) {
+    const off = hidden.has(entry.key);
+    const chip = bar.createEl('button', {
+      cls: off ? 'rtt-hm-legend-item is-off' : 'rtt-hm-legend-item',
+    });
+    //  色块连图表自己的取色类一起带上（rtt-hm-seg + 通道类）：配色规则只有一份，图例与图不可能对不上。
+    //  这里只另写几何（压成 10px 小方块、去掉绝对定位），颜色一个字不重写。
+    //  The swatch carries the chart's own colouring classes (rtt-hm-seg plus the channel class), so
+    //  there is exactly one palette and legend and chart cannot disagree. Only the geometry is
+    //  overridden here — flattened to a 10px chip, no absolute positioning — never the colours.
+    chip.createSpan({ cls: `rtt-hm-seg rtt-hm-legend-swatch ${entry.className}` });
+    chip.createSpan({ cls: 'rtt-hm-legend-label', text: entry.label });
+    chip.setAttribute('aria-pressed', String(!off));
+    setTooltip(chip, off ? t('legendShow') : t('legendHide'));
+    chip.setAttribute('aria-label', `${entry.label} — ${off ? t('legendShow') : t('legendHide')}`);
+    chip.addEventListener('click', () => onToggle(entry.key));
+  }
+}
+
+/**
+ * 把隐藏的类从行里滤掉 / drop the hidden classes from the rows.
+ *
+ * 只换段、不换行：热力图的行结构（每小时一行、60 分钟轨道）与坐标都保持不变，于是隐藏某一类不会
+ * 让别的类挪动位置，关掉再打开也是原位。
+ *
+ * Only the segments are filtered, never the rows: the chart keeps its one-row-per-hour shape and
+ * its coordinates, so hiding a kind cannot move the others and turning it back on restores the
+ * exact same picture.
+ */
+export function filterRowsByClass<S extends HeatmapSegment>(
+  rows: readonly HeatmapRow<S>[],
+  classOf: (segment: S) => string,
+  hidden: ReadonlySet<string>,
+): HeatmapRow<S>[] {
+  if (hidden.size === 0) return [...rows];
+  return rows.map((row) =>
+    row.segments.length === 0
+      ? row
+      : { ...row, segments: row.segments.filter((segment) => !hidden.has(classOf(segment))) },
+  );
+}
+
 export function renderHeatmap<S extends HeatmapSegment>(
   parent: HTMLElement,
   rows: readonly HeatmapRow<S>[],
@@ -462,6 +537,7 @@ export function renderHeatmap<S extends HeatmapSegment>(
    * the moment this markup changes.
    */
   overlay?: (bar: HTMLElement, hour: number) => void,
+  groupOf?: (segment: S) => string,
 ): boolean {
   const interesting = rows.filter((row) => row.segments.length > 0);
   if (interesting.length === 0) return false;
@@ -491,9 +567,10 @@ export function renderHeatmap<S extends HeatmapSegment>(
 
     // Touching same-class segments become one block: a run of activity is stored as many short
     // pieces, and one-click-per-piece is both unreadable and unhittable.
-    for (const block of mergeSegments(row.segments, classOf)) {
+    for (const block of mergeSegments(row.segments, classOf, groupOf)) {
       const representative = block.members[0]!;
       const seg = bar.createDiv({ cls: `rtt-hm-seg ${classOf(representative)}` });
+      if (groupOf) seg.dataset.rttGroup = groupOf(representative);
 
       // Geometry is per-segment data, not a style variant, so it cannot live in a CSS class;
       // `setCssProps` is the sanctioned way to write it. Keys are kebab-case because the helper
@@ -512,6 +589,13 @@ export function renderHeatmap<S extends HeatmapSegment>(
       if (onSelect) {
         seg.addClass('is-clickable');
         seg.addEventListener('click', () => onSelect(block, hour, seg));
+        if (groupOf) {
+          seg.setAttribute('role', 'button');
+          seg.tabIndex = 0;
+          seg.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onSelect(block, hour, seg); }
+          });
+        }
       }
     }
 

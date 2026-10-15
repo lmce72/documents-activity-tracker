@@ -1,21 +1,26 @@
 {
   "name": "documents-activity-tracker",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "private": true,
   "type": "module",
   "description": "Obsidian plugin that tracks reading time per document.",
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "bun test",
-    "build": "bun run typecheck && bun build.ts",
-    "build:prod": "bun run typecheck && bun build.ts --prod",
-    "build:deploy": "bun run typecheck && bun build.ts --deploy",
+    "build": "bun run typecheck && bun run lint:api && bun build.ts",
+    "build:prod": "bun run typecheck && bun run lint:api && bun build.ts --prod",
+    "build:deploy": "bun run typecheck && bun run lint:api && bun build.ts --deploy",
     "dev": "bun build.ts --watch",
-    "check": "bun run typecheck && bun test"
+    "check": "bun run typecheck && bun run lint:api && bun test",
+    "lint:api": "eslint src --max-warnings 0"
   },
   "devDependencies": {
     "@types/sql.js": "^1.4.11",
-    "typescript": "6.0.3"
+    "eslint": "9",
+    "eslint-plugin-obsidianmd": "0.4.2",
+    "obsidian": "1.7.2",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8"
   },
   "dependencies": {
     "sql.js": "^1.14.2"

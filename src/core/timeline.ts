@@ -21,6 +21,7 @@ import type {
   TimerFileState,
 } from './types';
 import { eventFileRefs } from './migration';
+import { liveWallClockSeconds } from './types';
 
 /** Max credible unfinished session: 24h. */
 export const MAX_SESSION_DURATION = 24 * 60 * 60;
@@ -130,6 +131,14 @@ export function computeSessionDurations(
 
     const state = eventState(current);
 
+    if ('unfocusedDisposition' in current && current.unfocusedDisposition) {
+      if (gap <= UNFOCUSED_ATTRIBUTION_CAP_SECONDS) {
+        if (current.unfocusedDisposition === 'reading') activeSeconds += gap;
+        else if (current.unfocusedDisposition === 'paused') pausedSeconds += gap;
+        else unfocusedSeconds += gap;
+      }
+      continue;
+    }
     if (current.type === 'blur' || state === 'inactive') {
 
       if (gap <= UNFOCUSED_ATTRIBUTION_CAP_SECONDS) unfocusedSeconds += gap;
@@ -253,7 +262,8 @@ export function buildFileRecords(
       const sessionObj: SessionStateMap = {};
 
       for (const event of session.events) {
-        const state = (event as { state?: string }).state;
+        const disposition = 'unfocusedDisposition' in event ? event.unfocusedDisposition : undefined;
+        const state = disposition ? disposition === 'reading' ? 'tracking' : disposition === 'paused' ? 'pausing' : 'inactive' : event.type === 'blur' ? 'inactive' : (event as { state?: string }).state;
         if (state) {
           sessionObj[event.time] = state as SessionStateMap[string];
         } else if (event.type === 'save' || event.type === 'auto-save') {
@@ -476,6 +486,7 @@ export function getDayChannelSeconds(
   timeline: readonly TimelineEvent[],
   files: Iterable<TimerFileState>,
   day: string = todayStr(),
+  nowMs?: number,
 ): DayChannelSeconds {
   const totals: DayChannelSeconds = {
     activeSeconds: 0,
@@ -510,7 +521,8 @@ export function getDayChannelSeconds(
     if (!file.sessionStartTime?.startsWith(day)) continue;
     totals.activeSeconds += file.activeSeconds;
     totals.unfocusedSeconds += file.unfocusedSeconds;
-    totals.pausedSeconds += file.pausedSeconds;
+    totals.pausedSeconds += nowMs === undefined ? file.pausedSeconds
+      : liveWallClockSeconds(file, nowMs) - file.activeSeconds - file.unfocusedSeconds;
   }
 
   return totals;

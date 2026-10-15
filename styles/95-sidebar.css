@@ -244,23 +244,18 @@
 
 /* ── 标记 / marks ──────────────────────────────────────────────────────── */
 
-.rtt-flag-list {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-}
+.rtt-flag-table-wrap { overflow-x: auto; }
+.rtt-flag-table { width: 100%; border-collapse: collapse; font-size: var(--font-ui-small); }
+.rtt-flag-table th, .rtt-flag-table td { padding: 6px 8px; text-align: left; border-bottom: 1px solid var(--background-modifier-border); }
+.rtt-flag-table th { color: var(--text-muted); font-weight: var(--font-semibold); }
+.rtt-flag-table td:not(:first-child) { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.rtt-flag-cell { display: flex; align-items: center; gap: 6px; }
 
-.rtt-flag-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    padding: 2px 8px;
-    border-radius: 10px;
-    background: var(--background-secondary);
-    color: var(--text-normal);
-    font-family: var(--font-monospace);
-    font-size: var(--font-ui-smaller);
-}
+.rtt-manual-record-header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.rtt-manual-record-name { flex: 1 1 auto; min-width: 0; color: var(--text-normal); }
+.rtt-manual-record-header button { flex: 0 0 auto; }
+.rtt-manual-record-flags { margin-bottom: 12px; }
+.rtt-manual-record-flags[hidden] { display: none; }
 
 .rtt-flag-icon {
     display: flex;
@@ -293,26 +288,7 @@
     );
 }
 
-.rtt-ov-legend-item {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-}
 
-.rtt-ov-swatch {
-    display: inline-block;
-    width: 9px;
-    height: 9px;
-    border-radius: 2px;
-}
-
-.rtt-ov-swatch.rtt-ov-doc {
-    background: var(--interactive-accent);
-}
-
-.rtt-ov-swatch.rtt-ov-manual {
-    background: var(--color-green);
-}
 
 /* Plugin views (RSS dashboard, translator, canvas): their own colour, so "reading in a
    pane" is separable from "reading a note" at a glance. */
@@ -320,13 +296,6 @@
     background: var(--color-blue);
 }
 
-.rtt-ov-swatch.rtt-ov-view {
-    background: var(--color-blue);
-}
-
-.rtt-ov-swatch.rtt-ov-both {
-    background: var(--color-purple);
-}
 
 /* 手动时段统一用绿色，与总看板里"手动"那一档同色
    Manual stretches are green, matching the overview's "manual" category */
@@ -1006,6 +975,9 @@ button.rtt-cal-today.is-disabled {
     position: relative;
 }
 
+/* 角标这一格既装字形也装 60 秒圆饼，所以要有个定尺的盒子；圆饼的几何照旧走那两个变量。
+   This slot holds either a glyph or the 60-second pie, so it is a box of its own; the pie's geometry
+   still comes from the same two variables. */
 .rtt-statusbar-badge {
     position: absolute;
     right: 1px;
@@ -1013,7 +985,13 @@ button.rtt-cal-today.is-disabled {
     display: flex;
     align-items: center;
     justify-content: center;
+    width: 13px;
+    height: 13px;
     color: var(--text-muted);
+
+    /* 圆饼在这个尺寸下的几何 / the pie's geometry at this size */
+    --rtt-pie-ring-w: 1.5px;
+    --rtt-pie-inset: 2px;
 }
 
 .rtt-statusbar-badge svg {
@@ -1207,6 +1185,10 @@ button.rtt-cal-today.is-disabled {
     color: var(--color-orange);
 }
 
+.rtt-live-icon.is-unfocused {
+    color: var(--text-muted);
+}
+
 .rtt-live-icon.is-idle {
     color: var(--text-faint);
 }
@@ -1327,8 +1309,37 @@ button.rtt-cal-today.is-disabled {
    The deduction is orange, the same colour the heatmap gives an out-of-window stretch, so what
    is being taken off is obvious. */
 .rtt-live-deduct {
+    display: inline-flex;
+    align-items: baseline;
     flex: 0 0 auto;
     color: var(--color-orange);
+}
+
+/* 保持负数与分隔符同行，继承主题颜色 / keep the action inline and inherit theme colors. */
+button.rtt-live-deduct-value.clickable-icon {
+    display: inline-flex;
+    padding: 0;
+    margin: 0;
+    height: auto;
+    min-height: 0;
+    background: transparent;
+    box-shadow: none;
+    border: 0;
+    color: inherit;
+    font: inherit;
+    line-height: inherit;
+}
+
+button.rtt-live-deduct-value.clickable-icon:focus-visible {
+    outline: 2px solid var(--interactive-accent);
+    outline-offset: 2px;
+}
+
+@media (pointer: coarse) {
+    button.rtt-live-deduct-value.clickable-icon {
+        padding: 4px 6px;
+        margin: -4px -6px;
+    }
 }
 
 /* 为 0 时整段收起，不留一个常驻的"-0 秒" / collapses at zero rather than parking a "-0秒" */
@@ -1338,4 +1349,93 @@ button.rtt-cal-today.is-disabled {
 
 .rtt-statusbar-menu-hint:hover {
     background: var(--background-modifier-hover);
+}
+
+/* ── 热力图上方的可点图例 / the clickable legend above a heatmap ────────────
+ *
+ * 一条颜色一个类型名，点名字把这一类从图里去掉，再点放回来。色块本身就是一段压扁的图块
+ * （带 rtt-hm-seg + 通道类），配色与图共用同一套规则。
+ *
+ * One colour per type, named above the chart. Clicking a name drops that kind from the chart and
+ * clicking again restores it. The swatch is a squashed segment (rtt-hm-seg plus the channel class),
+ * so it is coloured by the very same rules the chart is.
+ */
+.rtt-hm-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 10px;
+    margin-bottom: 4px;
+}
+
+/* 色块的几何：把一段图块压成小方块。只动几何、不动颜色。
+   The swatch's geometry: a segment squashed into a chip. Geometry only, never colour. */
+.rtt-hm-seg.rtt-hm-legend-swatch {
+    position: static;
+    display: inline-block;
+    flex: 0 0 auto;
+    width: 10px;
+    height: 10px;
+    min-width: 0;
+    opacity: 1;
+    cursor: default;
+    border-radius: 2px;
+}
+
+button.rtt-hm-legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 6px;
+    margin: 0;
+    background: none;
+    background-color: transparent;
+    border: none;
+    box-shadow: none;
+    border-radius: var(--radius-s);
+    color: var(--text-muted);
+    font-size: var(--font-ui-smaller);
+    line-height: 1.4;
+    cursor: pointer;
+    /* 避免移动端滚动被当成点击 / keeps mobile scrolling from registering as a tap */
+    touch-action: manipulation;
+}
+
+button.rtt-hm-legend-item:hover {
+    background-color: var(--background-modifier-hover);
+    box-shadow: none;
+    color: var(--text-normal);
+}
+
+button.rtt-hm-legend-item:focus-visible {
+    box-shadow: 0 0 0 2px var(--background-modifier-border-focus);
+}
+
+/* 已隐藏：名字淡下去、色块几乎透明 —— 一眼看出"这一类现在不在图里"
+   Hidden: the name drops back and the swatch goes near-transparent, so "this kind is off the chart"
+   reads at a glance. */
+.rtt-hm-legend-item.is-off {
+    color: var(--text-faint);
+    text-decoration: line-through;
+}
+
+.rtt-hm-legend-item.is-off .rtt-hm-seg.rtt-hm-legend-swatch {
+    opacity: 0.22;
+}
+
+/* 触屏：命中区撑到可点大小 / touch: grow the chips to a tappable size */
+@media (pointer: coarse) {
+    button.rtt-hm-legend-item {
+        padding: 6px 10px;
+    }
+}
+
+/* 手动过程覆盖层可打开所属完整轮次 / overlays select their complete manual round. */
+.rtt-hm-pause-block.is-clickable, .rtt-hm-flag.is-clickable { pointer-events: auto; cursor: pointer; }
+.rtt-vtl-node.is-pause .rtt-vtl-icon { color: var(--color-orange); }
+.rtt-vtl-node.is-flag .rtt-vtl-icon { color: var(--color-red); }
+
+/* 暂停过程保持单行，窄栏可横向查看 / keep pause entries on one line in narrow panes. */
+.rtt-manual-process .rtt-vtl-node.is-pause .rtt-vtl-title {
+    white-space: nowrap;
+    overflow-x: auto;
 }

@@ -40,6 +40,12 @@ export interface HistoryStore {
   /** clear document data only */
   clearAll(): void;
 
-  /** flush to disk */
-  flushNow(): Promise<void>;
+  /**
+   * flush to disk / 落盘
+   *
+   * `force` 绕过落盘闸门：退出、手动保存、首次建库这些时刻必须写进 vault 文件。
+   * `force` bypasses the flush gate: quitting, the manual save and creating a new database must
+   * reach the vault file.
+   */
+  flushNow(options?: { force?: boolean; trigger?: 'session-end' | 'interval' | 'quit' }): Promise<void>;
 }

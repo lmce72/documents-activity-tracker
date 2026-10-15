@@ -167,6 +167,14 @@ export const I18N = {
     // manual timer: marks, display, controls ──
     manualFlag: '标记',
     manualFlagsTitle: '本轮标记',
+    manualFlagColumn: 'Flag',
+    manualFlagDifference: '时间差',
+    manualRecordedTime: '已记录时间',
+    manualAtRecorded: '当时已记录',
+    manualFlagRoundTime: '本轮计时',
+    manualExpandFlags: '展开 Flag 记录',
+    manualCollapseFlags: '收起 Flag 记录',
+    manualStopRecorded: '停止并记录',
     manualNoFlags: '本轮还没有标记',
     manualFlagAt: '第 {n}',
     manualShowSeconds: '秒表显示秒',
@@ -199,6 +207,25 @@ export const I18N = {
     manualShowLess: '收起',
     viewAllRecordsDesc: '打开完整记录面板，可搜索、排序与删除',
 
+    // 热力图上方的可点图例 / the clickable legend above a heatmap
+    heatmapLegend: '热力图图例',
+    legendHide: '点击隐藏',
+    legendShow: '点击显示',
+
+    // 落盘时机 / when the vault file is written
+    flushTitle: '落盘时机',
+    flushDesc:
+      '阅读记录总是先进浏览器本地的暂存（崩溃不丢、不会产生同步冲突），vault 里的数据文件只在' +
+      '下列时机写入。四个开关独立：写得越少文件越安静，但崩溃后需要补写的窗口也越长。',
+    flushOnSessionEnd: '每轮会话结束时写入',
+    flushOnSessionEndDesc: '一次阅读轮次结算（保存、切走、自动闭合）就写一次数据文件。关闭后写入频率明显下降。',
+    flushOnQuit: '退出时写入',
+    flushOnQuitDesc: '退出 Obsidian 或停用插件时写一次。建议保留：它是最便宜的兜底。',
+    flushOnInterval: '定时批量写入',
+    flushOnIntervalDesc: '每隔一段时间写一次。适合长时间开着 Obsidian、又不希望它频繁写盘的场景。',
+    flushIntervalMinutes: '定时写入间隔（分钟）',
+    flushIntervalMinutesDesc: '最少 1 分钟。',
+
     // ── 状态栏指标 / status-bar metrics ──────────────────────────────
     metricSession: '本轮阅读',
     metricUnfocused: '脱离窗口',
@@ -219,9 +246,18 @@ export const I18N = {
       '桌面端开启后，状态栏只显示图标：阅读计时、手动计时的类型图标各带一个状态图标，中间用竖线分隔。移动端始终只显示一个图标，点击展开已勾选的项目。',
     statusBarMenuTitle: '已显示的项目',
     statusBarJump: '跳到对应面板',
+    splitReading: '分屏阅读',
+    splitReadingDesc: '本轮失焦仍计入阅读；结束本轮、切换文档或进入后台后关闭。',
+    unfocusedManage: '处理失焦时段',
+    unfocusedKeep: '保留失焦',
+    unfocusedReading: '计入阅读',
+    unfocusedPaused: '计入暂停',
+    unfocusedOpen: '当前时段尚未结束，恢复焦点后可处理',
+    unfocusedPausePending: '当前暂停尚未结算，恢复或保存本轮后可处理',
+    unfocusedEmpty: '没有可处理的失焦时段',
     settingCountUnfocused: '失焦时间计入阅读时长',
     settingCountUnfocusedDesc:
-      '开启：阅读时长 = 窗口内 + 脱离窗口（默认）。关闭：脱离窗口的时间仍会被记录并单独显示，但不计入任何阅读时长（统计卡、列表、总看板并集）。切换只影响计算口径，不丢历史。',
+      '默认关闭。开启：阅读时长 = 窗口内 + 脱离窗口。关闭：脱离窗口的时间仍会被记录并单独显示，但不计入任何阅读时长（统计卡、列表、总看板并集）。切换只影响计算口径，不丢历史。',
     heatmapDetailRange: '时段',
     heatmapDetailDuration: '时长',
     heatmapDetailWhat: '内容',
@@ -363,6 +399,14 @@ export const I18N = {
 
     manualFlag: 'Mark',
     manualFlagsTitle: 'Marks this run',
+    manualFlagColumn: 'Flag',
+    manualFlagDifference: 'Time difference',
+    manualRecordedTime: 'Recorded time',
+    manualAtRecorded: 'Recorded at this flag',
+    manualFlagRoundTime: 'Interval time',
+    manualExpandFlags: 'Expand flag records',
+    manualCollapseFlags: 'Collapse flag records',
+    manualStopRecorded: 'Stopped and recorded',
     manualNoFlags: 'No marks yet in this run',
     manualFlagAt: 'At {n}',
     manualShowSeconds: 'Show seconds on the stopwatch',
@@ -394,6 +438,24 @@ export const I18N = {
     manualShowLess: 'Show less',
     viewAllRecordsDesc: 'Open the full records browser to search, sort and delete',
 
+    heatmapLegend: 'Heatmap legend',
+    legendHide: 'Click to hide',
+    legendShow: 'Click to show',
+
+    flushTitle: 'When to write to disk',
+    flushDesc:
+      'Reading records always reach a local browser buffer first (survives a crash, creates no sync ' +
+      'conflicts). The data file in the vault is written only at the moments below. The switches are ' +
+      'independent: less writing makes for a quieter file, but a longer window to recover after a crash.',
+    flushOnSessionEnd: 'Write when a session ends',
+    flushOnSessionEndDesc: 'Write once per settled reading round (saved, switched away, auto-closed). Turning this off cuts writes sharply.',
+    flushOnQuit: 'Write on quit',
+    flushOnQuitDesc: 'Write once when Obsidian quits or the plugin is disabled. Worth keeping: it is the cheapest safety net.',
+    flushOnInterval: 'Write on a timer',
+    flushOnIntervalDesc: 'Write every so often. For long-running sessions where frequent disk writes are unwanted.',
+    flushIntervalMinutes: 'Timer interval (minutes)',
+    flushIntervalMinutesDesc: 'At least 1 minute.',
+
     metricSession: 'This session',
     metricUnfocused: 'Out of window',
     metricTodayTotal: 'Today total',
@@ -413,9 +475,18 @@ export const I18N = {
       'On desktop the status bar then shows icons alone: a type icon each for reading and manual timing, each with a state icon, separated by a bar. On mobile it always shows a single icon that opens the checked items.',
     statusBarMenuTitle: 'Shown items',
     statusBarJump: 'Jump to its panel',
+    splitReading: 'Split reading',
+    splitReadingDesc: 'Count unfocused time as reading for this session. Resets on session end, document switch or backgrounding.',
+    unfocusedManage: 'Manage unfocused intervals',
+    unfocusedKeep: 'Keep unfocused',
+    unfocusedReading: 'Count as reading',
+    unfocusedPaused: 'Count as paused',
+    unfocusedOpen: 'This interval is ongoing. Refocus before changing it.',
+    unfocusedPausePending: 'Resume or save this session before changing an unsettled pause.',
+    unfocusedEmpty: 'No unfocused intervals to manage',
     settingCountUnfocused: 'Count out-of-window time as reading',
     settingCountUnfocusedDesc:
-      'On: reading = in-window + out-of-window (default). Off: out-of-window stretches are still recorded and shown on their own, but excluded from every reading total (stat cards, lists, the overview union). The toggle only changes the accounting, never the history.',
+      'Off by default. On: reading = in-window + out-of-window. Off: out-of-window stretches are still recorded and shown on their own, but excluded from every reading total (stat cards, lists, the overview union). The toggle only changes the accounting, never the history.',
     heatmapDetailRange: 'Range',
     heatmapDetailDuration: 'Duration',
     heatmapDetailWhat: 'What',

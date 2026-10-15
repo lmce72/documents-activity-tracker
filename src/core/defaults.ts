@@ -34,9 +34,17 @@ export const DEFAULT_SETTINGS: PluginSettings = {
   manualTimerEnabled: true,
   manualShowSeconds: true,
   manualRecordDocActivity: true,
-  countUnfocusedAsReading: true,
+  countUnfocusedAsReading: false,
   // Two of four slots filled: enough to be useful out of the box, without crowding the
   // status bar before the user has asked for anything.
   statusBarMetrics: ['session', 'todayTotal', '', ''],
   statusBarIconsOnly: false,
+
+  //  落盘时机默认全开，行为与本功能引入之前一致；想安静下来的用户自己关。
+  //  The flush triggers all default to on, so behaviour matches what this feature replaced; a
+  //  user who wants a quieter file turns them off.
+  flushOnSessionEnd: true,
+  flushOnQuit: true,
+  flushOnInterval: false,
+  flushIntervalMinutes: 5,
 };

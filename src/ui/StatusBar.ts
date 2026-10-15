@@ -22,6 +22,7 @@ import type { Logger } from '../core/logger';
 import { manualDayTotalSeconds } from '../core/manualTimeline';
 import { documentIntervals, manualIntervals, overviewTotals } from '../core/overview';
 import {
+  selectDocumentDisplayState,
   selectManualElapsedSeconds,
   selectReadingSeconds,
   selectUnfocusedSeconds,
@@ -30,7 +31,6 @@ import { countsUnfocusedAsReading } from '../core/settings';
 import { activeSelection, type PanelId, type StatusMetricDef } from '../core/statusMetrics';
 import { todayStr } from '../core/time';
 import { buildFileRecords, getAllTodaySeconds } from '../core/timeline';
-import { wallClockSeconds } from '../core/types';
 import type { PluginSettings } from '../core/types';
 import type { Clock } from '../services/clock';
 import type { TimerStore } from '../services/TimerStore';
@@ -345,8 +345,22 @@ export class StatusBarMetrics {
     const state = this.deps.store.getState();
     const badge = this.deps.el.querySelector<HTMLElement>('.rtt-statusbar-badge');
     if (badge) {
-      badge.empty();
-      setIcon(badge, stateIcon(docState(state), manualState(state)));
+      const docRunning = docState(state) === 'running';
+      const manualRunning = manualState(state) === 'running';
+
+      //  计时中这一角标画 60 秒圆饼，而不是 play 字形 —— 与桌面状态槽、状态卡徽标共用同一个组件
+      //  （secondPie.ts）：跑没跑起来一眼可见，不必去读数字。两本账同时在跑时先看文档那本。
+      //
+      //  While a clock runs this badge holds the 60-second pie rather than the play glyph — the same
+      //  shared part (secondPie.ts) as the desktop state slot and the session card, so "is it running"
+      //  is visible without reading a number. With both ledgers running the document one leads.
+      if (docRunning || manualRunning) {
+        const pie = existingSecondPie(badge) ?? createSecondPie(badge);
+        pie.setElapsed(this.elapsedSecondsFor(docRunning ? 'reading' : 'manual'));
+      } else {
+        badge.empty();
+        setIcon(badge, stateIcon(docState(state), manualState(state)));
+      }
     }
 
     const rows = this.menu?.querySelectorAll<HTMLElement>('.rtt-statusbar-menu-value');
@@ -373,7 +387,7 @@ export class StatusBarMetrics {
     values: Record<string, Value>,
   ): void {
     const state = this.deps.store.getState();
-    type TState = 'running' | 'paused' | 'idle';
+    type TState = 'running' | 'paused' | 'idle' | 'unfocused';
     const byGroup: Record<'reading' | 'manual', TState> = {
       reading: docState(state),
       manual: manualState(state),
@@ -425,11 +439,8 @@ export class StatusBarMetrics {
   /**
    * 该组计时器本轮走了多少秒 / how long that group's clock has been running this round.
    *
-   * 圆饼只看"这一分钟里的第几秒"，所以两者取的都是**墙钟**：文档那边是窗口内 + 脱离窗口 + 暂停，
-   * 手动那边是秒表的净时长 —— 与各自面板上显示的数字同一个被减数。
-   * The pie only asks where inside the current minute we are, and both are wall clocks: the document
-   * side is in-window + away + paused, the manual side the stopwatch's net elapsed time. Each is the
-   * same figure its own panel shows.
+   * 文档圆饼跟随有效阅读时长；手动圆饼跟随秒表净时长。
+   * Document progress follows reading seconds; manual progress follows net stopwatch time.
    */
   private elapsedSecondsFor(group: 'reading' | 'manual'): number {
     const state = this.deps.store.getState();
@@ -440,7 +451,7 @@ export class StatusBarMetrics {
 
     const path = state.activeFilePath;
     const file = path ? state.files.get(path) : undefined;
-    return file ? wallClockSeconds(file) : 0;
+    return file?.activeSeconds ?? 0;
   }
 
   // ==========================================================================
@@ -539,12 +550,8 @@ export class StatusBarMetrics {
  * Exported because the sidebar's current-session card uses the same mapping and the same icon:
  * one state must look the same in both places, or it has to be learned twice.
  */
-export function docState(state: ReturnType<TimerStore['getState']>): 'running' | 'paused' | 'idle' {
-  const path = state.activeFilePath;
-  const file = path ? state.files.get(path) : undefined;
-  if (file?.status === 'tracking') return 'running';
-  if (file?.status === 'paused') return 'paused';
-  return 'idle';
+export function docState(state: ReturnType<TimerStore['getState']>): ReturnType<typeof selectDocumentDisplayState> {
+  return selectDocumentDisplayState(state);
 }
 
 /** 手动计时的状态 / the manual timer's state. */
@@ -559,8 +566,9 @@ function manualState(state: ReturnType<TimerStore['getState']>): 'running' | 'pa
  * 运行=play、暂停=pause、停止=square；两个计时器都在跑时取 play（两个都一样，无歧义）。
  * 侧栏的当前计时状态卡也用它 / the sidebar's current-session card uses it too.
  */
-export function stateIcon(...states: Array<'running' | 'paused' | 'idle'>): string {
+export function stateIcon(...states: Array<'running' | 'paused' | 'idle' | 'unfocused'>): string {
   if (states.includes('running')) return 'play';
+  if (states.includes('unfocused')) return 'eye-off';
   if (states.includes('paused')) return 'pause';
   return 'square';
 }

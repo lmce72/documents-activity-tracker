@@ -116,9 +116,62 @@ export class ReadTimeSettingTab extends PluginSettingTab {
       .setDesc(t('settingCountUnfocusedDesc'))
       .addToggle((toggle) =>
         toggle
-          .setValue(settings.countUnfocusedAsReading !== false)
+          .setValue(settings.countUnfocusedAsReading === true)
           .onChange(async (value) => {
             await this.deps.save({ countUnfocusedAsReading: value });
+          }),
+      );
+
+    // 落盘时机 / when the vault file is written ────────────────────
+    new Setting(containerEl).setName(t('flushTitle')).setDesc(t('flushDesc')).setHeading();
+
+    new Setting(containerEl)
+      .setName(t('flushOnSessionEnd'))
+      .setDesc(t('flushOnSessionEndDesc'))
+      .addToggle((toggle) =>
+        toggle
+          .setValue(settings.flushOnSessionEnd !== false)
+          .onChange(async (value) => {
+            await this.deps.save({ flushOnSessionEnd: value });
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName(t('flushOnQuit'))
+      .setDesc(t('flushOnQuitDesc'))
+      .addToggle((toggle) =>
+        toggle
+          .setValue(settings.flushOnQuit !== false)
+          .onChange(async (value) => {
+            await this.deps.save({ flushOnQuit: value });
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName(t('flushOnInterval'))
+      .setDesc(t('flushOnIntervalDesc'))
+      .addToggle((toggle) =>
+        toggle
+          .setValue(settings.flushOnInterval === true)
+          .onChange(async (value) => {
+            await this.deps.save({ flushOnInterval: value });
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName(t('flushIntervalMinutes'))
+      .setDesc(t('flushIntervalMinutesDesc'))
+      .addText((text_) =>
+        text_
+          .setPlaceholder('5')
+          .setValue(String(settings.flushIntervalMinutes ?? 5))
+          .onChange(async (value) => {
+            const parsed = Number.parseInt(value, 10);
+
+            //  少于 1 分钟的写盘频率没有意义，也挡住了手滑输 0
+            //  Sub-minute writes are pointless, and this also catches an accidental 0
+            const minutes = Number.isFinite(parsed) ? Math.max(1, parsed) : 5;
+            await this.deps.save({ flushIntervalMinutes: minutes });
           }),
       );
 

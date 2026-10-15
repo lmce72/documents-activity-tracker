@@ -13,7 +13,7 @@ import { Notice, Plugin, TFile, type WorkspaceLeaf } from 'obsidian';
 
 import { consoleLogger, silentLogger, type Logger } from './core/logger';
 import { mergeSettings } from './core/settings';
-import { createInitialState, createTimerReducer } from './core/reducer';
+import { createInitialState } from './core/reducer';
 import type { PluginSettings } from './core/types';
 import { ObsidianAdapter } from './data/adapter';
 import type { HistoryStore } from './data/historyStore';
@@ -40,10 +40,9 @@ export default class ReadTimeTrackerPlugin extends Plugin {
   /**
    * Plugin settings.
    *
-   * `Plugin` declares `settings?: unknown` since 1.13 and the documented pattern is to
-   * narrow it on the subclass, so this cannot be private.
+   * Keep this public for compatibility with both older Plugin types and newer hosts.
    */
-  override settings!: PluginSettings;
+  settings!: PluginSettings;
 
   /** debug logging switch */
   private debug = false;
@@ -96,6 +95,25 @@ export default class ReadTimeTrackerPlugin extends Plugin {
       this.manifest.dir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`,
     );
     this.sqlite = new SqliteStore(adapter, dbPath, this.log);
+
+    //  落盘闸门：改动总是先落浏览器暂存，vault 文件只在这几个时机写。四个开关由用户自己权衡。
+    //  The flush gate: every change is buffered in the browser first, and the vault file is written
+    //  only at these moments. The four switches are the user's own tradeoff.
+    this.sqlite.setFlushGate((trigger) => {
+      switch (trigger) {
+        case 'session-end':
+          return this.settings.flushOnSessionEnd !== false;
+        case 'interval':
+          return this.settings.flushOnInterval === true;
+        case 'quit':
+          return this.settings.flushOnQuit !== false;
+        default:
+
+          //  合并刷盘这类没有时机的收尾：只暂存
+          //  A coalesced flush with no moment attached: buffer only
+          return false;
+      }
+    });
 
     let history: HistoryStore = this.sqlite;
     try {
@@ -182,6 +200,25 @@ export default class ReadTimeTrackerPlugin extends Plugin {
       },
     });
     this.statusBar.start();
+
+    //  定时批量写：按分钟粒度走，间隔随时反映设置的改动，不必重建定时器
+    //  Periodic flush: checked at minute granularity so a change to the interval takes effect at
+    //  once, with no timer rebuild.
+    let minutesSinceFlush = 0;
+    this.registerInterval(
+      window.setInterval(() => {
+        if (this.settings.flushOnInterval !== true) {
+          minutesSinceFlush = 0;
+          return;
+        }
+        minutesSinceFlush += 1;
+        const every = Math.max(1, this.settings.flushIntervalMinutes ?? 5);
+        if (minutesSinceFlush >= every) {
+          minutesSinceFlush = 0;
+          void this.history.flushNow({ trigger: 'interval' });
+        }
+      }, 60_000),
+    );
 
     this.addSettingTab(
       new ReadTimeSettingTab(this.app, this, {
@@ -356,16 +393,29 @@ export default class ReadTimeTrackerPlugin extends Plugin {
     if (patch.documentTrackingEnabled === false) {
       await this.timerService.saveCurrent('auto-save');
     }
-
-    //  When "record document activity" goes back on, the active file must be re-bound right
-    //  away. Measured: toggling it off and on did nothing until the user switched tabs,
-    //  because binding only happens on active-leaf-change and a settings change fires none.
-    if (patch.manualRecordDocActivity === true || patch.documentTrackingEnabled === true) {
-      await this.timerService.onActivePathChange();
-    }
     if (patch.manualTimerEnabled === false) {
       this.manualService.discard();
     }
+
+    //  设置必须**立即**生效，而不是等下一次切换标签页。
+    //
+    //  每一处设置都被读在行为发生的那一刻：过滤规则决定这个文件还算不算可追踪、自动开始模式决定换
+    //  文件要不要开表、失焦口径决定时间进哪一本账。可绑定关系只在 active-leaf-change / file-open 上
+    //  重建，而改设置不发这两种事件 —— 实测：把一个文件加进黑名单后它照样继续计时，直到手动切一次
+    //  标签页；那正是「设置不立即生效」的来源。所以这里无条件重算绑定并刷新侧栏（onActivePathChange
+    //  在 from === to 时自己提前返回，重复调用是安全的）。
+    //
+    //  Settings must take effect **now**, not at the next tab switch.
+    //
+    //  Every one of them is read at the moment behaviour happens: filter rules decide whether a file
+    //  is trackable at all, auto-start mode decides whether opening it starts a clock, the unfocused
+    //  rule decides which ledger time lands in. But the binding is only rebuilt on active-leaf-change /
+    //  file-open, and editing settings fires neither. Measured: adding a file to the blacklist left it
+    //  still counting until the user switched tabs by hand — that is where "settings do not take effect
+    //  immediately" comes from. So the binding is re-aligned and the sidebar refreshed unconditionally
+    //  here (onActivePathChange early-returns when from === to, so calling it again is safe).
+    await this.timerService.onActivePathChange();
+    this.refreshSidebar();
   }
 
   private legacyPath(): string {
@@ -440,7 +490,7 @@ export default class ReadTimeTrackerPlugin extends Plugin {
       if (this.manualService.isActive()) {
         this.manualService.pause();
       }
-      await this.history.flushNow();
+      await this.history.flushNow({ force: true });
       this.refreshSidebar();
       new Notice(t('recordsSaved'), 3000);
       this.log.info('[RTT] 手动保存记录 / manual save completed');
@@ -475,6 +525,7 @@ export default class ReadTimeTrackerPlugin extends Plugin {
   private openRecords(filePath: string | null = null): void {
     try {
       new RecordsModal(this.app, {
+        service: this.timerService ?? undefined,
         history: this.history,
         clock: systemClock,
         settings: () => this.settings,

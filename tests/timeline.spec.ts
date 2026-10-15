@@ -42,6 +42,7 @@ function fakeFile(overrides: Partial<TimerFileState> = {}): TimerFileState {
     pauseStartTimestamp: null,
     sessionObject: null,
     pausedRanges: [],
+    discardedByUser: false,
     ...overrides,
   };
 }

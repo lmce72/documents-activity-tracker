@@ -170,7 +170,7 @@ describe('TOGGLE_PAUSE — 双秒数字段合并', () => {
 });
 
 describe('SAVE_SESSION — 阈值与结算', () => {
-  it('低于阈值时清空会话且不产生待写入', () => {
+  it('低于阈值时清空会话并写入闭合边界，不产生阅读记录', () => {
     const ctx = setup();
     startTracking(ctx);
     tick(ctx, 3);
@@ -181,7 +181,8 @@ describe('SAVE_SESSION — 阈值与结算', () => {
     });
 
     const state = ctx.getState();
-    expect(state.pendingWrites).toHaveLength(0);
+    expect(state.pendingWrites).toHaveLength(1);
+    expect(state.pendingWrites[0].type).toBe('timeline-discard');
     const file = state.files.get(FILE)!;
     expect(file.status).toBe(STATUS.IDLE);
     expect(file.activeSeconds).toBe(0);
@@ -234,6 +235,47 @@ describe('DISCARD_SESSION', () => {
     expect(writes[0]!.type).toBe('timeline-discard');
     expect(state.files.get(FILE)!.status).toBe(STATUS.IDLE);
     expect(state.files.get(FILE)!.activeSeconds).toBe(0);
+  });
+
+  it('暂停后丢弃、再开始，计时照常累加（曾卡在 0 秒）', () => {
+    const ctx = setup();
+    startTracking(ctx);
+    tick(ctx, 5);
+
+    //  暂停 → 丢弃 → 重新开始。丢掉的会话属于**文件**，暂停与否同样是文件的属性，所以走完这三步
+    //  不该留下任何还会拦住 TICK 的东西。
+    //  Pause → discard → start. The discarded session belongs to the *file*, and so does being
+    //  paused, so nothing that would still block a tick may survive those three steps.
+    ctx.dispatch({ type: ActionTypes.TOGGLE_PAUSE, payload: { filePath: FILE } });
+    ctx.dispatch({ type: ActionTypes.DISCARD_SESSION, payload: { filePath: FILE } });
+    ctx.drain();
+
+    ctx.dispatch({
+      type: ActionTypes.SWITCH_FILE,
+      payload: { fromPath: FILE, toPath: FILE, autoStart: true },
+    });
+    ctx.drain();
+
+    tick(ctx, 4);
+    const file = ctx.getState().files.get(FILE)!;
+    expect(file.activeSeconds).toBe(4);
+    expect(wallClockSeconds(file)).toBe(4);
+  });
+
+  it('暂停不跨会话残留：丢弃后换到另一个文件照常累加', () => {
+    const ctx = setup();
+    startTracking(ctx);
+    ctx.dispatch({ type: ActionTypes.TOGGLE_PAUSE, payload: { filePath: FILE } });
+    ctx.dispatch({ type: ActionTypes.DISCARD_SESSION, payload: { filePath: FILE } });
+
+    ctx.dispatch({
+      type: ActionTypes.SWITCH_FILE,
+      payload: { fromPath: FILE, toPath: OTHER, autoStart: true },
+    });
+    ctx.drain();
+    tick(ctx, 3, OTHER);
+
+    expect(ctx.getState().files.get(OTHER)!.activeSeconds).toBe(3);
   });
 });
 

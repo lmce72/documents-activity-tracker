@@ -120,8 +120,8 @@ export function isDocumentRecordingEnabled(settings: PluginSettings): boolean {
  * stretches recorded and displayed but keeps them out of every total, for when a note simply
  * stayed open while the user was in another application.
  *
- * Defaults to on, so an unset value and an install that predates the setting behave as before.
+ * Defaults to off; unfocused intervals remain available for explicit classification.
  */
 export function countsUnfocusedAsReading(settings: PluginSettings): boolean {
-  return settings.countUnfocusedAsReading !== false;
+  return settings.countUnfocusedAsReading === true;
 }

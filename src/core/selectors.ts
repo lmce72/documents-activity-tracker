@@ -40,9 +40,20 @@ export function selectSessionStartTime(state: TimerState, filePath: string): str
  */
 export function selectIsRunning(state: TimerState, filePath: string): boolean {
   const file = selectFileState(state, filePath);
-  return (
-    !!file && file.status === STATUS.TRACKING && !state.isPaused && !state.isIdle
-  );
+  return !!file && file.status === STATUS.TRACKING
+    && (!state.isIdle || !!file.splitReading && !state.isWindowFocused)
+    && (state.isWindowFocused || !!file.splitReading);
+}
+
+/** 文档显示状态：失焦优先，保留原会话状态以便聚焦后继续。 */
+export function selectDocumentDisplayState(
+  state: TimerState,
+): 'running' | 'paused' | 'idle' | 'unfocused' {
+  const file = state.activeFilePath ? state.files.get(state.activeFilePath) : undefined;
+  if (state.activeFilePath && !state.isWindowFocused && !file?.splitReading) return 'unfocused';
+  if (file?.status === STATUS.PAUSED || (file?.status === STATUS.TRACKING && state.isIdle && state.isWindowFocused)) return 'paused';
+  if (file?.status === STATUS.TRACKING) return 'running';
+  return 'idle';
 }
 
 /** Whether this file's timer is paused. */

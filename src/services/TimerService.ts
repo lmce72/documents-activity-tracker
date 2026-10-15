@@ -24,6 +24,9 @@ import {
   normalizeIdleTimeoutSeconds,
 } from '../core/settings';
 import { eventFileRefs } from '../core/migration';
+import { classifyUnfocusedInterval, listUnfocusedIntervals } from '../core/unfocused';
+import { buildFileRecords } from '../core/timeline';
+import { parseSessionStartTime } from '../core/time';
 import type {
   PluginSettings,
   SessionWrite,
@@ -246,6 +249,15 @@ export class TimerService {
    * Mirrors the original's four modes one for one.
    */
   private shouldAutoStart(filePath: string, settings: PluginSettings): boolean {
+
+    //  用户明确保存或丢弃后不再自动开 —— 自动开始等于推翻用户刚刚做出的动作。手动点「开始计时」
+    //  走的是另一条路（直接带 autoStart: true），不受这一条限制。
+    //  A round the user explicitly discarded does not auto-start again: doing so would overrule the
+    //  action they just took. Pressing "start timing" by hand goes the other way (it passes
+    //  autoStart: true straight through) and is unaffected.
+    const existing = this.deps.store.getState().files.get(filePath);
+    if (existing?.discardedByUser || existing?.savedByUser) return false;
+
     const seenBefore = this.deps.store.getState().files.has(filePath);
     switch (settings.autoStartMode) {
       case 'always':
@@ -300,6 +312,7 @@ export class TimerService {
                 : 'pausing'
               : 'inactive',
             reason: focused ? 'window-focus' : 'window-blur',
+            ...(!focused ? { unfocusedDisposition: file.status === STATUS.PAUSED ? 'paused' as const : file.splitReading ? 'reading' as const : 'unfocused' as const } : {}),
           });
         }
       }
@@ -314,6 +327,58 @@ export class TimerService {
   // user actions
   //  ==========================================================================
 
+  /** 分屏阅读仅作用于本轮 / split reading applies prospectively to this session. */
+  async setSplitReading(enabled: boolean): Promise<void> {
+    await this.flushPendingWrites();
+    const state = this.deps.store.getState();
+    const filePath = state.activeFilePath;
+    const file = filePath ? state.files.get(filePath) : undefined;
+    if (!filePath || !file || file.status === STATUS.IDLE || !!file.splitReading === enabled) return;
+    this.deps.store.dispatch({ type: ActionTypes.SET_SPLIT_READING, payload: { filePath, enabled } });
+    if (!state.isWindowFocused) this.appendEvent({ time: this.deps.clock.nowFull(), type: 'blur', file: filePath,
+      state: file.status === STATUS.PAUSED ? 'pausing' : enabled ? 'tracking' : 'inactive', reason: 'split-reading-toggle',
+      unfocusedDisposition: file.status === STATUS.PAUSED ? 'paused' : enabled ? 'reading' : 'unfocused',
+    });
+    await this.flushPendingWrites();
+  }
+
+  /** 已结束的失焦段可重新归类，原始事件不丢弃 / reclassify closed blur intervals. */
+  async classifyUnfocused(index: number, expectedTime: string, disposition: 'reading' | 'paused' | 'unfocused'): Promise<void> {
+    await this.flushPendingWrites();
+    const events = this.deps.history.getEvents();
+    const interval = listUnfocusedIntervals(events).find((item) => item.index === index && item.from === expectedTime);
+    if (!interval || !interval.to) throw new Error('失焦时段已变更或尚未结束 / interval changed or still open');
+    if (!this.canClassifyUnfocused(interval.filePath, interval.from)) throw new Error('请先恢复或保存当前暂停 / resume or save the current pause first');
+    const result = classifyUnfocusedInterval(events, index, disposition);
+    this.deps.history.replaceEvents(result.events);
+    const state = this.deps.store.getState();
+    const file = state.files.get(interval.filePath);
+    if (state.activeFilePath === interval.filePath && file?.sessionStartTime && interval.from >= file.sessionStartTime && file.status !== STATUS.IDLE) {
+      const sessionObject = { ...file.sessionObject };
+      sessionObject[interval.from] = disposition === 'reading' ? 'tracking' : disposition === 'paused' ? 'pausing' : 'inactive';
+      for (const time of Object.keys(sessionObject)) if (time >= interval.from && time < interval.to) sessionObject[time] = disposition === 'reading' ? 'tracking' : disposition === 'paused' ? 'pausing' : 'inactive';
+      this.deps.store.dispatch({ type: ActionTypes.RESTORE_FILE, payload: { filePath: interval.filePath, fileState: { ...file, sessionObject,
+        activeSeconds: Math.max(0, file.activeSeconds + result.delta.activeSeconds),
+        unfocusedSeconds: Math.max(0, file.unfocusedSeconds + result.delta.unfocusedSeconds),
+        pausedSeconds: Math.max(0, file.pausedSeconds + result.delta.pausedSeconds),
+      } } });
+    }
+    // records 只物化已结束会话；当前轮保存时会再累加，不能提前写进去。
+    // Materialize closed sessions only; saving the live session will add it later.
+    const closedEvents = file && file.status !== STATUS.IDLE && file.sessionStartTime
+      ? result.events.filter((event) => event.time < file.sessionStartTime! || (event.type === 'switch' ? event.from !== interval.filePath && event.to !== interval.filePath : event.file !== interval.filePath))
+      : result.events;
+    const record = buildFileRecords(closedEvents, this.deps.clock.now(), undefined, { countUnfocused: true })[interval.filePath];
+    this.deps.history.upsertRecord(interval.filePath, { totalReadTime: record?.totalReadTime ?? 0, unfocusedReadTime: record?.unfocusedReadTime ?? 0 });
+    await this.deps.history.flushNow({ force: true });
+  }
+
+  canClassifyUnfocused(filePath: string, from: string): boolean {
+    const file = this.deps.store.getState().files.get(filePath);
+    const fromMs = parseSessionStartTime(from)?.getTime();
+    return !(file?.status === STATUS.PAUSED && file.pauseStartTimestamp !== null && (fromMs === undefined || fromMs >= file.pauseStartTimestamp));
+  }
+
   /**
    * Start counting for the current file.
    *
@@ -326,8 +391,12 @@ export class TimerService {
       const settings = this.deps.settings();
       if (!isDocumentRecordingEnabled(settings)) return;
 
+      // 先处理排队中的视图切换，防止开始按钮使用上一个对象。
+      // Resolve queued view changes before starting the current target.
+      await this.onActivePathChange();
+
       const state = this.deps.store.getState();
-      const target = state.activeFilePath ?? this.deps.getActivePath();
+      const target = this.deps.getActivePath();
       if (!target || !isTrackableTarget(target, settings)) return;
 
       const file = state.files.get(target);
@@ -347,6 +416,7 @@ export class TimerService {
   /** Save the current session. */
   async saveCurrent(kind: SaveKind = 'save'): Promise<void> {
     try {
+      await this.onActivePathChange();
       const filePath = this.deps.store.getState().activeFilePath;
       if (!filePath) return;
 
@@ -395,7 +465,8 @@ export class TimerService {
           time: this.deps.clock.nowFull(),
           type: paused ? 'pause' : 'resume',
           file: filePath,
-          state: paused ? 'pausing' : 'tracking',
+          state: paused ? 'pausing' : this.deps.store.getState().isWindowFocused || after.splitReading ? 'tracking' : 'inactive',
+          ...(!this.deps.store.getState().isWindowFocused && !paused ? { unfocusedDisposition: after.splitReading ? 'reading' as const : 'unfocused' as const } : {}),
           reason: 'user-toggle',
         });
       }
@@ -456,7 +527,7 @@ export class TimerService {
       const filePath = this.deps.store.getState().activeFilePath;
       if (filePath) this.dispatchSave(filePath, 'auto-save');
       await this.flushPendingWrites();
-      await this.deps.history.flushNow();
+      await this.deps.history.flushNow({ trigger: 'quit' });
     } catch (error) {
       this.deps.log.warn('[RTT][service] 退出收尾失败 / shutdown failed:', error);
     }
@@ -468,6 +539,17 @@ export class TimerService {
 
   /** Dispatch one session save. */
   private dispatchSave(filePath: string, kind: SaveKind): void {
+
+    //  只结算**正在进行**的会话。保存的语义是"把眼下这一轮落盘"，而闲置的文件没有可落盘的东西 ——
+    //  对它保存只会写一条空 session，顺带把 clearedFile 里的 discardedByUser 冲成 false（用户刚
+    //  显式丢弃的那一笔因此又被允许自动开始）。
+    //  Only settles a session that is **in progress**. Saving means "write down the round in front of
+    //  us", and an idle file has nothing to write: saving it anyway emits an empty session and, through
+    //  clearedFile, resets discardedByUser to false — re-arming the auto-start the user had just
+    //  suppressed.
+    const current = this.deps.store.getState().files.get(filePath);
+    if (!current || (current.status !== STATUS.TRACKING && current.status !== STATUS.PAUSED)) return;
+
     const settings = this.deps.settings();
     this.deps.store.dispatch({
       type: ActionTypes.SAVE_SESSION,
@@ -542,7 +624,13 @@ export class TimerService {
       this.deps.history.applySessionSave(update.filePath, update);
     }
 
-    await this.deps.history.flushNow();
+    //  结算过会话才算「一轮结束」，这才是那条触发；纯 tick / 焦点之类的收尾没有时机可言，只做暂存。
+    //  落盘与否由设置里的闸门定。
+    //  A settled session is what "a round ended" means and that is the only trigger here; a plain tick
+    //  or a focus change has no moment attached and only buffers. Writing the file is the gate's call.
+    await this.deps.history.flushNow({
+      trigger: recordUpdates.length > 0 ? 'session-end' : undefined,
+    });
   }
 
   /** The session's end timestamp. */

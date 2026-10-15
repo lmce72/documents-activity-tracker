@@ -24,7 +24,8 @@ function input(over: Partial<Parameters<typeof resolveActiveTarget>[0]> = {}) {
     markdownPath: null,
     focusedViewType: null,
     ownViewTypes: OWN,
-    activeFilePath: NOTE,
+    recentViewType: 'markdown',
+    recentMarkdownPath: NOTE,
     ...over,
   };
 }
@@ -36,7 +37,7 @@ describe('resolveActiveTarget', () => {
     ).toBe(NOTE);
   });
 
-  it('焦点在本插件侧栏时保留工作区当前文件（点侧栏不该停表）', () => {
+  it('焦点在计时侧栏时保留最近内容叶子的文件', () => {
     expect(
       resolveActiveTarget(
         input({ focusedViewType: 'documents-activity-tracker-sidebar' }),
@@ -66,8 +67,17 @@ describe('resolveActiveTarget', () => {
 
   it('没有任何叶子获得焦点且没有当前文件时返回 null', () => {
     expect(
-      resolveActiveTarget(input({ focusedViewType: null, activeFilePath: null })),
+      resolveActiveTarget(input({ focusedViewType: null, recentMarkdownPath: null })),
     ).toBeNull();
+  });
+
+  it('计时侧栏保留最近 RSS 视图，不误用旧笔记', () => {
+    expect(resolveActiveTarget(input({ focusedViewType: OWN[0], recentViewType: 'rss-dashboard-view', recentMarkdownPath: null }))).toBe('view:rss-dashboard-view');
+  });
+
+  it('没有最近内容视图时不猜测旧笔记或计时侧栏本身', () => {
+    expect(resolveActiveTarget(input({ focusedViewType: OWN[0], recentViewType: null }))).toBeNull();
+    expect(resolveActiveTarget(input({ focusedViewType: OWN[0], recentViewType: OWN[0] }))).toBeNull();
   });
 
   it('ownViewTypes 为空时不会把侧栏当成自己的视图', () => {

@@ -23,7 +23,6 @@ export interface SnapshotPayload {
   activeFilePath: string | null;
   /** the Map serialised as entry pairs */
   files: Array<[string, TimerFileState]>;
-  isPaused: boolean;
   lastCheckDay: string;
 }
 
@@ -51,7 +50,6 @@ export function serializeState(state: TimerState): SnapshotPayload {
   return {
     activeFilePath: state.activeFilePath,
     files: Array.from(state.files.entries()),
-    isPaused: state.isPaused,
     lastCheckDay: state.lastCheckDay,
   };
 }
@@ -94,6 +92,8 @@ export function deserializeState(
         pauseStartTimestamp: null,
         sessionObject: v.sessionObject ?? null,
         pausedRanges: Array.isArray(v.pausedRanges) ? v.pausedRanges : [],
+        discardedByUser: v.discardedByUser === true,
+        savedByUser: v.savedByUser === true,
       });
     }
   }
@@ -101,7 +101,6 @@ export function deserializeState(
   return {
     activeFilePath: typeof p.activeFilePath === 'string' ? p.activeFilePath : null,
     files,
-    isPaused: p.isPaused === true,
     isIdle: false,
 
     //  The snapshot carries no window focus; the service corrects it right after load

@@ -14,9 +14,6 @@ data.json
 .testvault/
 .testprofile/
 
-# vendored 类型定义（离线用，体积小，需要入库 —— 故不忽略）
-# vendor/
-
 # Node modules (if any)
 node_modules/
 

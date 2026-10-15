@@ -399,3 +399,30 @@ describe('SqliteStore — 降级与边界 / degradation and edges', () => {
     }
   });
 });
+
+describe('blur attribution persistence', () => {
+  it('replaces events atomically and retains classification across reopen', async () => {
+    const adapter = makeAdapter();
+    const store = new SqliteStore(adapter, DB_PATH, silentLogger);
+    await store.init();
+    const event: TimelineEvent = { time: '2026-09-15 10:00:00', type: 'blur', file: 'Notes/a.md', state: 'inactive', unfocusedDisposition: 'reading' };
+    store.appendEvents([event]);
+    store.replaceEvents([{ ...event, unfocusedDisposition: 'paused' }]);
+    await store.flushNow({force:true});
+    await store.close();
+    const reopened = new SqliteStore(adapter, DB_PATH, silentLogger);
+    await reopened.init();
+    expect(reopened.getEvents()).toEqual([{ ...event, unfocusedDisposition: 'paused' }]);
+    await reopened.close();
+  });
+});
+
+it('failed event replacement rolls back the original log', async () => {
+  const store = new SqliteStore(makeAdapter(), DB_PATH, silentLogger);
+  await store.init();
+  const original: TimelineEvent = { time: '2026-09-15 10:00:00', type: 'blur', file: 'a.md', state: 'inactive' };
+  store.appendEvents([original]);
+  expect(() => store.replaceEvents([{ ...original, time: undefined } as unknown as TimelineEvent])).toThrow();
+  expect(store.getEvents()).toEqual([original]);
+  await store.close();
+});

@@ -103,6 +103,32 @@ export interface PluginSettings {
    * Mobile always shows a single icon regardless — there is no room for more.
    */
   statusBarIconsOnly: boolean;
+
+  //  --------------------------------------------------------------------------
+  // 落盘时机 / when the vault file is written
+  //  --------------------------------------------------------------------------
+  //
+  //  改动总是先进浏览器自己的 IndexedDB（崩溃不丢、不同步），vault 里的 SQLite 只在下列时机写。
+  //  四个开关各自独立，用户自己权衡写入频率与同步冲突：关掉的越多文件越安静，但一旦没走到某个
+  //  时机就崩溃，那份改动就只在 IndexedDB 里，下次启动才补进文件。
+  //
+  //  Changes always land in the browser own IndexedDB first (survives a crash, never synced).
+  //  The SQLite file in the vault is written only at the moments below. The four switches are
+  //  independent so the user weighs write frequency against sync conflicts themselves: the more
+  //  that are off, the quieter the file — but a crash before the next enabled moment leaves that
+  //  change in IndexedDB only, applied to the file on the next start.
+
+  /** 每轮会话结束就写 / write whenever a session ends */
+  flushOnSessionEnd: boolean;
+
+  /** 退出 Obsidian / 卸载插件时写 / write on quit or plugin unload */
+  flushOnQuit: boolean;
+
+  /** 定时批量写 / write on a timer */
+  flushOnInterval: boolean;
+
+  /** 定时批量写的间隔（分钟）/ the timer interval, in minutes */
+  flushIntervalMinutes: number;
 }
 
 //  ============================================================================
@@ -157,6 +183,24 @@ export interface TimerFileState {
   pauseStartTimestamp: number | null;
   sessionObject: SessionStateMap | null;
   pausedRanges: PausedRange[];
+
+  /**
+   * 用户明确丢弃过这一轮 / the user explicitly discarded a session on this file.
+   *
+   * 丢弃是一句明确的"这轮我不要了"，所以在这之后自动开始就是在推翻用户的动作。置位后
+   * `shouldAutoStart` 对该文件一律返回 false，直到用户手动开始（或这文件又跑完保存一轮）。
+   * 实测：丢弃 → 点到别处解绑 → 点回笔记，被 autoStartMode=always 拉起，读起来就是"丢弃后自动开始"。
+   *
+   * Discarding says "I do not want this round", so auto-starting afterwards would overrule the user.
+   * Once set, `shouldAutoStart` returns false for that file until the user starts it by hand (or the
+   * file completes a saved round). Measured: discard → click away (unbind) → click back, and
+   * autoStartMode=always pulls it back up — which reads as "it restarts itself after a discard".
+   */
+  discardedByUser?: boolean;
+  /** 手动保存后等待再次手动开始 / explicit save blocks automatic restart. */
+  savedByUser?: boolean;
+  /** 本轮分屏阅读 / split reading for this session only. */
+  splitReading?: boolean;
 }
 
 /**
@@ -177,6 +221,13 @@ export function readingSeconds(file: TimerFileState): number {
  */
 export function wallClockSeconds(file: TimerFileState): number {
   return file.activeSeconds + file.unfocusedSeconds + file.pausedSeconds;
+}
+
+/** 未结算暂停也参与显示和保存 / include an ongoing pause in display and save. */
+export function liveWallClockSeconds(file: TimerFileState, nowMs: number): number {
+  const pending = file.status === 'paused' && file.pauseStartTimestamp !== null
+    ? Math.max(0, Math.floor((nowMs - file.pauseStartTimestamp) / 1000)) : 0;
+  return wallClockSeconds(file) + pending;
 }
 
 //  ============================================================================
@@ -323,7 +374,18 @@ export type PendingWrite = TimelineStartWrite | TimelineDiscardWrite | SessionWr
 export interface TimerState {
   activeFilePath: string | null;
   files: Map<string, TimerFileState>;
-  isPaused: boolean;
+  /**
+   * 没有"全局暂停中"这个标志 / there is deliberately no global paused flag.
+   *
+   * 暂停是**会话**的属性（`TimerFileState.status`），而同时只可能有一个会话在跑，所以在状态树里再存
+   * 一份只会多出一个能被写脏的地方：实测「暂停 → 丢弃 → 重新开始」之后，那份标志留在 true 上，TICK
+   * 于是每次都提前返回，计时停在 0 秒不动，直到再手动暂停/继续一次才恢复。
+   *
+   * Pausing is a property of the *session* (`TimerFileState.status`), and only one session runs at a
+   * time, so a second copy in the state tree only adds somewhere for it to go stale. Measured: after
+   * pause → discard → start, that copy stayed true, every tick returned early, and the clock sat at
+   * 0 seconds until the user toggled pause twice by hand.
+   */
   isIdle: boolean;
   /**
    * whether the Obsidian window is focused.
@@ -410,6 +472,7 @@ export type TimerAction =
       type: Extract<ActionType, 'SET_WINDOW_FOCUS'>;
       payload: { focused: boolean };
     }
+  | { type: Extract<ActionType, 'SET_SPLIT_READING'>; payload: { filePath: string; enabled: boolean } }
   | { type: Extract<ActionType, 'UNBIND_FILE'> }
   | { type: Extract<ActionType, 'MANUAL_START'> }
   | { type: Extract<ActionType, 'MANUAL_PAUSE'> }
@@ -465,6 +528,8 @@ export interface FileTimelineEvent {
   activeSeconds?: number;
 
   unfocusedSeconds?: number;
+  /** 保留失焦来源，仅修改归属 / preserve blur provenance while changing attribution. */
+  unfocusedDisposition?: 'reading' | 'paused' | 'unfocused';
 }
 
 /** A discarded session (no `state` field in real data). */

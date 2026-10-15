@@ -47,21 +47,27 @@ import {
   overviewWeekTotals,
 } from '../core/overview';
 import { buildDocumentDayRows, weekReadingSeconds } from '../core/recordsTimeline';
-import { isPluginViewKey, pluginViewLabel } from '../core/activePath';
+import { isPluginViewKey } from '../core/activePath';
 import {
+  CHANNEL_CLASSES,
+  filterRowsByClass,
   readingChannelClass,
   readingChannelLabel,
   renderHeatmap,
+  renderHeatmapLegend,
   renderSegmentDetail,
   selectSegment,
   type HeatmapBlock,
   type HeatmapRow,
   type HeatmapSegment,
+  type LegendEntry,
 } from './heatmapRender';
 import { renderTimelineList, type TimelineNode } from './timelineList';
 import { HScrollTicker } from './hScrollTicker';
 import { createSecondPie } from './secondPie';
 import { docState, stateIcon } from './StatusBar';
+import { UnfocusedModal } from './UnfocusedModal';
+import { renderManualFlagsTable, renderManualSessionDetail } from './manualSessionDetail';
 import { appendDurationParts, setClockTime, setReadTime } from './durationText';
 import {
   buildFileRecords,
@@ -69,7 +75,7 @@ import {
   getTodaySeconds,
   getTodaySessionCount,
 } from '../core/timeline';
-import { wallClockSeconds } from '../core/types';
+import { liveWallClockSeconds } from '../core/types';
 import type { FileRecord, PluginSettings, TimelineEvent } from '../core/types';
 import type { Clock } from '../services/clock';
 import type { ManualTimerService } from '../services/ManualTimerService';
@@ -176,6 +182,19 @@ export class ActivitySidebarView extends ItemView {
    */
   private nameTicker: HScrollTicker | null = null;
 
+  /**
+   * 被图例关掉的那几类 / the kinds the legend has switched off.
+   *
+   * 键就是段的取色类（文档/总看板）或覆盖层的自报名（手动面板的暂停块、标记），所以三个面板的键
+   * 互不冲突，共用一个集合即可。它是**结构**的一部分：关掉一类会改变图里有哪些段，因此必须进签名。
+   *
+   * The keys are the segments' colouring classes (document / overview) or the overlays' own names
+   * (the manual panel's pause blocks and marks), so the three panels cannot collide and one set
+   * serves them all. It is part of the *structure*: hiding a kind changes which segments the chart
+   * has, so it belongs in the signature.
+   */
+  private hiddenHeatmap = new Set<string>();
+
   /** structural signature, to avoid per-second re-render */
   private signature = '';
   private unsubscribe: (() => void) | null = null;
@@ -237,6 +256,13 @@ export class ActivitySidebarView extends ItemView {
     this.render();
   }
 
+  /** 点图例：把这一类收起 / 放回 / toggle one kind off the chart and back. */
+  private toggleHeatmapClass(key: string): void {
+    if (this.hiddenHeatmap.has(key)) this.hiddenHeatmap.delete(key);
+    else this.hiddenHeatmap.add(key);
+    this.render();
+  }
+
   /**
    * Draw a heatmap whose stretches open a "what happened" block when clicked.
    *
@@ -261,22 +287,35 @@ export class ActivitySidebarView extends ItemView {
     events: readonly TimelineEvent[],
     /** The day the chart was drawn for, so the detail can name the right clock times. */
     day: string,
+    /** 图例条目；给了就在图**上方**画一条可点的图例 / legend entries; drawn above the chart */
+    legend?: readonly LegendEntry[],
     /** Extra layer drawn inside each row's track; see `renderHeatmap`. */
     overlay?: (bar: HTMLElement, hour: number) => void,
+    detail?: { groupOf: (segment: S) => string; render: (panel: HTMLElement, segment: S) => void },
   ): boolean {
     let panel: HTMLElement | null = null;
 
+    //  图例在图上方，与图共用同一套取色类：点名字隐藏那一类，段被滤掉但行与坐标不动，再点回原位。
+    //  The legend sits above the chart and shares its colouring classes: clicking a name hides that
+    //  kind, the rows and their coordinates stay put, and clicking again restores the exact picture.
+    if (legend && legend.length > 0) {
+      renderHeatmapLegend(parent, legend, this.hiddenHeatmap, (key) => this.toggleHeatmapClass(key));
+    }
+
+    const shown = filterRowsByClass(rows, classOf, this.hiddenHeatmap);
+
     const drawn = renderHeatmap(
       parent,
-      rows,
+      shown,
       classOf,
       labelOf,
       (block, hour, element) => {
         if (!panel) return;
-        const isSelected = selectSegment(parent, element);
+        const isSelected = selectSegment(parent, element, detail?.groupOf(block.members[0]!));
         panel.empty();
         // Clicking the lit stretch again clears it, so the block can be dismissed in place.
         if (!isSelected) return;
+        if (detail) { detail.render(panel, block.members[0]!); return; }
         const info = describe(block, hour);
         renderSegmentDetail(panel, {
           hour,
@@ -290,6 +329,7 @@ export class ActivitySidebarView extends ItemView {
         });
       },
       overlay,
+      detail?.groupOf,
     );
 
     if (!drawn) return false;
@@ -349,6 +389,9 @@ export class ActivitySidebarView extends ItemView {
       //  happens to trigger a re-render.
       settings.countUnfocusedAsReading,
       state.activeFilePath ?? '-',
+      state.isWindowFocused,
+      state.files.get(state.activeFilePath ?? '')?.splitReading,
+      state.isIdle,
       state.manual.status,
 
       //  The mark count belongs in the signature: it shapes the marks section, and leaving
@@ -363,6 +406,11 @@ export class ActivitySidebarView extends ItemView {
       String(this.calendarOpen),
       this.calendarMonth,
       state.files.get(state.activeFilePath ?? '')?.status ?? '-',
+
+      //  图例的开关决定图里有哪些段，属于结构；不进签名就点了没反应
+      //  The legend's toggles decide which segments the chart has — structure, so without them in
+      //  the signature a click would do nothing.
+      [...this.hiddenHeatmap].sort().join(','),
     ];
 
     // the count only shapes the manual panel
@@ -606,6 +654,11 @@ export class ActivitySidebarView extends ItemView {
       }),
       this.deps.history.getEvents(),
       todayStr(),
+      [
+        { key: CHANNEL_CLASSES['in-window'], className: CHANNEL_CLASSES['in-window'], label: t('tabInWindow') },
+        { key: CHANNEL_CLASSES['out-of-window'], className: CHANNEL_CLASSES['out-of-window'], label: t('tabUnfocused') },
+        { key: CHANNEL_CLASSES.paused, className: CHANNEL_CLASSES.paused, label: t('recChannelPaused') },
+      ],
     );
 
     if (!drawn) {
@@ -670,7 +723,7 @@ export class ActivitySidebarView extends ItemView {
     const status = file?.status ?? STATUS.IDLE;
     const running = status === STATUS.TRACKING || status === STATUS.PAUSED;
 
-    // line 1 — 本轮时长，无标签；未计时则写"未开始" / this round's wall clock, or "not started" ──
+    // line 1 — 本轮有效阅读时长 / this round's reading time, or "not started" ──
     //  两种状态共用同一套三行版式，只有第一行的内容不同：以前未计时会把文件名顶到第一行、第二行写
     //  "未开始"，于是同一个面板在两种状态下长得不一样，看的人得重新认一次。
     //  Both states share one three-line layout and only the first line's content differs. The idle
@@ -712,7 +765,9 @@ export class ActivitySidebarView extends ItemView {
       const box = line2.createSpan({ cls: 'rtt-live-deduct' });
       box.createSpan({ cls: 'rtt-live-sep', text: ' · ' });
       this.liveNodes.unfocusedBox = box;
-      this.liveNodes.unfocused = box.createSpan({ cls: 'rtt-live-deduct-value' });
+      this.liveNodes.unfocused = box.createEl('button', { cls: 'rtt-live-deduct-value clickable-icon' });
+      setTooltip(this.liveNodes.unfocused, t('unfocusedManage'));
+      this.liveNodes.unfocused.addEventListener('click', () => new UnfocusedModal(this.app, { history: this.deps.history, service: this.deps.service, log: this.deps.log, filePath, onChanged: () => this.refresh() }).open());
     }
 
     //  名字太长就在这一行里横着走 / an over-long name scrolls along this row
@@ -747,6 +802,12 @@ export class ActivitySidebarView extends ItemView {
       return;
     }
 
+    new Setting(section)
+      .setName(t('splitReading'))
+      .setDesc(t('splitReadingDesc'))
+      .addToggle((toggle) => toggle.setValue(file?.splitReading === true).onChange((enabled) => {
+        void this.deps.service.setSplitReading(enabled).catch((error: unknown) => this.deps.log.warn('[RTT] split reading failed:', error));
+      }));
     const paused = status === STATUS.PAUSED;
     this.iconButton(bar, paused ? 'play' : 'pause', paused ? t('btnResume') : t('btnPause'), () => {
       void this.deps.service.togglePause();
@@ -1059,35 +1120,11 @@ export class ActivitySidebarView extends ItemView {
     const state = this.deps.store.getState();
     const flags = state.manual.flags;
 
+    if (state.manual.status === 'idle' && flags.length === 0) return;
+
     new Setting(root).setName(t('manualFlagsTitle')).setHeading();
 
-    if (flags.length === 0) {
-      root.createDiv({ cls: 'rtt-list-empty', text: t('manualNoFlags') });
-      return;
-    }
-
-    const intervals = flagIntervals(flags);
-    const list = root.createDiv({ cls: 'rtt-flag-list' });
-
-    for (const [index, mark] of flags.entries()) {
-      const chip = list.createDiv({ cls: 'rtt-flag-chip' });
-      setIcon(chip.createSpan({ cls: 'rtt-flag-icon' }), 'flag');
-
-      // 显示的是"这一轮到上一轮之间过了多久"，而不是从本轮开始累计的秒数 —— 后者只会越拉越长，
-      // 看不出这一段实际花了多久。累计值放到悬浮提示里备用。
-      // The chip shows how long *this* stretch took, not the cumulative offset: a cumulative
-      // number only ever grows and never answers "how long did that bit take". The cumulative
-      // value is still available on hover.
-      chip.createSpan({ text: formatDurationWithSeconds(intervals[index] ?? 0) });
-      setTooltip(
-        chip,
-        `${t('manualFlagAt').replace('{n}', String(index + 1))} · ${mark.atTime.slice(11, 16)} · ${formatDurationWithSeconds(mark.atSeconds)}`,
-      );
-      chip.setAttribute(
-        'aria-label',
-        `${t('manualFlagAt').replace('{n}', String(index + 1))} · ${formatDurationWithSeconds(intervals[index] ?? 0)}`,
-      );
-    }
+    renderManualFlagsTable(root, flags);
   }
 
   /**
@@ -1193,17 +1230,16 @@ export class ActivitySidebarView extends ItemView {
       return;
     }
 
-    const legend = head.createDiv({ cls: 'rtt-records-meta' });
-    for (const [cls, label] of [
-      ['rtt-ov-doc', t('ovDocument')],
-      ['rtt-ov-view', t('ovView')],
-      ['rtt-ov-manual', t('ovManual')],
-      ['rtt-ov-both', t('ovLegendBoth')],
-    ] as const) {
-      const item = legend.createSpan({ cls: 'rtt-ov-legend-item' });
-      item.createSpan({ cls: `rtt-ov-swatch ${cls}` });
-      item.createSpan({ text: label });
-    }
+    //  图例改由 renderClickableHeatmap 画在图上方，且可点（见 LegendEntry）；原来这里那条只读图例
+    //  就不再单独画了。
+    //  The legend is now drawn above the chart by renderClickableHeatmap, and is clickable (see
+    //  LegendEntry); the read-only one that used to live here is gone.
+    const ovLegend: LegendEntry[] = [
+      { key: 'rtt-ov-doc', className: 'rtt-ov-doc', label: t('ovDocument') },
+      { key: 'rtt-ov-view', className: 'rtt-ov-view', label: t('ovView') },
+      { key: 'rtt-ov-manual', className: 'rtt-ov-manual', label: t('ovManual') },
+      { key: 'rtt-ov-both', className: 'rtt-ov-both', label: t('ovLegendBoth') },
+    ];
 
     // One thing, one colour: a stretch covered by a single ledger takes that ledger's
     // colour, and anything covered twice gets the striped "both" fill.
@@ -1228,6 +1264,7 @@ export class ActivitySidebarView extends ItemView {
       }),
       this.deps.history.getEvents(),
       this.day,
+      ovLegend,
     );
 
     root.createDiv({ cls: 'rtt-records-meta', text: t('ovExplain') });
@@ -1463,6 +1500,19 @@ export class ActivitySidebarView extends ItemView {
     const sessions = this.deps.history.getManualSessions();
     const rows = buildManualDayRows(sessions, this.day);
     const marks = buildManualDayFlags(sessions, this.day);
+    const selectRound = (target: HTMLElement, id: string): void => {
+      target.addClass('is-clickable');
+      target.setAttribute('role', 'button');
+      target.tabIndex = 0;
+      const select = (): void => {
+        const segment = [...head.querySelectorAll<HTMLElement>('.rtt-hm-seg')].find((element) => element.dataset.rttGroup === id);
+        segment?.click();
+      };
+      target.addEventListener('click', select);
+      target.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); select(); }
+      });
+    };
 
     //  Manual stretches are green, the same colour the overview gives "manual": one thing
     //  must be one colour across panels, or every legend has to be relearned.
@@ -1482,31 +1532,47 @@ export class ActivitySidebarView extends ItemView {
       }),
       this.deps.history.getEvents(),
       this.day,
+      [
+        { key: 'rtt-hm-manual', className: 'rtt-hm-manual', label: t('panelManual') },
+        { key: 'pause', className: 'rtt-hm-pause-block', label: t('recChannelPaused') },
+        { key: 'flag', className: 'rtt-hm-flag', label: t('manualFlag') },
+      ],
       (bar, hour) => {
         // 暂停块：橙色的覆盖层。可以重排的元素与热力图同一坐标系，所以用同一套百分比定位。
         // Pause blocks: an orange overlay, positioned with the same percentages as the chart.
-        for (const pause of rows[hour]!.pauseSegments) {
-          const block = bar.createDiv({ cls: 'rtt-hm-pause-block' });
-          block.setCssProps({
-            left: `${(pause.startMinute / 60) * 100}%`,
-            width: `${Math.max(0.4, (pause.durationMinutes / 60) * 100)}%`,
-          });
+        // 覆盖层不是段，所以不在 filterRowsByClass 的管辖里，隐藏与否由这里自己看图例开关。
+        // An overlay is not a segment and so falls outside filterRowsByClass; it consults the legend
+        // itself.
+        if (!this.hiddenHeatmap.has('pause')) {
+          for (const pause of rows[hour]!.pauseSegments) {
+            const block = bar.createDiv({ cls: 'rtt-hm-pause-block' });
+            setTooltip(block, t('evPause'));
+            selectRound(block, pause.session.id);
+            block.setCssProps({
+              left: `${(pause.startMinute / 60) * 100}%`,
+              width: `${Math.max(0.4, (pause.durationMinutes / 60) * 100)}%`,
+            });
+          }
         }
 
         // 标记：一枚红色竖线，落在它被打下的那一刻
         // Marks: a red tick at the exact minute the mark was placed.
-        for (const mark of marks) {
-          if (Math.floor(mark.atMinute / 60) !== hour) continue;
-          const tick = bar.createDiv({ cls: 'rtt-hm-flag' });
-          tick.setCssProps({ left: `${((mark.atMinute % 60) / 60) * 100}%` });
-          setTooltip(
-            tick,
-            `${t('manualFlagAt').replace('{n}', String(mark.index))} · ${formatDurationWithSeconds(
-              mark.intervalSeconds,
-            )}`,
-          );
+        if (!this.hiddenHeatmap.has('flag')) {
+          for (const mark of marks) {
+            if (Math.floor(mark.atMinute / 60) !== hour) continue;
+            const tick = bar.createDiv({ cls: 'rtt-hm-flag' });
+            selectRound(tick, mark.session.id);
+            tick.setCssProps({ left: `${((mark.atMinute % 60) / 60) * 100}%` });
+            setTooltip(
+              tick,
+              `${t('manualFlagAt').replace('{n}', String(mark.index))} · ${formatDurationWithSeconds(
+                mark.intervalSeconds,
+              )}`,
+            );
+          }
         }
       },
+      { groupOf: (segment) => segment.session.id, render: (panel, segment) => renderManualSessionDetail(panel, segment.session) },
     );
 
     if (!drawn) {
@@ -1831,28 +1897,25 @@ export class ActivitySidebarView extends ItemView {
       // unit are separate nodes, and only rebuilding them keeps the muted-unit styling.
       const file = filePath ? state.files.get(filePath) : undefined;
 
-      //  本轮时长 = 墙钟：窗口内 + 脱离窗口 + 暂停。这正是第二行那个负数的被减数，两行必须
-      //  用同一个被减数，否则减出来的差对不上。
-      //  This round is wall clock — in-window plus away plus paused. It is the very figure the
-      //  second line deducts from, and the two must share one minuend or the difference lies.
+      // 主计时只显示有效阅读秒数，失焦或暂停时冻结；负数独立累计未阅读时长。
+      // The headline freezes while away or paused; the deduction keeps counting separately.
       if (this.liveNodes.session) {
-        setReadTime(this.liveNodes.session, file ? wallClockSeconds(file) : 0, mode);
+        setReadTime(this.liveNodes.session, file?.activeSeconds ?? 0, mode);
       }
 
       if (this.liveNodes.unfocused) {
-        const away = file ? wallClockSeconds(file) - file.activeSeconds : 0;
-        this.liveNodes.unfocused.setText(away > 0 ? `-${formatDurationWithSeconds(away)}` : '');
+        const away = file ? liveWallClockSeconds(file, this.deps.clock.now()) - file.activeSeconds : 0;
+        const seconds = Math.floor(away);
+        this.liveNodes.unfocused.setText(away > 0 ? `-${Math.floor(seconds / 60)}分${seconds % 60}秒` : '');
 
         //  为 0 时整段收起：常驻的"-0秒"只是噪声
         //  The whole box collapses at zero: a permanent "-0秒" is only noise
         this.liveNodes.unfocusedBox?.toggleClass('is-empty', away <= 0);
       }
 
-      //  60 秒圆饼：走的是本轮的墙钟，与本行上面的数字同一个被减数，第 60 秒整好转满一圈再从头来。
-      //  The 60-second pie follows the same wall clock as the figure above it, filling exactly once
-      //  every 60 seconds and then starting over.
+      // 圆饼与主计时同步 / The pie follows the headline's reading seconds.
       if (this.liveNodes.pie) {
-        const elapsed = file ? wallClockSeconds(file) : 0;
+        const elapsed = file?.activeSeconds ?? 0;
         this.liveNodes.pie.setCssProps({
           '--rtt-pie-pct': String(((elapsed % 60) / 60) * 100),
         });
@@ -1879,6 +1942,8 @@ export class ActivitySidebarView extends ItemView {
         const channels = getDayChannelSeconds(
           this.deps.history.getEvents(),
           state.files.values(),
+          this.deps.clock.today(),
+          this.deps.clock.now(),
         );
         const read = channels.activeSeconds;
         const notRead = channels.unfocusedSeconds + channels.pausedSeconds;

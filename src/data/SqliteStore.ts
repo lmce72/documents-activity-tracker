@@ -30,6 +30,15 @@ import initSqlJs from 'sql.js';
 import type { Database, SqlJsStatic } from 'sql.js';
 
 import type { Logger } from '../core/logger';
+import { PendingBuffer } from './pendingBuffer';
+
+/**
+ * 什么时刻在要求落盘 / which moment is asking for a write.
+ *
+ * 不传（或 null）= 合并刷盘，没有明确时机，只做暂存、不写文件。
+ * Absent (or null) means a coalesced flush with no moment attached: buffer, never write the file.
+ */
+export type FlushTrigger = 'session-end' | 'interval' | 'quit';
 import type { ManualSession, RecordEntry, TimelineEvent } from '../core/types';
 import type { DataAdapter } from './adapter';
 import type { HistoryStore } from './historyStore';
@@ -105,12 +114,48 @@ export class SqliteStore implements HistoryStore {
   /** whether a flush failure was already reported */
   private flushErrorReported = false;
 
+  /**
+   * 是否有一份比 vault 文件新的快照躺在浏览器库里 / whether the browser holds a snapshot
+   * newer than the vault file.
+   *
+   * 这个标志与 dirty 分工：dirty 说的是"内存有改动没存过"，buffered 说的是"vault 文件落后了"。
+   * 推迟落盘时内存已经存进暂存，所以 dirty 归零，但文件仍落后 —— 只看 dirty 就永远补不上。
+   *
+   * The two flags divide the work: dirty means "memory has unstored changes", buffered means
+   * "the vault file is behind". Deferring a write stores memory into the buffer and clears dirty,
+   * yet the file is still behind — looking at dirty alone would never catch up.
+   */
+  private buffered = false;
+
+  /**
+   * 落盘闸门 / the flush gate.
+   *
+   * 返回 false 时本次改动只进浏览器暂存，vault 文件不动。由设置驱动，四种时机各自独立开关。
+   * When it returns false the change goes to the browser buffer only and the vault file is left
+   * alone. Driven by settings; the four triggers each have their own switch.
+   */
+  private gate: (trigger: FlushTrigger | null) => boolean = () => false;
+
+  /** 未落盘快照的暂存 / the buffer for unflushed snapshots */
+  private readonly pending: PendingBuffer;
+
   constructor(
     private readonly adapter: DataAdapter,
     /** database path relative to the vault */
     private readonly dbPath: string,
     private readonly log: Logger,
-  ) {}
+  ) {
+
+    //  在构造函数体里建，而不是字段初始化器：字段初始化跑在参数属性赋值之前，那时 this.log 还是 undefined
+    //  Built in the constructor body rather than a field initializer: initializers run before the
+    //  parameter properties are assigned, when this.log is still undefined.
+    this.pending = new PendingBuffer(log);
+  }
+
+  /** 设定落盘闸门 / set the flush gate. */
+  setFlushGate(gate: (trigger: FlushTrigger | null) => boolean): void {
+    this.gate = gate;
+  }
 
   get path(): string {
     return this.dbPath;
@@ -132,6 +177,25 @@ export class SqliteStore implements HistoryStore {
     //  The bundled types omit `wasmBinary`, but the Emscripten runtime honours it — and it
     //  is what lets us avoid fetch entirely.
     this.SQL = await initSqlJs({ wasmBinary } as never);
+
+    //  暂存里那份比 vault 文件新：它是上一次被推迟的落盘，文件还没跟上。崩溃之后靠它续上，
+    //  而不是把 vault 文件里那份旧的当成真相。
+    //  The buffered snapshot is newer than the vault file: it is the write that was deferred and
+    //  the file never caught up. After a crash it is what continues the story — the stale file is
+    //  not the truth.
+    const buffered = await this.pending.read();
+    if (buffered && buffered.bytes.byteLength > 0) {
+      this.db = new this.SQL.Database(new Uint8Array(buffered.bytes));
+      this.migrateSchemaIfNeeded();
+      await this.pending.clear();
+      const eventCount = this.count('SELECT COUNT(*) AS n FROM events');
+      this.log.info(
+        '[RTT][sqlite] 已从浏览器暂存恢复 / recovered from the browser buffer:',
+        eventCount,
+        '条事件 / events',
+      );
+      return { created: false, eventCount };
+    }
 
     const exists = await this.adapter.exists(this.dbPath);
     if (exists) {
@@ -156,7 +220,7 @@ export class SqliteStore implements HistoryStore {
 
   /** Flush and close. */
   async close(): Promise<void> {
-    await this.flushNow();
+    await this.flushNow({ trigger: 'quit' });
     this.db?.close();
     this.db = null;
     this.SQL = null;
@@ -214,8 +278,15 @@ export class SqliteStore implements HistoryStore {
   /** Replace the whole event log. */
   replaceEvents(events: readonly TimelineEvent[]): void {
     const db = this.requireDb();
-    db.run('DELETE FROM events');
-    this.insertEvents(events);
+    db.run('BEGIN TRANSACTION');
+    try {
+      db.run('DELETE FROM events');
+      this.insertEvents(events, false);
+      db.run('COMMIT');
+    } catch (error) {
+      db.run('ROLLBACK');
+      throw error;
+    }
     this.markDirty();
   }
 
@@ -365,15 +436,27 @@ export class SqliteStore implements HistoryStore {
    * Flush right away.
    * Serialised through a queue: two interleaved exports would write a truncated database.
    */
-  async flushNow(): Promise<void> {
+  async flushNow(options: { force?: boolean; trigger?: FlushTrigger } = {}): Promise<void> {
     if (this.flushTimer !== null) {
       clearTimeout(this.flushTimer);
       this.flushTimer = null;
     }
-    if (!this.db || !this.dirty) return;
+
+    //  buffered 也算有待收尾：内存可能已经不脏，但 vault 文件还落后一截
+    //  buffered counts as unfinished too: memory may be settled while the vault file is behind
+    if (!this.db || (!this.dirty && !this.buffered)) return;
+
+    //  force 用于退出、手动保存、首次建库这些必须落盘的时刻
+    //  force is for the moments that must reach the file: quitting, the manual save, creating a
+    //  brand-new database.
+    const allowed = options.force === true || this.gate(options.trigger ?? null);
 
     const pending = this.flushChain.then(async () => {
-      if (!this.db || !this.dirty) return;
+
+      //  与外层同一条件：buffered 也要收尾，否则推迟过一次之后就永远写不出去了
+      //  Same condition as the outer check: buffered needs finishing too, or one deferred write means
+      //  the file is never written again.
+      if (!this.db || (!this.dirty && !this.buffered)) return;
       try {
         const bytes = this.db.export();
 
@@ -383,7 +466,32 @@ export class SqliteStore implements HistoryStore {
           bytes.byteOffset,
           bytes.byteOffset + bytes.byteLength,
         ) as ArrayBuffer;
-        await this.adapter.writeBinary(this.dbPath, payload);
+
+        //  时机没到：整库存进浏览器自己的库，vault 文件一个字节都不动。不是"先放内存等会儿" ——
+        //  那样崩溃就丢了。
+        //
+        //  Not the moment: the whole database goes into the browser's own store and the vault file is
+        //  not touched at all. Not "park it in memory for later" — that loses it on a crash.
+        let stored = false;
+        if (!allowed) {
+          try {
+            await this.pending.write(payload);
+            this.buffered = true;
+            stored = true;
+          } catch (error) {
+
+            //  暂存本身不可用（隐私模式、Node 测试环境）：宁可这次就撞同步，也不能丢数据。
+            //  The buffer itself is unavailable (a private mode, the Node test environment): better to
+            //  meet sync this once than to lose the data.
+            this.log.warn('[RTT][sqlite] 暂存不可用，改为直接落盘 / buffer unavailable, writing the file:', error);
+          }
+        }
+
+        if (!stored) {
+          await this.adapter.writeBinary(this.dbPath, payload);
+          await this.pending.clear();
+          this.buffered = false;
+        }
         this.dirty = false;
         this.flushErrorReported = false;
       } catch (error) {
@@ -410,7 +518,7 @@ export class SqliteStore implements HistoryStore {
   }
 
   /** Insert events in one transaction. */
-  private insertEvents(events: readonly TimelineEvent[]): void {
+  private insertEvents(events: readonly TimelineEvent[], ownTransaction = true): void {
     const db = this.requireDb();
     const stmt = db.prepare(
       `INSERT INTO events
@@ -419,7 +527,7 @@ export class SqliteStore implements HistoryStore {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     try {
-      db.run('BEGIN');
+      if (ownTransaction) db.run('BEGIN');
       for (const event of events) {
         const row = eventToRow(event);
         stmt.run([
@@ -436,9 +544,9 @@ export class SqliteStore implements HistoryStore {
           row.raw,
         ]);
       }
-      db.run('COMMIT');
+      if (ownTransaction) db.run('COMMIT');
     } catch (error) {
-      db.run('ROLLBACK');
+      if (ownTransaction) db.run('ROLLBACK');
       throw error;
     } finally {
       stmt.free();

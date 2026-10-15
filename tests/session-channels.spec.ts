@@ -10,6 +10,8 @@ import { describe, expect, it } from 'bun:test';
 import { ActionTypes, MANUAL_STATUS, STATUS } from '../src/core/constants';
 import { createInitialState, createTimerReducer } from '../src/core/reducer';
 import {
+  selectDocumentDisplayState,
+  selectIsRunning,
   selectManualElapsedSeconds,
   selectReadingSeconds,
   selectUnfocusedSeconds,
@@ -74,6 +76,39 @@ function setFocus(ctx: ReturnType<typeof setup>, focused: boolean): void {
 }
 
 describe('窗口焦点双通道 / window-focus channels', () => {
+  it('失焦切换显示状态并冻结主计时，负数继续累计，聚焦后恢复', () => {
+    const ctx = setup();
+    startTracking(ctx);
+    tick(ctx, 5);
+    expect(selectDocumentDisplayState(ctx.getState())).toBe('running');
+    setFocus(ctx, false);
+    tick(ctx, 65);
+    const file = ctx.getState().files.get(FILE)!;
+    expect(selectDocumentDisplayState(ctx.getState())).toBe('unfocused');
+    expect(selectIsRunning(ctx.getState(), FILE)).toBe(false);
+    expect(file.activeSeconds).toBe(5);
+    expect(wallClockSeconds(file) - file.activeSeconds).toBe(65);
+    setFocus(ctx, true);
+    tick(ctx, 2);
+    expect(selectDocumentDisplayState(ctx.getState())).toBe('running');
+    expect(ctx.getState().files.get(FILE)!.activeSeconds).toBe(7);
+  });
+
+  it('未开始时也显示失焦，手动暂停在恢复焦点后仍保持暂停', () => {
+    const ctx = setup();
+    ctx.dispatch({ type: ActionTypes.SWITCH_FILE, payload: { fromPath: null, toPath: FILE, autoStart: false } });
+    setFocus(ctx, false);
+    expect(selectDocumentDisplayState(ctx.getState())).toBe('unfocused');
+    setFocus(ctx, true);
+    expect(selectDocumentDisplayState(ctx.getState())).toBe('idle');
+    startTracking(ctx);
+    ctx.dispatch({ type: ActionTypes.TOGGLE_PAUSE, payload: { filePath: FILE } });
+    setFocus(ctx, false);
+    expect(selectDocumentDisplayState(ctx.getState())).toBe('unfocused');
+    setFocus(ctx, true);
+    expect(selectDocumentDisplayState(ctx.getState())).toBe('paused');
+  });
+
   it('初始视为聚焦，聚焦期间仍记入 activeSeconds', () => {
     const ctx = setup();
     expect(ctx.getState().isWindowFocused).toBe(true);

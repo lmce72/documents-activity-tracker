@@ -39,14 +39,13 @@
     "resolveJsonModule": true,
     "noEmit": true,
 
-    /* 离线类型解析 / Offline type resolution
+    /* 本地路径别名 / Local path aliases
      * 不使用 baseUrl：TS 6 已弃用它，paths 现在直接相对本文件解析。
      * No baseUrl: TS 6 deprecates it; paths now resolve relative to this file. */
     "paths": {
-      "obsidian": ["./vendor/obsidian/obsidian.d.ts"],
       "@/*": ["./src/*"]
     }
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts", "vendor/**/*.d.ts"],
+  "include": ["src/**/*.ts", "tests/**/*.ts"],
   "exclude": ["node_modules", "dist", "backups", "docs"]
 }

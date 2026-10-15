@@ -61,10 +61,6 @@ export function installBindings(deps: BindingDeps): Binding {
   const registered: EventRef[] = [];
   let lastActivityAt = 0;
 
-  /** the active markdown view, if any. */
-  const activeView = (): MarkdownView | null =>
-    app.workspace.getActiveViewOfType(MarkdownView);
-
   /**
    * the active markdown file, or null when nothing is being read.
    *
@@ -81,13 +77,17 @@ export function installBindings(deps: BindingDeps): Binding {
    * So the fallback is scoped to our own views: focus anywhere else that is not a markdown
    * view means nothing is being read, and the session ends.
    */
-  const getActivePath = (): string | null =>
-    resolveActiveTarget({
-      markdownPath: activeView()?.file?.path ?? null,
-      focusedViewType: app.workspace.activeLeaf?.view?.getViewType?.() ?? null,
+  const getActivePath = (): string | null => {
+    const focused = app.workspace.activeLeaf?.view;
+    const recent = app.workspace.getMostRecentLeaf()?.view;
+    return resolveActiveTarget({
+      markdownPath: focused instanceof MarkdownView ? focused.file?.path ?? null : null,
+      focusedViewType: focused?.getViewType() ?? null,
       ownViewTypes: [...ownViewTypes],
-      activeFilePath: app.workspace.getActiveFile()?.path ?? null,
+      recentViewType: recent?.getViewType() ?? null,
+      recentMarkdownPath: recent instanceof MarkdownView ? recent.file?.path ?? null : null,
     });
+  };
 
   const getOpenPaths = (): string[] => {
     const paths: string[] = [];
@@ -151,7 +151,11 @@ export function installBindings(deps: BindingDeps): Binding {
 
   //  Minimising or switching virtual desktops fires visibilitychange but not blur
   plugin.registerDomEvent(document, 'visibilitychange', () => {
-    void service.onWindowFocusChange(document.visibilityState === 'visible');
+    if (document.visibilityState !== 'visible') {
+      void service.setSplitReading(false).then(() => service.onWindowFocusChange(false)).catch((error: unknown) => log.warn('[RTT] visibility handling failed:', error));
+    } else {
+      void service.onWindowFocusChange(document.hasFocus());
+    }
   });
 
   // Mobile: neither `window.blur/focus` nor `visibilitychange` is reliable once the app is
@@ -187,7 +191,9 @@ export function installBindings(deps: BindingDeps): Binding {
       .addListener('appStateChange', (state) => {
         // `isActive` is the only field; treat a missing payload as "still active" rather than
         // inventing an out-of-window stretch.
-        void service.onWindowFocusChange(state?.isActive !== false);
+        if (state?.isActive === false) {
+          void service.setSplitReading(false).then(() => service.onWindowFocusChange(false)).catch((error: unknown) => log.warn('[RTT] background handling failed:', error));
+        } else void service.onWindowFocusChange(true);
       })
       .then((handle) => {
         capacitorListener = handle;

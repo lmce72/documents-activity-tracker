@@ -121,17 +121,27 @@ describe('TimerService — 会话落盘 / flushing sessions', () => {
 
   it('自动闭合写 auto-save，显式保存写 save', async () => {
     const ctx = setup({ autoStartMode: 'always', minReadSeconds: 0 });
+
+    //  显式保存：写 save
+    //  An explicit save writes save
     await ctx.open(FILE);
     await ctx.advance(2);
     await ctx.service.saveCurrent('save');
 
+    //  再跑一轮并切走，让服务自己闭合：写 auto-save
+    //  A fresh round closed by switching away is written by the service as auto-save
+    await ctx.service.startCurrent();
+    await ctx.advance(2);
     ctx.setActive(OTHER);
     ctx.setOpen([OTHER]);
     await ctx.service.onActivePathChange();
-    await ctx.advance(2);
 
     expect(ctx.types()).toContain('save');
     expect(ctx.types()).toContain('auto-save');
+
+    //  已经保存过、又被顺带结算一次的会话不该再冒出一条空 auto-save
+    //  A session already saved must not be settled a second time into an empty auto-save
+    expect(ctx.types().filter((type) => type === 'auto-save')).toHaveLength(1);
   });
 
   it('低于起步阈值不写入记录', async () => {
@@ -140,7 +150,7 @@ describe('TimerService — 会话落盘 / flushing sessions', () => {
     await ctx.advance(3);
     await ctx.service.saveCurrent('save');
 
-    expect(ctx.types()).toEqual(['start']);
+    expect(ctx.types()).toEqual(['start', 'discard']);
     expect(ctx.history.getRecord(FILE)).toBeNull();
   });
 
@@ -225,6 +235,72 @@ describe('TimerService — 窗口失焦 / window blur', () => {
     const ctx = setup({ autoStartMode: 'always', documentTrackingEnabled: false });
     await ctx.service.onWindowFocusChange(false);
     expect(ctx.store.getState().isWindowFocused).toBe(true);
+  });
+});
+
+describe('TimerService — 丢弃后不再自动开始 / no auto-start after an explicit discard', () => {
+  it('显式丢弃后，切走再切回同一文件不会自动开表', async () => {
+    const ctx = setup({ autoStartMode: 'always', minReadSeconds: 0 });
+    await ctx.open(FILE);
+    await ctx.advance(3);
+    await ctx.service.discardCurrent();
+
+    //  点到别处（设置页、文件树之类不可追踪的地方）：绑定解开
+    //  Clicking somewhere else — settings, the file tree — drops the binding
+    ctx.setActive(null);
+    ctx.setOpen([]);
+    await ctx.service.onActivePathChange();
+
+    //  切回同一文件。autoStartMode=always 本来会开表，可用户刚明确丢弃过这一轮
+    //  Back on the same file: autoStartMode=always would start it, but the user just discarded it
+    await ctx.open(FILE);
+    await ctx.advance(3);
+
+    expect(ctx.types().filter((type) => type === 'start')).toHaveLength(1);
+    const file = ctx.store.getState().files.get(FILE)!;
+    expect(file.status).toBe('idle');
+    expect(file.activeSeconds).toBe(0);
+    expect(file.discardedByUser).toBe(true);
+  });
+
+  it('手动点「开始计时」不受这条限制，照常计时', async () => {
+    const ctx = setup({ autoStartMode: 'always', minReadSeconds: 0 });
+    await ctx.open(FILE);
+    await ctx.service.discardCurrent();
+
+    await ctx.service.startCurrent();
+    await ctx.advance(4);
+
+    const file = ctx.store.getState().files.get(FILE)!;
+    expect(file.status).toBe('tracking');
+    expect(file.activeSeconds).toBe(4);
+    expect(file.discardedByUser).toBe(false);
+  });
+
+  it('只压制被丢弃的那一个文件，别的文件照常自动开始', async () => {
+    const ctx = setup({ autoStartMode: 'always', minReadSeconds: 0 });
+    await ctx.open(FILE);
+    await ctx.service.discardCurrent();
+
+    //  换到另一个文档：它是新的一轮，与被丢弃的那轮无关
+    //  Another note is a fresh round, unrelated to the discarded one
+    ctx.setActive(OTHER);
+    ctx.setOpen([OTHER]);
+    await ctx.service.onActivePathChange();
+    await ctx.advance(2);
+
+    const other = ctx.store.getState().files.get(OTHER)!;
+    expect(other.status).toBe('tracking');
+    expect(other.activeSeconds).toBe(2);
+
+    //  再回到被丢弃的文件：依然不自动开 —— 要继续就得手动点开始
+    //  Back to the discarded file: still no auto-start. Continuing is a deliberate press.
+    await ctx.open(FILE);
+    await ctx.advance(3);
+
+    const file = ctx.store.getState().files.get(FILE)!;
+    expect(file.status).toBe('idle');
+    expect(file.activeSeconds).toBe(0);
   });
 });
 
@@ -499,4 +575,33 @@ describe('ManualTimerService — 手动计时 / manual timer', () => {
     await ctx.manual.stop('x');
     expect(ctx.history.flushCount).toBeGreaterThan(before);
   });
+});
+
+it('discarded short sessions stop extrapolating in derived records', async () => {
+  const {buildFileRecords}=await import('../src/core/timeline');
+  const ctx=setup({autoStartMode:'always',minReadSeconds:20});
+  await ctx.open(FILE);await ctx.advance(3);await ctx.service.saveCurrent('save');
+  ctx.clock.advanceSeconds(600);
+  expect(buildFileRecords(ctx.events(),ctx.clock.now())[FILE]).toBeUndefined();
+});
+
+it('explicit save blocks automatic restart on returning until manual start', async () => {
+ const ctx=setup({autoStartMode:'always',minReadSeconds:0,idleTimeoutEnabled:false});
+ await ctx.open(FILE);await ctx.advance(2);await ctx.service.saveCurrent('save');
+ await ctx.open(OTHER);ctx.setActive(FILE);await ctx.service.onActivePathChange();
+ expect(ctx.store.getState().files.get(FILE)?.status).toBe('idle');
+ await ctx.service.onActivePathChange();await ctx.advance(2);
+ expect(ctx.store.getState().files.get(FILE)?.status).toBe('idle');
+ await ctx.service.startCurrent();await ctx.advance(1);
+ expect(ctx.store.getState().files.get(FILE)?.status).toBe('tracking');
+ expect(ctx.store.getState().files.get(FILE)?.savedByUser).toBe(false);
+});
+
+it('start resolves a just-focused plugin view rather than the previous note', async () => {
+ const ctx=setup({autoStartMode:'manual',minReadSeconds:0});
+ await ctx.open(FILE);ctx.setActive('view:rss-dashboard-view');ctx.setOpen([FILE,'view:rss-dashboard-view']);
+ await ctx.service.startCurrent();
+ expect(ctx.store.getState().activeFilePath).toBe('view:rss-dashboard-view');
+ expect(ctx.store.getState().files.get('view:rss-dashboard-view')?.status).toBe('tracking');
+ expect(ctx.store.getState().files.get(FILE)?.activeSeconds).toBe(0);
 });

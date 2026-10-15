@@ -85,8 +85,9 @@ export interface ActiveTargetInput {
   focusedViewType: string | null;
   /** View types belonging to this plugin (its sidebar), which must not end a session. */
   ownViewTypes: readonly string[];
-  /** `workspace.getActiveFile()?.path` — the workspace's notion of the active file. */
-  activeFilePath: string | null;
+  /** 最近内容叶子的类型与文件，不能用工作区残留文件代替 / most recent content leaf. */
+  recentViewType?: string | null;
+  recentMarkdownPath?: string | null;
 }
 
 /**
@@ -101,9 +102,13 @@ export function resolveActiveTarget(input: ActiveTargetInput): string | null {
   const type = input.focusedViewType;
   if (!type) return null;
 
-  // Focus on one of our own views: the user is operating the panel while a note stays open
-  // behind it, so keep the workspace's active file.
-  if (input.ownViewTypes.includes(type)) return input.activeFilePath;
+  // 操作计时侧栏时继续跟随最近内容视图，保留插件视图而非回退到旧笔记。
+  // Sidebar controls follow the most recent content leaf, including plugin views.
+  if (input.ownViewTypes.includes(type)) {
+    if (!input.recentViewType || input.ownViewTypes.includes(input.recentViewType)) return null;
+    return resolveActiveTarget({ ...input, markdownPath: input.recentMarkdownPath ?? null,
+      focusedViewType: input.recentViewType, ownViewTypes: [] });
+  }
 
   // Focus on navigation chrome: nothing is being read.
   if (NON_READING_VIEW_TYPES.includes(type)) return null;

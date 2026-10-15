@@ -41,6 +41,7 @@ export const ActionTypes = {
   REQUEUE_PENDING_WRITES: 'REQUEUE_PENDING_WRITES',
 
   SET_WINDOW_FOCUS: 'SET_WINDOW_FOCUS',
+  SET_SPLIT_READING: 'SET_SPLIT_READING',
   /**
    *
    * The original had no action for "nothing trackable is open": one version forced
