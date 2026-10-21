@@ -29,7 +29,11 @@ import {
   type DurationPart,
 } from '../core/time';
 import { getLang, t } from '../core/i18n';
-import { countsPluginViewsAsReading, countsUnfocusedAsReading } from '../core/settings';
+import {
+  attributionPolicy,
+  countsPluginViewsAsReading,
+  countsUnfocusedAsReading,
+} from '../core/settings';
 import type { Logger } from '../core/logger';
 import {
   buildManualDayFlags,
@@ -39,15 +43,22 @@ import {
   manualSessionsOfDay,
   shiftDay,
 } from '../core/manualTimeline';
-import { selectManualElapsedSeconds } from '../core/selectors';
 import {
-  buildOverviewRows,
-  documentIntervals,
-  manualIntervals,
-  overviewTotals,
-  overviewWeekTotals,
-} from '../core/overview';
-import { buildDocumentDayRows, weekReadingSeconds } from '../core/recordsTimeline';
+  selectCountdownElapsedSeconds,
+  selectLiveSessionState,
+  selectManualElapsedMs,
+  selectManualElapsedSeconds,
+} from '../core/selectors';
+import {
+  accountIntervals,
+  dayAccount,
+  weekAccount,
+  type AccountInput,
+} from '../core/account';
+import { listUnfocusedIntervals } from '../core/unfocused';
+import type { AttributionPolicy } from '../core/types';
+import { buildOverviewRows } from '../core/overview';
+import { buildDocumentDayRows } from '../core/recordsTimeline';
 import { isPluginViewKey } from '../core/activePath';
 import {
   CHANNEL_CLASSES,
@@ -67,20 +78,35 @@ import { renderTimelineList, type TimelineNode } from './timelineList';
 import { HScrollTicker } from './hScrollTicker';
 import { createSecondPie } from './secondPie';
 import { docState, stateIcon } from './StatusBar';
-import { UnfocusedModal } from './UnfocusedModal';
 import { renderManualFlagsTable, renderManualSessionDetail } from './manualSessionDetail';
-import { appendDurationParts, setClockTime, setReadTime } from './durationText';
+import { appendDurationParts, setClockTime, setClockTimeMs, setReadTime } from './durationText';
 import {
   buildFileRecords,
-  getDayChannelSeconds,
-  getAllTodaySeconds,
   getTodaySeconds,
   getTodaySessionCount,
 } from '../core/timeline';
 import { liveWallClockSeconds } from '../core/types';
-import type { FileRecord, PluginSettings, TimelineEvent } from '../core/types';
+import type {
+  FileRecord,
+  PluginSettings,
+  TimerFileState,
+  TimerState,
+  TimelineEvent,
+} from '../core/types';
 import type { Clock } from '../services/clock';
 import type { ManualTimerService } from '../services/ManualTimerService';
+import type { CountdownTimerService } from '../services/CountdownTimerService';
+import type { LiveTimerEntry } from '../data/liveTimerSnapshot';
+import {
+  buildCountdownPlan,
+  countdownConfigFrom,
+  locatePhase,
+  modeLabelKey,
+  phaseLabelKey,
+  planTotalSeconds,
+  type CountdownPosition,
+} from '../core/countdown';
+import type { CountdownPlan, CountdownSession } from '../core/types';
 import type { TimerStore } from '../services/TimerStore';
 import type { TimerService } from '../services/TimerService';
 import type { HistoryStore } from '../data/historyStore';
@@ -97,16 +123,19 @@ export const VIEW_TYPE_RTT_SIDEBAR = 'documents-activity-tracker-sidebar';
 const TOP_LIST_ITEMS = 3;
 
 /** Panels. */
-type Panel = 'document' | 'manual' | 'overview';
+type Panel = 'document' | 'manual' | 'countdown' | 'overview';
+
 
 /** the numbers updated in place every second. */
 type LiveKey =
   | 'session'
   | 'unfocused'
   | 'fileToday'
-  | 'today'
+  | 'todayFocus'
+  | 'todayAway'
+  | 'todayIdle'
+  | 'todayPaused'
   | 'todayRead'
-  | 'todayUnread'
   | 'manual';
 
 interface LiveNodes {
@@ -123,16 +152,25 @@ interface LiveNodes {
   /** 计时中的 60 秒圆饼 / the 60-second pie inside the running badge */
   pie?: HTMLElement;
 
-  /** 四宫格 / the stat grid */
-  today?: HTMLElement;
+  /** 统计格 / the stat grid */
+  todayFocus?: HTMLElement;
+  todayAway?: HTMLElement;
+  todayIdle?: HTMLElement;
+  todayPaused?: HTMLElement;
   todayRead?: HTMLElement;
-  todayUnread?: HTMLElement;
 
   manual?: HTMLElement;
   /** the ring, driven by a CSS variable */
   ring?: HTMLElement;
 
   manualLabel?: HTMLElement;
+
+  /** 倒计时的读数是"还剩多久"，与正计时的方向相反，所以单独一组节点 */
+  countdown?: HTMLElement;
+  countdownLabel?: HTMLElement;
+  countdownRing?: HTMLElement;
+  /** 上一轮方案里当前那一段的高亮 / the current phase chip in the plan list */
+  countdownChips?: HTMLElement[];
 }
 
 /** View dependencies. */
@@ -144,6 +182,18 @@ export interface SidebarDeps {
   settings: () => PluginSettings;
   service: TimerService;
   manual: ManualTimerService;
+  countdown: CountdownTimerService;
+  /**
+   * 未保存计时的临时快照 / the snapshots of runs that were never saved.
+   * 视图只负责展示与按钮，读写都在装配层 —— 快照不属于状态树。
+   * The view only shows it and offers the buttons; reading and writing live in the assembly layer,
+   * because the snapshot is not part of the state tree.
+   */
+  recovery: {
+    pending: (kind: 'manual' | 'countdown') => LiveTimerEntry | null;
+    restore: () => void;
+    discard: () => void;
+  };
   /** storage degradation notice, null when healthy */
   storageWarning: () => string | null;
   /** prompt for the note; null = cancelled */
@@ -160,6 +210,9 @@ export class ActivitySidebarView extends ItemView {
 
   /** whether the manual list is expanded to everything */
   private manualExpanded = false;
+
+  /** 倒计时记录列表是否展开 / whether the countdown list is expanded */
+  private countdownExpanded = false;
 
   /** Whether the overview's day detail is expanded past its first few entries. */
   private overviewExpanded = false;
@@ -264,11 +317,13 @@ export class ActivitySidebarView extends ItemView {
     this.unsubscribe = this.deps.store.subscribe(() => this.onStateChange());
     this.register(() => this.unsubscribe?.());
 
-    //  The manual elapsed time is timestamp-derived and not part of any dispatch, so it
-    //  needs its own once-a-second update.
-    this.registerInterval(
-      window.setInterval(() => this.updateLiveNumbers(), 1000),
-    );
+    //  秒表读数是时间戳推导的，不经过任何 dispatch，所以要有自己的刷新。显示毫秒时刷新间隔缩到
+    //  100 毫秒，否则最后三位永远只跳整数 —— 开着毫秒却看不出毫秒，会被当成 bug。
+    //  The readout is timestamp-derived and reaches no dispatch, so it needs its own refresh. With
+    //  milliseconds on, the interval drops to 100ms, or the last three digits would only move in
+    //  whole seconds — which reads as a bug.
+    this.startLiveClock();
+    this.register(() => this.stopLiveClock());
 
     this.render();
 
@@ -282,7 +337,40 @@ export class ActivitySidebarView extends ItemView {
     this.widthObserver.observe(this.contentEl);
   }
 
+  /** 当前的读数刷新定时器 / the current readout timer. */
+  private liveTimer: number | null = null;
+
+  /**
+   * 起一个自调度的读数刷新 / start the self-scheduling readout refresh.
+   * 用 setTimeout 而不是 setInterval：间隔要跟着"是否显示毫秒"变，自调度最省事。
+   * A recursive timeout rather than an interval, because the period depends on whether milliseconds
+   * are shown.
+   */
+  private startLiveClock(): void {
+    this.stopLiveClock();
+    const tick = (): void => {
+      this.updateLiveNumbers();
+      this.liveTimer = window.setTimeout(tick, this.liveClockPeriod());
+    };
+    tick();
+  }
+
+  private stopLiveClock(): void {
+    if (this.liveTimer !== null) {
+      window.clearTimeout(this.liveTimer);
+      this.liveTimer = null;
+    }
+  }
+
+  /** 读数刷新周期 / how often the readout refreshes. */
+  private liveClockPeriod(): number {
+    if (this.deps.settings().manualShowMilliseconds !== true) return 1000;
+    if (this.deps.store.getState().manual.status === 'idle') return 1000;
+    return this.panel === 'manual' ? 100 : 1000;
+  }
+
   override async onClose(): Promise<void> {
+    this.stopLiveClock();
     this.unsubscribe?.();
     this.unsubscribe = null;
     this.widthObserver?.disconnect();
@@ -449,9 +537,12 @@ export class ActivitySidebarView extends ItemView {
       this.day,
       settings.documentTrackingEnabled,
       settings.manualTimerEnabled,
+      settings.countdownTimerEnabled,
+      //  模式只影响倒计时面板里的方案标题，但它属于结构，进签名最省心
+      //  The mode only changes the plan caption, but it is structure — simplest to sign it
+      settings.countdownMode,
 
       //  It changes the card count, so it must be in the signature or the structure sticks
-      settings.todayTotalDisplay,
       //  It changes every duration shown, so flipping it must recompute at once; without it
       //  the panels keep displaying the old accounting until some unrelated state change
       //  happens to trigger a re-render.
@@ -467,9 +558,12 @@ export class ActivitySidebarView extends ItemView {
       //  The mark count belongs in the signature: it shapes the marks section, and leaving
       //  it out means marks placed through the service never appear.
       String(state.manual.flags.length),
+      state.countdown.status,
+      String(state.countdown.flags.length),
 
       //  Expanding the manual list changes how many rows it has, so it belongs here
       String(this.manualExpanded),
+      String(this.countdownExpanded),
       String(this.overviewExpanded),
       String(this.manualFocus),
 
@@ -487,6 +581,9 @@ export class ActivitySidebarView extends ItemView {
     // the count only shapes the manual panel
     if (this.panel === 'manual') {
       parts.push(String(this.deps.history.getManualSessions().length));
+    }
+    if (this.panel === 'countdown') {
+      parts.push(String(this.deps.history.getCountdownSessions().length));
     }
 
     return parts.join('|');
@@ -543,6 +640,7 @@ export class ActivitySidebarView extends ItemView {
 
       if (this.panel === 'document') this.renderDocumentPanel(left, right);
       else if (this.panel === 'manual') this.renderManualPanel(left, right);
+      else if (this.panel === 'countdown') this.renderCountdownPanel(left, right);
       else this.renderOverviewPanel(left, right);
 
       this.updateLiveNumbers();
@@ -581,6 +679,12 @@ export class ActivitySidebarView extends ItemView {
 
     addTab('document', 'activity', t('panelDocument'));
     addTab('manual', 'timer', t('panelManual'));
+    //  倒计时用沙漏而不是第二个 timer：两个一模一样的图标在窄侧栏里分不出来
+    //  An hourglass rather than a second clock: two identical glyphs are indistinguishable in a
+    //  narrow sidebar.
+    if (this.deps.settings().countdownTimerEnabled !== false) {
+      addTab('countdown', 'hourglass', t('panelCountdown'));
+    }
     addTab('overview', 'gauge', t('panelOverview'));
   }
 
@@ -663,6 +767,7 @@ export class ActivitySidebarView extends ItemView {
     //  Top: the numbers for now (grid + current session); bottom: the day's shape and ranking
     this.renderDocumentStats(left, records, settings);
     this.renderCurrentSession(left, filePath, records);
+    this.renderAwaySection(left);
     this.renderDocumentHeatmap(right, records);
     this.renderTodayList(right, records);
   }
@@ -679,38 +784,57 @@ export class ActivitySidebarView extends ItemView {
    * "total = reading + non-reading" always holds and the three figures never coincide — two cells
    * showing the same number would waste the space.
    */
+  /**
+   * 组装一份账本输入 / assemble one account input.
+   *
+   * 正在跑的会话作为「活尾巴」传进去：事件流停在最后一个事件，不补这一段，正在读的那一分钟要等到
+   * 下一次事件才会出现在格子里。
+   *
+   * The running session is passed as a live tail: the event stream stops at the last event, and
+   * without it the minute being read would only show up at the next event.
+   */
+  private accountInput(day: string): AccountInput {
+    const state = this.deps.store.getState();
+    const settings = this.deps.settings();
+    const filePath = state.activeFilePath;
+    const file = filePath ? state.files.get(filePath) : undefined;
+    const policy = attributionPolicy(settings);
+
+    return {
+      events: this.deps.history.getEvents(),
+      manual: this.deps.history.getManualSessions(),
+      countdown: this.deps.history.getCountdownSessions(),
+      day,
+      nowMs: this.deps.clock.now(),
+      policy: { ...policy, pluginViews: countsPluginViewsAsReading(settings) },
+      live: filePath && file && file.status !== STATUS.IDLE
+        ? { filePath, state: selectLiveSessionState(state, file) }
+        : null,
+    };
+  }
+
   private renderDocumentStats(
     root: HTMLElement,
     records: Record<string, FileRecord>,
     settings: PluginSettings,
   ): void {
-    //  Placeholder zeros: updateLiveNumbers overwrites them before the paint settles. They only
-    //  have to be durations so the unit markup exists to be updated.
-    const cards: Array<{
-      label: string;
-      value?: string;
-      seconds?: number;
-      liveKey?: LiveKey;
-    }> = [];
+    //  四条通道并列，不再把"离开"和"暂停"合成一个减号：它们对"刚才在做什么"的回答完全不同。
+    //  Four channels side by side instead of folding away and paused into one deduction: they answer
+    //  "what was I doing" differently.
+    //
+    //  Placeholder zeros: updateLiveNumbers overwrites them before the paint settles.
+    void records;
+    void settings;
+    const week = weekAccount(this.accountInput(todayStr()));
 
-    if (this.shouldShowTodayTotal(settings)) {
-      cards.push({ label: t('statsTodayTotal'), seconds: 0, liveKey: 'today' });
-    }
-    cards.push({ label: t('statsTodayRead'), seconds: 0, liveKey: 'todayRead' });
-    cards.push({ label: t('statsTodayUnread'), seconds: 0, liveKey: 'todayUnread' });
-
-    //  本周是慢变量：它由已落盘的记录算出，不含正在进行的会话尾段，所以不需要每秒重算
-    //  The week figure is a slow variable — derived from settled records, without the running
-    //  session's tail — so it needs no per-second recomputation.
-    cards.push({
-      label: t('statsWeekRead'),
-      seconds: weekReadingSeconds(
-        Object.values(records).map((record) => record.readTimeLine),
-        todayStr(),
-      ),
-    });
-
-    this.renderStatCards(root, cards);
+    this.renderStatCards(root, [
+      { label: t('statsTodayFocus'), seconds: 0, liveKey: 'todayFocus' },
+      { label: t('statsTodayAway'), seconds: 0, liveKey: 'todayAway' },
+      { label: t('statsTodayIdle'), seconds: 0, liveKey: 'todayIdle' },
+      { label: t('statsTodayPaused'), seconds: 0, liveKey: 'todayPaused' },
+      { label: t('statsTodayRead'), seconds: 0, liveKey: 'todayRead' },
+      { label: t('statsWeekRead'), seconds: week.reading },
+    ]);
   }
 
   /**
@@ -863,7 +987,13 @@ export class ActivitySidebarView extends ItemView {
       this.liveNodes.unfocusedBox = box;
       this.liveNodes.unfocused = box.createEl('button', { cls: 'rtt-live-deduct-value clickable-icon' });
       setTooltip(this.liveNodes.unfocused, t('unfocusedManage'));
-      this.liveNodes.unfocused.addEventListener('click', () => new UnfocusedModal(this.app, { history: this.deps.history, service: this.deps.service, log: this.deps.log, filePath, onChanged: () => this.refresh() }).open());
+
+      //  不再弹窗：同一面板里就是那一段的归属，跳过去比另开一层更近
+      //  No modal any more: the stretch's attribution lives on this very panel, so jumping to it is
+      //  closer than opening a layer on top of it.
+      this.liveNodes.unfocused.addEventListener('click', () => {
+        this.awaySectionEl?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      });
     }
 
     //  名字太长就在这一行里横着走 / an over-long name scrolls along this row
@@ -1118,6 +1248,10 @@ export class ActivitySidebarView extends ItemView {
       return;
     }
 
+    //  上一轮没保存的计时先亮出来：它随时可能被新的开始覆盖掉
+    //  The unsaved run from last time comes first: a fresh start would cover it up for good
+    this.renderRecoveryCard(left, 'manual');
+
     //  上：秒表与开关；下：这一天的热力图与记录
     //  Top: the stopwatch and its switches; bottom: the day's heatmap and sessions
     this.renderManualControls(left);
@@ -1126,6 +1260,164 @@ export class ActivitySidebarView extends ItemView {
     this.renderManualHeatmap(right);
     this.renderManualList(right);
   }
+
+  /**
+   * 未保存计时的恢复卡 / the recovery card.
+   *
+   * 之前那一轮不在状态树里，所以它既不占秒表、也不会随重绘消失：一张独立的卡，摆在计时器上方，
+   * 两个按钮就够 —— 恢复（停在当时的时长、保持暂停）或丢弃。
+   *
+   * The previous run is not in the state tree, so it neither takes over the stopwatch nor disappears
+   * on a re-render: a card of its own above the timer, with the two buttons that matter — restore
+   * (held at the elapsed time, paused) or discard.
+   */
+  private renderRecoveryCard(root: HTMLElement, kind: 'manual' | 'countdown'): void {
+    const entry = this.deps.recovery.pending(kind);
+    if (!entry) return;
+
+    const card = root.createDiv({ cls: 'rtt-recovery-card' });
+
+    const head = card.createDiv({ cls: 'rtt-recovery-head' });
+    setIcon(head.createSpan({ cls: 'rtt-recovery-icon' }), 'history');
+    head.createSpan({ cls: 'rtt-recovery-title', text: t('recoveryTitle') });
+
+    const elapsed = formatDurationWithSeconds(Math.round(entry.elapsedMs / 1000));
+    const lineKey = kind === 'manual' ? 'recoveryManual' : 'recoveryCountdown';
+    card.createDiv({
+      cls: 'rtt-live-line',
+      text: t(lineKey)
+        .replace('{time}', entry.startedAt.slice(0, 16))
+        .replace('{duration}', elapsed),
+    });
+    card.createDiv({ cls: 'rtt-live-line is-muted', text: t('recoveryDesc') });
+
+    const bar = card.createDiv({ cls: 'rtt-timeline-nav' });
+    this.iconButton(
+      bar,
+      'rotate-ccw',
+      t('recoveryRestore').replace('{duration}', elapsed),
+      () => {
+        this.deps.recovery.restore();
+        this.render();
+      },
+    );
+    this.iconButton(
+      bar,
+      'trash-2',
+      t('recoveryDiscard'),
+      () => {
+        this.deps.recovery.discard();
+        this.render();
+      },
+      { danger: true },
+    );
+  }
+
+  /**
+   * 离开与空闲的统一入口 / one entry for away and idle time.
+   *
+   * 以前"离开窗口算不算阅读"是设置页里的一个布尔值，逐段归类藏在一个按文件弹出的 Modal 里 ——
+   * 想看一眼"今天到底离开了多久"没有地方可看。这里把三件事放在一起：口径（新的时段按什么算）、
+   * 今天的每一段（可逐段改判）、以及空闲这条以前被直接丢弃的通道。
+   *
+   * "Whether away time reads" used to be a boolean in the settings tab, and per-stretch reclassification
+   * hid in a per-file modal — there was nowhere to see "how long was I away today". Three things sit
+   * together here: the policy for new stretches, today's stretches (each reclassifiable), and the idle
+   * channel that used to be discarded outright.
+   */
+  private renderAwaySection(root: HTMLElement): void {
+    const section = root.createDiv({ cls: 'rtt-heatmap-wrap' });
+    this.awaySectionEl = section;
+
+    new Setting(section).setName(t('awaySectionTitle')).setHeading();
+
+    const settings = this.deps.settings();
+    const policy = attributionPolicy(settings);
+
+    new Setting(section)
+      .setName(t('awayPolicyLabel'))
+      .setDesc(t('awayPolicyDesc'))
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption('reading', t('policyReading'))
+          .addOption('paused', t('policyPaused'))
+          .addOption('ignored', t('policyIgnored'))
+          .setValue(policy.away)
+          .onChange((value) => {
+            void this.deps
+              .saveSetting({ awayPolicy: value as AttributionPolicy })
+              .then(() => this.render());
+          }),
+      );
+
+    new Setting(section)
+      .setName(t('idlePolicyLabel'))
+      .setDesc(t('idlePolicyDesc'))
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption('reading', t('policyReading'))
+          .addOption('paused', t('policyPaused'))
+          .addOption('ignored', t('policyIgnored'))
+          .setValue(policy.idle)
+          .onChange((value) => {
+            void this.deps
+              .saveSetting({ idlePolicy: value as AttributionPolicy })
+              .then(() => this.render());
+          }),
+      );
+
+    const today = todayStr();
+    const intervals = listUnfocusedIntervals(this.deps.history.getEvents())
+      .filter((item) => item.from.slice(0, 10) === today)
+      .slice()
+      .reverse();
+
+    if (intervals.length === 0) {
+      section.createDiv({ cls: 'rtt-list-empty', text: t('awayTodayEmpty') });
+      return;
+    }
+
+    for (const interval of intervals.slice(0, 10)) {
+      const closed = interval.to !== null;
+      const editable = closed && this.deps.service.canClassifyUnfocused(interval.filePath, interval.from);
+      const name = interval.filePath.split('/').pop() ?? interval.filePath;
+
+      const row = new Setting(section)
+        .setName(
+          `${interval.from.slice(11)} – ${closed ? interval.to!.slice(11) : '…'}`,
+        )
+        .setDesc(`${name} · ${formatDurationWithSeconds(interval.seconds)}`);
+
+      row.addDropdown((dropdown) =>
+        dropdown
+          .addOption('reading', t('policyReading'))
+          .addOption('paused', t('policyPaused'))
+          .addOption('unfocused', t('policyIgnored'))
+          .setValue(interval.disposition)
+          .setDisabled(!editable)
+          .onChange((value) => {
+            dropdown.setDisabled(true);
+            void this.deps.service
+              .classifyUnfocused(interval.index, interval.from, value as 'reading' | 'paused' | 'unfocused')
+              .then(() => this.render())
+              .catch((error: unknown) => {
+                this.deps.log.warn('[RTT] 失焦归类失败 / classification failed:', error);
+                this.render();
+              });
+          }),
+      );
+    }
+
+    if (intervals.length > 10) {
+      section.createDiv({
+        cls: 'rtt-empty-hint',
+        text: t('awayMore').replace('{n}', String(intervals.length - 10)),
+      });
+    }
+  }
+
+  /** 离开与空闲区块，卡片上的减号跳到它 / the away section; the card's deduction jumps here. */
+  private awaySectionEl: HTMLElement | null = null;
 
   /** manual timer controls. */
   private renderManualControls(root: HTMLElement): void {
@@ -1353,6 +1645,17 @@ export class ActivitySidebarView extends ItemView {
         }),
       );
 
+    //  毫秒只影响读数，不影响存储：记录本来就带 durationMs
+    //  Milliseconds affect the readout only; the record carries durationMs either way
+    new Setting(root)
+      .setName(t('manualShowMilliseconds'))
+      .setDesc(t('manualShowMillisecondsDesc'))
+      .addToggle((toggle) =>
+        toggle.setValue(settings.manualShowMilliseconds === true).onChange((value) => {
+          void this.deps.saveSetting({ manualShowMilliseconds: value }).then(() => this.render());
+        }),
+      );
+
     new Setting(root)
       .setName(t('manualRecordDoc'))
       .setDesc(t('manualRecordDocDesc'))
@@ -1361,6 +1664,249 @@ export class ActivitySidebarView extends ItemView {
           void this.deps.saveSetting({ manualRecordDocActivity: value }).then(() => this.render());
         }),
       );
+  }
+
+  //  ==========================================================================
+  // countdown panel
+  //  ==========================================================================
+
+  /**
+   * 倒计时面板 / the countdown panel.
+   *
+   * 与手动计时面板并列而不是塞进它：两本账各有各的记录与统计，塞在一起就又要解释"这里显示的是
+   * 哪一种"。
+   * A panel beside the manual one rather than a mode inside it: each ledger has its own records and
+   * totals, and a shared panel would have to keep explaining which one is on screen.
+   */
+  private renderCountdownPanel(left: HTMLElement, right: HTMLElement): void {
+    if (!this.deps.settings().countdownTimerEnabled) {
+      left.createDiv({ cls: 'rtt-empty-hint', text: t('countdownTimerOff') });
+      left.createDiv({ cls: 'rtt-empty-hint', text: t('countdownTimerOffDesc') });
+      return;
+    }
+
+    //  空闲时圆环显示"本次要跑多久"，所以先把方案备好 / idle, the ring previews the plan, so build it first
+    this.countdownPreview = buildCountdownPlan(countdownConfigFrom(this.deps.settings()));
+
+    this.renderRecoveryCard(left, 'countdown');
+    this.renderCountdownControls(left);
+    this.renderCountdownStats(left);
+    this.renderCountdownPlan(right);
+    this.renderCountdownList(right);
+  }
+
+  /** 空转时用来预览的方案 / the plan previewed while idle. */
+  private countdownPreview: CountdownPlan | null = null;
+
+  /** countdown controls: the ring and its buttons. */
+  private renderCountdownControls(root: HTMLElement): void {
+    const section = root.createDiv({ cls: 'rtt-heatmap-wrap' });
+    new Setting(section).setName(t('panelCountdown')).setHeading();
+
+    this.renderCountdownRing(section);
+
+    const bar = section.createDiv({ cls: 'rtt-timeline-nav' });
+    this.renderCountdownButtons(bar);
+    this.renderCountdownFlags(section);
+  }
+
+  /** 圆环与读数 / the ring and its readout. */
+  private renderCountdownRing(parent: HTMLElement): void {
+    const wrap = parent.createDiv({ cls: 'rtt-stopwatch' });
+    this.liveNodes.countdownRing = wrap.createDiv({ cls: 'rtt-stopwatch-ring' });
+
+    const face = wrap.createDiv({ cls: 'rtt-stopwatch-face' });
+    this.liveNodes.countdownLabel = face.createDiv({
+      cls: 'rtt-stopwatch-state',
+      text: t('countdownIdle'),
+    });
+    this.liveNodes.countdown = face.createDiv({
+      cls: 'rtt-stopwatch-time',
+      text: formatDurationWithSeconds(0),
+    });
+    wrap.createDiv({ cls: 'rtt-stopwatch-hint', text: t('countdownRingHint') });
+  }
+
+  /** the countdown's button row. */
+  private renderCountdownButtons(bar: HTMLElement): void {
+    const status = this.deps.store.getState().countdown.status;
+
+    if (status === 'idle') {
+      this.iconButton(bar, 'play', t('countdownStart'), () => {
+        this.startCountdown();
+        this.render();
+      });
+      return;
+    }
+
+    const paused = status === 'paused';
+    this.iconButton(
+      bar,
+      paused ? 'play' : 'pause',
+      paused ? t('manualResume') : t('manualPause'),
+      () => {
+        if (paused) this.deps.countdown.resume();
+        else this.deps.countdown.pause();
+        this.render();
+      },
+    );
+
+    this.iconButton(bar, 'flag', t('manualFlag'), () => {
+      if (this.deps.countdown.flag()) this.render();
+    });
+
+    //  手动停止走备注框，与正计时一致；自动跑完那一次由设置决定，见 main.ts
+    //  A manual stop asks for a note, as the count-up does; the automatic finish is governed by
+    //  the setting, see main.ts
+    this.iconButton(bar, 'square', t('manualStop'), () => {
+      this.deps.promptNote((note) => {
+        if (note === null) return;
+        void this.deps.countdown.stop(note).then(() => this.render());
+      });
+    });
+
+    this.iconButton(
+      bar,
+      'x',
+      t('manualDiscard'),
+      () => {
+        this.deps.countdown.discard();
+        this.render();
+      },
+      { danger: true },
+    );
+  }
+
+  /**
+   * 开始一次倒计时 / start a run.
+   *
+   * 方案在这里按当前设置生成，交给服务之后就不再回头读设置 —— 运行中改设置不该改变这一次。
+   * The plan is built from the current settings here and handed to the service, which never reads
+   * settings again: editing them mid-run must not alter this run.
+   */
+  private startCountdown(): void {
+    const plan = buildCountdownPlan(countdownConfigFrom(this.deps.settings()));
+    if (!this.deps.countdown.start(plan)) {
+      this.deps.log.warn('[RTT][countdown] 无法开始 / cannot start: empty plan or already running');
+    }
+  }
+
+  /** 今日倒计时合计 / today's countdown totals. */
+  private renderCountdownStats(root: HTMLElement): void {
+    const sessions = this.deps.history.getCountdownSessions();
+    const today = todayStr();
+    const todaySessions = manualSessionsOfDay(sessions, today);
+
+    this.renderStatCards(root, [
+      { label: t('countdownTodayTotal'), seconds: manualDayTotalSeconds(sessions, today) },
+      { label: t('countdownTodayCount'), value: String(todaySessions.length) },
+    ]);
+  }
+
+  /**
+   * 本次方案 / the plan.
+   *
+   * 运行中显示的是开始时冻结的那份，空闲时显示按当前设置生成的那份 —— 这样"改完设置先看一眼"
+   * 与"这一轮到底在跑什么"是两个不会互相冒充的问题。
+   * While running this is the plan frozen at start; while idle it is what the current settings would
+   * produce. "What did I configure" and "what is actually running" are two questions that must not
+   * answer for each other.
+   */
+  private renderCountdownPlan(root: HTMLElement): void {
+    const state = this.deps.store.getState();
+    const plan = state.countdown.plan ?? this.countdownPreview;
+
+    new Setting(root).setName(t('countdownPlanTitle')).setHeading();
+
+    if (!plan || plan.phases.length === 0) {
+      root.createDiv({ cls: 'rtt-list-empty', text: t('countdownPlanEmpty') });
+      return;
+    }
+
+    const total = planTotalSeconds(plan);
+    root.createDiv({
+      cls: 'rtt-live-line',
+      text: `${t(modeLabelKey(plan.mode))} · ${t('countdownPlanSummary')
+        .replace('{count}', String(plan.phases.length))
+        .replace('{total}', formatDurationWithSeconds(total))}`,
+    });
+
+    const chips = root.createDiv({ cls: 'rtt-cd-plan' });
+    this.liveNodes.countdownChips = plan.phases.map((phase, index) => {
+      const chip = chips.createDiv({ cls: 'rtt-cd-chip' });
+      chip.dataset.phaseIndex = String(index);
+      setIcon(chip.createSpan({ cls: 'rtt-cd-chip-icon' }), phase.kind === 'break' ? 'coffee' : 'timer');
+      const label = phase.kind === 'segment'
+        ? t('countdownSegmentN').replace('{n}', String(index + 1))
+        : t(phaseLabelKey(phase.kind));
+      chip.createSpan({ cls: 'rtt-cd-chip-label', text: label });
+      chip.createSpan({
+        cls: 'rtt-cd-chip-time',
+        text: formatDurationWithSeconds(phase.seconds),
+      });
+      return chip;
+    });
+  }
+
+  /** 这一天的倒计时记录 / that day's countdown runs. */
+  private renderCountdownList(root: HTMLElement): void {
+    const all = manualSessionsOfDay(this.deps.history.getCountdownSessions(), this.day)
+      .slice()
+      .reverse();
+
+    new Setting(root).setName(t('countdownRecent')).setHeading();
+
+    if (all.length === 0) {
+      root.createDiv({ cls: 'rtt-list-empty', text: t('countdownNoRecords') });
+      return;
+    }
+
+    const visible = this.countdownExpanded ? all : all.slice(0, TOP_LIST_ITEMS);
+    const list = root.createDiv({ cls: 'rtt-list' });
+
+    for (const session of visible as CountdownSession[]) {
+      this.renderRecordRow(list, {
+        name: session.note || t(modeLabelKey(session.mode)),
+        stats: [
+          formatDurationWithSeconds(session.durationSeconds),
+          `${session.startTime.slice(11, 16)} – ${session.endTime.slice(11, 16)}`,
+        ],
+        meta: [
+          session.completed ? t('countdownCompleted') : t('countdownStoppedEarly'),
+          `${t('countdownPlanTitle')} ${formatDurationWithSeconds(session.plannedSeconds)}`,
+        ],
+        onDelete: () => {
+          this.deps.history.deleteCountdownSession(session.id);
+          void this.deps.history.flushNow();
+          this.render();
+        },
+        deleteLabel: t('btnDiscard'),
+      });
+    }
+
+    if (all.length > TOP_LIST_ITEMS) {
+      const more = root.createEl('button', { cls: 'rtt-view-all-btn' });
+      setIcon(
+        more.createSpan({ cls: 'rtt-view-all-icon' }),
+        this.countdownExpanded ? 'chevron-up' : 'chevron-down',
+      );
+      more.createSpan({
+        cls: 'rtt-view-all-label',
+        text: this.countdownExpanded ? t('manualShowLess') : t('manualShowMore'),
+      });
+      more.addEventListener('click', () => {
+        this.countdownExpanded = !this.countdownExpanded;
+        this.render();
+      });
+    }
+  }
+
+  /** 本轮倒计时的标记 / this run's marks. */
+  private renderCountdownFlags(root: HTMLElement): void {
+    const state = this.deps.store.getState();
+    if (state.countdown.status === 'idle' && state.countdown.flags.length === 0) return;
+    new Setting(root).setName(t('manualFlagsTitle')).setHeading();
+    renderManualFlagsTable(root, state.countdown.flags);
   }
 
   /**
@@ -1377,56 +1923,27 @@ export class ActivitySidebarView extends ItemView {
       return;
     }
 
-    const records = buildFileRecords(
-      this.deps.history.getEvents(),
-      this.deps.clock.now(),
-      todayStr(),
-      { countUnfocused: countsUnfocusedAsReading(settings), countPluginViews: countsPluginViewsAsReading(settings) },
-    );
-
-    // Records split by kind: notes are one ledger, plugin views (RSS dashboard, translator,
-    // canvas) are another. Both are reading, so both count — but they stay separable.
-    const entries = Object.entries(records);
-    const noteTimelines = entries
-      .filter(([key]) => !isPluginViewKey(key))
-      .map(([, record]) => record.readTimeLine);
-    const viewTimelines = entries
-      .filter(([key]) => isPluginViewKey(key))
-      .map(([, record]) => record.readTimeLine);
-
-    const manualSessions = this.deps.history.getManualSessions();
-    const intervals = [
-      ...documentIntervals(noteTimelines, { includeUnfocused: countsUnfocusedAsReading(settings) }),
-      ...(countsPluginViewsAsReading(settings) ? documentIntervals(viewTimelines, { source: 'view', includeUnfocused: countsUnfocusedAsReading(settings) }) : []),
-      ...manualIntervals(manualSessions),
-    ];
-
-    const totals = overviewTotals(intervals, this.day);
-
-    //  本周那一格把"非阅读"也算进去，不看「脱离窗口计入阅读」这个开关：它报的是**记录到的总时间**
-    //  （窗口内 + 脱离窗口 + 暂停），而不是"读了多久"。单日那几格跟着开关走，两者含义不同，所以
-    //  这里另取一份含窗口外的区间，而不是复用上面那份。
-    //  The week cell counts non-reading time too, whatever the "out-of-window counts as reading"
-    //  toggle says: it reports **total recorded time** (in-window + away + paused), not "how long
-    //  was read". The day cells follow the toggle, so the two mean different things and this takes
-    //  its own interval set rather than reusing the one above.
-    const weekIntervals = [
-      ...documentIntervals(noteTimelines, { includeUnfocused: true }),
-      ...documentIntervals(viewTimelines, { source: 'view', includeUnfocused: true }),
-      ...manualIntervals(manualSessions),
-    ];
-    const week = overviewWeekTotals(weekIntervals, this.day);
+    //  一份账本同时给出今日与本周，两者只差窗口长度 —— 以前周格走的是另一套"含非阅读"的区间，
+    //  于是同一个"周"在两块面板上是两个数。
+    //  One account answers for both today and the week, differing only in window length. The week
+    //  cell used to use a separate "includes non-reading" interval set, so one word meant two
+    //  numbers on two panels.
+    const input = this.accountInput(this.day);
+    const today = dayAccount(input);
+    const week = weekAccount(input);
+    const weekIntervals = accountIntervals(input);
 
     //  上：合计；下：日导航 + 热力图 + 明细 —— 导航必须跟着它描述的那张图走
     //  Top: the totals; bottom: day nav, heatmap and detail — the nav has to travel with the chart it
     //  describes
     this.renderStatCards(ovLeft, [
-      { label: t('ovUnion'), seconds: Math.round(totals.unionMinutes * 60) },
-      { label: t('ovWeekTotal'), seconds: Math.round(week.unionMinutes * 60) },
-      { label: t('ovDocument'), seconds: Math.round(totals.documentMinutes * 60) },
-      { label: t('ovView'), seconds: Math.round(totals.viewMinutes * 60) },
-      { label: t('ovManual'), seconds: Math.round(totals.manualMinutes * 60) },
-      { label: t('ovOverlap'), seconds: Math.round(totals.overlapMinutes * 60) },
+      { label: t('ovUnion'), seconds: today.union },
+      { label: t('ovWeekTotal'), seconds: week.union },
+      { label: t('ovDocument'), seconds: today.document },
+      { label: t('ovView'), seconds: today.view },
+      { label: t('ovManual'), seconds: today.manual },
+      { label: t('ovCountdown'), seconds: today.countdown },
+      { label: t('ovOverlap'), seconds: today.overlap },
     ]);
 
     // day navigation
@@ -1449,15 +1966,22 @@ export class ActivitySidebarView extends ItemView {
       { key: 'rtt-ov-doc', className: 'rtt-ov-doc', label: t('ovDocument') },
       { key: 'rtt-ov-view', className: 'rtt-ov-view', label: t('ovView') },
       { key: 'rtt-ov-manual', className: 'rtt-ov-manual', label: t('ovManual') },
+      { key: 'rtt-ov-countdown', className: 'rtt-ov-countdown', label: t('ovCountdown') },
       { key: 'rtt-ov-both', className: 'rtt-ov-both', label: t('ovLegendBoth') },
     ];
 
     // One thing, one colour: a stretch covered by a single ledger takes that ledger's
     // colour, and anything covered twice gets the striped "both" fill.
     const sourceClass = (source: string): string =>
-      source === 'manual' ? 'rtt-ov-manual' : source === 'view' ? 'rtt-ov-view' : 'rtt-ov-doc';
+      source === 'manual' ? 'rtt-ov-manual'
+        : source === 'view' ? 'rtt-ov-view'
+          : source === 'countdown' ? 'rtt-ov-countdown'
+            : 'rtt-ov-doc';
     const sourceLabel = (source: string): string =>
-      source === 'manual' ? t('ovManual') : source === 'view' ? t('ovView') : t('ovDocument');
+      source === 'manual' ? t('ovManual')
+        : source === 'view' ? t('ovView')
+          : source === 'countdown' ? t('ovCountdown')
+            : t('ovDocument');
 
     this.renderClickableHeatmap(
       head,
@@ -1479,7 +2003,19 @@ export class ActivitySidebarView extends ItemView {
     );
 
     ovRight.createDiv({ cls: 'rtt-records-meta', text: t('ovExplain') });
-    this.renderOverviewList(ovRight, entries);
+
+    //  明细列表要的是按文件的记录，与账本同源但形状不同：账本按通道汇总，列表按文件罗列
+    //  The detail list needs per-file records — same source as the account, different shape.
+    const records = buildFileRecords(
+      this.deps.history.getEvents(),
+      this.deps.clock.now(),
+      this.day,
+      {
+        countUnfocused: countsUnfocusedAsReading(settings),
+        countPluginViews: countsPluginViewsAsReading(settings),
+      },
+    );
+    this.renderOverviewList(ovRight, Object.entries(records));
   }
 
   /**
@@ -2030,6 +2566,11 @@ export class ActivitySidebarView extends ItemView {
       const day = session.startTime.slice(0, 10);
       if (day) days.add(day);
     }
+    //  倒计时也是可翻阅的一天 / countdown days are browsable too
+    for (const session of this.deps.history.getCountdownSessions()) {
+      const day = session.startTime.slice(0, 10);
+      if (day) days.add(day);
+    }
     return [...days].sort();
   }
 
@@ -2149,29 +2690,34 @@ export class ActivitySidebarView extends ItemView {
         );
       }
 
-      //  四宫格里的三个今日数走同一次遍历 / the grid's three today figures share one pass
-      if (this.liveNodes.today || this.liveNodes.todayRead || this.liveNodes.todayUnread) {
-        const channels = getDayChannelSeconds(
-          this.deps.history.getEvents(),
-          state.files.values(),
-          this.deps.clock.today(),
-          this.deps.clock.now(),
-        );
-        const read = getAllTodaySeconds(this.deps.history.getEvents(), state.files.values(),
-          this.deps.clock.today(), countsUnfocusedAsReading(this.deps.settings()),
-          countsPluginViewsAsReading(this.deps.settings()));
-        const notRead = channels.activeSeconds + channels.unfocusedSeconds + channels.pausedSeconds - read;
+      //  统计格：一份账本，五条通道 / the grid: one account, five channels
+      if (
+        this.liveNodes.todayFocus
+        || this.liveNodes.todayAway
+        || this.liveNodes.todayIdle
+        || this.liveNodes.todayPaused
+        || this.liveNodes.todayRead
+      ) {
+        const account = dayAccount(this.accountInput(this.deps.clock.today()));
 
-        if (this.liveNodes.today) setReadTime(this.liveNodes.today, read + notRead, mode);
-        if (this.liveNodes.todayRead) setReadTime(this.liveNodes.todayRead, read, mode);
-        if (this.liveNodes.todayUnread) setReadTime(this.liveNodes.todayUnread, notRead, mode);
+        if (this.liveNodes.todayFocus) setReadTime(this.liveNodes.todayFocus, account.focus, mode);
+        if (this.liveNodes.todayAway) setReadTime(this.liveNodes.todayAway, account.away, mode);
+        if (this.liveNodes.todayIdle) setReadTime(this.liveNodes.todayIdle, account.idle, mode);
+        if (this.liveNodes.todayPaused) setReadTime(this.liveNodes.todayPaused, account.paused, mode);
+        if (this.liveNodes.todayRead) setReadTime(this.liveNodes.todayRead, account.reading, mode);
       }
 
       if (this.liveNodes.manual) {
-        const elapsed = selectManualElapsedSeconds(state, this.deps.clock.now());
+        const nowMs = this.deps.clock.now();
+        const elapsed = selectManualElapsedSeconds(state, nowMs);
+        const settings = this.deps.settings();
 
-        //  With "show seconds" off, the readout stops at the minute so nothing ticks
-        if (this.deps.settings().manualShowSeconds !== false) {
+        //  毫秒优先于"显示秒"：开着毫秒却只显示到分，等于两个开关打架
+        //  Milliseconds beat "show seconds": showing only minutes while milliseconds are on would be
+        //  two switches fighting each other.
+        if (settings.manualShowMilliseconds === true && state.manual.status !== 'idle') {
+          setClockTimeMs(this.liveNodes.manual, selectManualElapsedMs(state, nowMs));
+        } else if (settings.manualShowSeconds !== false) {
           setClockTime(this.liveNodes.manual, elapsed);
         } else {
           setReadTime(this.liveNodes.manual, elapsed, 'compact');
@@ -2192,10 +2738,83 @@ export class ActivitySidebarView extends ItemView {
           this.liveNodes.ring.style.setProperty('--rtt-ring-pct', String(percent));
         }
       }
+
+      //  倒计时：读数方向相反（还剩多久），环画的是本段进度
+      //  Countdown: the readout runs the other way (how much is left) and the ring shows this phase
+      if (this.liveNodes.countdown) {
+        this.updateCountdownLive(state, this.deps.clock.now());
+      }
     } catch (error) {
 
       //  A failed number update must not break the view; the next heartbeat retries
       this.deps.log.warn('[RTT][sidebar] 数字刷新失败 / live update failed:', error);
     }
+  }
+
+  /**
+   * 倒计时的每秒刷新 / the countdown's once-a-second update.
+   *
+   * 空闲时预览方案总长（"这次要跑多久"），运行中显示本段剩余。环画的是**本段**进度而不是整轮：
+   * 番茄钟的"整轮还剩多久"在环上是一段连续的、看不出段的线。
+   *
+   * Idle previews the plan's total ("how long this one will be"); running shows what is left in the
+   * current phase. The ring is the **phase**, not the whole run: a pomodoro's "how far through
+   * everything" is one continuous line that says nothing about which phase you are in.
+   */
+  private updateCountdownLive(state: TimerState, nowMs: number): void {
+    const countdown = state.countdown;
+    const idle = countdown.status === 'idle';
+    const plan = idle ? this.countdownPreview : countdown.plan;
+
+    if (!plan || plan.phases.length === 0) {
+      this.liveNodes.countdownLabel?.setText(t('countdownIdle'));
+      if (this.liveNodes.countdown) setClockTime(this.liveNodes.countdown, 0);
+      this.liveNodes.countdownRing?.style.setProperty('--rtt-ring-pct', '0');
+      return;
+    }
+
+    const total = planTotalSeconds(plan);
+    const position: CountdownPosition | null = idle
+      ? null
+      : locatePhase(plan, selectCountdownElapsedSeconds(state, nowMs));
+
+    const remaining = position ? position.remaining : total;
+    const phaseIndex = position ? position.index : 0;
+
+    if (this.liveNodes.countdown) setClockTime(this.liveNodes.countdown, remaining);
+
+    if (this.liveNodes.countdownRing) {
+      const percent = position && position.phaseSeconds > 0
+        ? (position.phaseElapsed / position.phaseSeconds) * 100
+        : 0;
+      this.liveNodes.countdownRing.style.setProperty('--rtt-ring-pct', String(percent));
+    }
+
+    if (this.liveNodes.countdownLabel) {
+      if (idle) {
+        this.liveNodes.countdownLabel.setText(t('countdownIdle'));
+      } else if (countdown.status === 'paused') {
+        this.liveNodes.countdownLabel.setText(t('manualPaused'));
+      } else {
+        const phase = plan.phases[phaseIndex];
+        const name = phase
+          ? phase.kind === 'segment'
+            ? t('countdownSegmentN').replace('{n}', String(phaseIndex + 1))
+            : t(phaseLabelKey(phase.kind))
+          : '';
+        const progress = t('countdownPhaseProgress')
+          .replace('{n}', String(phaseIndex + 1))
+          .replace('{total}', String(plan.phases.length));
+        this.liveNodes.countdownLabel.setText(`${name} · ${progress}`);
+      }
+    }
+
+    //  方案标签只改类，不重绘：段切换每秒都可能发生，重绘会打断滚动与选中
+    //  The chips only change class, never re-render: a phase can turn over on any tick, and a
+    //  re-render would throw away scroll position and selection.
+    this.liveNodes.countdownChips?.forEach((chip, index) => {
+      chip.toggleClass('is-active', !idle && index === phaseIndex);
+      chip.toggleClass('is-done', !idle && index < phaseIndex);
+    });
   }
 }

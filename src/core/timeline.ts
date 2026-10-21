@@ -37,6 +37,8 @@ export interface SessionDurations {
   activeSeconds: number;
   /** out-of-window seconds */
   unfocusedSeconds: number;
+  /** focused-but-idle seconds / 有焦点但无输入 */
+  idleSeconds: number;
   /** paused seconds */
   pausedSeconds: number;
   /** an unclosed session older than 24h */
@@ -77,6 +79,7 @@ export function computeSessionDurations(
   const empty: SessionDurations = {
     activeSeconds: 0,
     unfocusedSeconds: 0,
+    idleSeconds: 0,
     pausedSeconds: 0,
     abnormal: false,
   };
@@ -87,6 +90,7 @@ export function computeSessionDurations(
 
   let activeSeconds = 0;
   let unfocusedSeconds = 0;
+  let idleSeconds = 0;
   let pausedSeconds = 0;
   let abnormal = false;
 
@@ -133,10 +137,23 @@ export function computeSessionDurations(
 
     if ('unfocusedDisposition' in current && current.unfocusedDisposition) {
       if (gap <= UNFOCUSED_ATTRIBUTION_CAP_SECONDS) {
+        //  归类优先：显式的「算作阅读/暂停」压过事件类型；显式的「不算」在空闲段里落回空闲通道，
+        //  而不是失焦通道 —— 那一段本来就是空闲，不是离开窗口。
+        //  Classification wins: an explicit reading/paused overrides the event type, and an explicit
+        //  "not counted" on an idle stretch falls back to the idle channel — that stretch was idle,
+        //  not out-of-window.
         if (current.unfocusedDisposition === 'reading') activeSeconds += gap;
         else if (current.unfocusedDisposition === 'paused') pausedSeconds += gap;
+        else if (current.type === 'idle' || state === 'idle') idleSeconds += gap;
         else unfocusedSeconds += gap;
       }
+      continue;
+    }
+    if (current.type === 'idle' || state === 'idle') {
+
+      //  空闲不做 4h 上限裁剪：它是有焦点但不动的时段，长也仍然可信
+      //  Idle is not capped at 4h: it means "focused but still", and a long stretch is credible
+      idleSeconds += gap;
       continue;
     }
     if (current.type === 'blur' || state === 'inactive') {
@@ -152,7 +169,7 @@ export function computeSessionDurations(
     }
   }
 
-  return { activeSeconds, unfocusedSeconds, pausedSeconds, abnormal };
+  return { activeSeconds, unfocusedSeconds, idleSeconds, pausedSeconds, abnormal };
 }
 
 /**
@@ -486,6 +503,8 @@ export interface DayChannelSeconds {
   activeSeconds: number;
   /** 脱离窗口 / out-of-window seconds */
   unfocusedSeconds: number;
+  /** 有焦点但空闲 / focused-but-idle seconds */
+  idleSeconds: number;
   /** 暂停 / paused seconds */
   pausedSeconds: number;
 }
@@ -499,6 +518,7 @@ export function getDayChannelSeconds(
   const totals: DayChannelSeconds = {
     activeSeconds: 0,
     unfocusedSeconds: 0,
+    idleSeconds: 0,
     pausedSeconds: 0,
   };
 
@@ -509,28 +529,32 @@ export function getDayChannelSeconds(
     const e = event as {
       activeSeconds?: number;
       unfocusedSeconds?: number;
+      idleSeconds?: number;
       duration?: number;
     };
     const active = e.activeSeconds ?? 0;
     const unfocused = e.unfocusedSeconds ?? 0;
+    const idle = e.idleSeconds ?? 0;
 
     totals.activeSeconds += active;
     totals.unfocusedSeconds += unfocused;
+    totals.idleSeconds += idle;
 
-    //  duration 是这次会话的墙钟总时长，减去两条已知渠道，剩下的就是暂停；旧事件没有
+    //  duration 是这次会话的墙钟总时长，减去三条已知渠道，剩下的就是暂停；旧事件没有
     //  duration，按"没有暂停"处理，不猜。
-    //  `duration` is the session's wall clock, so whatever is left after the two known
-    //  channels is paused time. Older events carry no `duration` and are treated as having no
-    //  paused part rather than being guessed at.
-    totals.pausedSeconds += Math.max(0, (e.duration ?? active + unfocused) - active - unfocused);
+    //  `duration` is the session's wall clock, so whatever is left after the known channels is
+    //  paused time. Older events carry no `duration` and are treated as having no paused part
+    //  rather than being guessed at.
+    totals.pausedSeconds += Math.max(0, (e.duration ?? active + unfocused + idle) - active - unfocused - idle);
   }
 
   for (const file of files) {
     if (!file.sessionStartTime?.startsWith(day)) continue;
     totals.activeSeconds += file.activeSeconds;
     totals.unfocusedSeconds += file.unfocusedSeconds;
+    totals.idleSeconds += file.idleSeconds ?? 0;
     totals.pausedSeconds += nowMs === undefined ? file.pausedSeconds
-      : liveWallClockSeconds(file, nowMs) - file.activeSeconds - file.unfocusedSeconds;
+      : liveWallClockSeconds(file, nowMs) - file.activeSeconds - file.unfocusedSeconds - (file.idleSeconds ?? 0);
   }
 
   return totals;

@@ -12,7 +12,7 @@
 
 import { ActionTypes, MANUAL_STATUS } from '../core/constants';
 import type { Logger } from '../core/logger';
-import { selectManualElapsedSeconds } from '../core/selectors';
+import { selectManualElapsedMs, selectManualElapsedSeconds } from '../core/selectors';
 import type { ManualFlag, ManualSession } from '../core/types';
 import type { Clock } from './clock';
 import type { TimerStore } from './TimerStore';
@@ -52,6 +52,11 @@ export class ManualTimerService {
     return selectManualElapsedSeconds(this.deps.store.getState(), this.deps.clock.now());
   }
 
+  /** 净毫秒 / the net milliseconds. */
+  elapsedMs(): number {
+    return selectManualElapsedMs(this.deps.store.getState(), this.deps.clock.now());
+  }
+
   /**
    * Place a mark.
    *
@@ -66,8 +71,10 @@ export class ManualTimerService {
     try {
       if (!this.isActive()) return null;
 
+      const elapsedMs = this.elapsedMs();
       const mark: ManualFlag = {
-        atSeconds: this.elapsedSeconds(),
+        atSeconds: Math.floor(elapsedMs / 1000),
+        atMs: elapsedMs,
         atTime: this.deps.clock.nowFull(),
         label,
       };
@@ -107,13 +114,15 @@ export class ManualTimerService {
       if (state.manual.status === MANUAL_STATUS.IDLE) return null;
 
       //  Read the duration before dispatching: stopping resets the sub-state
-      const durationSeconds = this.elapsedSeconds();
+      const durationMs = this.elapsedMs();
+      const durationSeconds = Math.floor(durationMs / 1000);
 
       const session: ManualSession = {
         id: this.deps.newId(),
         startTime: state.manual.startedAt || this.deps.clock.nowFull(),
         endTime: this.deps.clock.nowFull(),
         durationSeconds,
+        durationMs,
         note,
 
         //  Read before the dispatch too: stopping resets the sub-state, marks included

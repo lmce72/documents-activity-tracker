@@ -41,6 +41,8 @@ export const STATUS_METRICS: readonly StatusMetricDef[] = [
   { id: 'session', labelKey: 'metricSession', panel: 'document', group: 'reading' },
   { id: 'unfocused', labelKey: 'metricUnfocused', panel: 'document', group: 'reading' },
   { id: 'todayTotal', labelKey: 'metricTodayTotal', panel: 'document', group: 'reading' },
+  { id: 'todayRead', labelKey: 'metricTodayRead', panel: 'document', group: 'reading' },
+  { id: 'idleToday', labelKey: 'metricIdleToday', panel: 'document', group: 'reading' },
   { id: 'rounds', labelKey: 'metricRounds', panel: 'document', group: 'reading' },
   { id: 'manualToday', labelKey: 'metricManualToday', panel: 'manual', group: 'manual' },
   { id: 'union', labelKey: 'metricUnion', panel: 'overview', group: 'reading' },

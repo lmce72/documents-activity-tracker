@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import { ActionTypes } from '../src/core/constants';
 import { DEFAULT_SETTINGS } from '../src/core/defaults';
-import { countsUnfocusedAsReading } from '../src/core/settings';
+import { countsUnfocusedAsReading, mergeSettings } from '../src/core/settings';
 import { createInitialState } from '../src/core/reducer';
 import { TimerStore } from '../src/services/TimerStore';
 import { TimerService } from '../src/services/TimerService';
@@ -30,10 +30,19 @@ const events: TimelineEvent[] = [
   { time:'2026-09-15 10:01:20', type:'save', file:FILE, duration:80, activeSeconds:20, unfocusedSeconds:60 },
 ];
 describe('split reading and reversible blur classification', () => {
-  it('unfocused reading defaults off, explicit existing preference survives', () => {
-    expect(DEFAULT_SETTINGS.countUnfocusedAsReading).toBe(false);
+  it('away time defaults to paused; the three-way policy decides, and the old boolean migrates', () => {
+    //  默认：离开窗口算作暂停 —— 不算阅读，但仍留在合计里
+    //  Default: away counts as paused — not reading, still in the total
+    expect(DEFAULT_SETTINGS.awayPolicy).toBe('paused');
     expect(countsUnfocusedAsReading(DEFAULT_SETTINGS)).toBe(false);
-    expect(countsUnfocusedAsReading({...DEFAULT_SETTINGS, countUnfocusedAsReading: true})).toBe(true);
+
+    //  新键优先 / the new key wins
+    expect(countsUnfocusedAsReading({...DEFAULT_SETTINGS, awayPolicy: 'reading', countUnfocusedAsReading: false})).toBe(true);
+    expect(countsUnfocusedAsReading({...DEFAULT_SETTINGS, awayPolicy: 'ignored', countUnfocusedAsReading: true})).toBe(false);
+
+    //  旧配置只有布尔值：迁移时换算 / an older config has only the boolean, translated on load
+    expect(mergeSettings({ countUnfocusedAsReading: true }).awayPolicy).toBe('reading');
+    expect(mergeSettings({ countUnfocusedAsReading: false }).awayPolicy).toBe('paused');
   });
   it('toggle is prospective, keeps reading while blurred and resets after save', async () => {
     const ctx=setup(); await ctx.service.startCurrent(); await ctx.advance(5);

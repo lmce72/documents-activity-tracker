@@ -16,12 +16,21 @@ import { MINUTES_PER_DAY, toAbsoluteMinutes, weekStart } from './recordsTimeline
 import type { ManualSession } from './types';
 
 /** which ledger an interval came from. */
-export type OverviewSource = 'document' | 'manual' | 'view';
+export type OverviewSource = 'document' | 'manual' | 'view' | 'countdown';
+
+/**
+ * 这一段属于哪条时间通道 / which channel a stretch belongs to.
+ *
+ * 文档追踪内部才分通道；手动与倒计时整段就是它们自己。
+ * Only document tracking has channels inside it; a manual or countdown session is one thing.
+ */
+export type OverviewChannel = 'focus' | 'away' | 'idle' | 'paused' | 'session';
 
 export interface OverviewInterval {
   startAbs: number;
   endAbs: number;
   source: OverviewSource;
+  channel?: OverviewChannel;
 }
 
 /** a merged stretch, possibly covered by both. */
@@ -71,6 +80,8 @@ export function documentIntervals(
     source?: OverviewSource;
     /** Set false to keep out-of-window stretches out of the union entirely. */
     includeUnfocused?: boolean;
+    /** Set false to keep focused-but-idle stretches out of the union. */
+    includeIdle?: boolean;
   } = {},
 ): OverviewInterval[] {
   // Plugin views are collected by the same walk; only the label differs, so the caller
@@ -88,7 +99,8 @@ export function documentIntervals(
         if (!options.includePaused && state === 'pausing') continue;
         //  Out-of-window stretches only join the union when the user counts them as reading
         if (options.includeUnfocused === false && state === 'inactive') continue;
-        if (state !== 'tracking' && state !== 'inactive' && state !== 'pausing') continue;
+        if (options.includeIdle === false && state === 'idle') continue;
+        if (state !== 'tracking' && state !== 'inactive' && state !== 'pausing' && state !== 'idle') continue;
 
         const readAbs = (time: string): number | null => {
           if (!parsed.has(time)) parsed.set(time, toAbsoluteMinutes(time));
@@ -98,7 +110,11 @@ export function documentIntervals(
         const endAbs = readAbs(times[i + 1]!);
         if (startAbs === null || endAbs === null || endAbs <= startAbs) continue;
 
-        out.push({ startAbs, endAbs, source });
+        const channel: OverviewChannel = state === 'tracking' ? 'focus'
+          : state === 'inactive' ? 'away'
+            : state === 'idle' ? 'idle'
+              : 'paused';
+        out.push({ startAbs, endAbs, source, channel });
       }
     }
   }
@@ -118,9 +134,24 @@ export function manualIntervals(sessions: readonly ManualSession[]): OverviewInt
     const endAbs = startAbs + session.durationSeconds / 60;
     if (endAbs <= startAbs) continue;
 
-    out.push({ startAbs, endAbs, source: 'manual' });
+    out.push({ startAbs, endAbs, source: 'manual', channel: 'session' });
   }
 
+  return out;
+}
+
+/** 倒计时的区间，与手动同构 / countdown sessions, laid out like manual ones. */
+export function countdownIntervals(
+  sessions: readonly { startTime: string; durationSeconds: number }[],
+): OverviewInterval[] {
+  const out: OverviewInterval[] = [];
+  for (const session of sessions) {
+    const startAbs = toAbsoluteMinutes(session.startTime);
+    if (startAbs === null) continue;
+    const endAbs = startAbs + session.durationSeconds / 60;
+    if (endAbs <= startAbs) continue;
+    out.push({ startAbs, endAbs, source: 'countdown', channel: 'session' });
+  }
   return out;
 }
 

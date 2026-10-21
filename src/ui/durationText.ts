@@ -76,6 +76,35 @@ export function setClockTime(el: HTMLElement, seconds: number): void {
   applyPreciseTooltip(el, seconds);
 }
 
+/**
+ * 毫秒级秒表读数 / a millisecond stopwatch readout, as `MM:SS.mmm`.
+ *
+ * 刻意不用"X 分 Y 秒"那套中文单位：末位每 100 毫秒都在变，单位字样反复重排只会让数字跳动得更明显。
+ * 固定宽度的时间串读起来稳，小数部分照旧压小、压灰。
+ *
+ * Deliberately not the "X 分 Y 秒" wording: the last digits change every 100ms, and repeated unit
+ * reflow makes the number jump more, not less. A fixed-width clock reads steadily, with the fraction
+ * still smaller and muted.
+ */
+export function setClockTimeMs(el: HTMLElement, ms: number): void {
+  el.empty();
+  el.addClass('rtt-dur', 'rtt-clock');
+
+  const total = Math.max(0, Math.floor(ms));
+  const hours = Math.floor(total / 3_600_000);
+  const minutes = Math.floor((total % 3_600_000) / 60_000);
+  const seconds = Math.floor((total % 60_000) / 1000);
+  const millis = total % 1000;
+  const pad = (value: number): string => String(value).padStart(2, '0');
+
+  const main = hours > 0
+    ? `${hours}:${pad(minutes)}:${pad(seconds)}`
+    : `${pad(minutes)}:${pad(seconds)}`;
+
+  el.createSpan({ cls: 'rtt-clock-main', text: main });
+  el.createSpan({ cls: 'rtt-clock-ms', text: `.${String(millis).padStart(3, '0')}` });
+}
+
 /** Create an element holding a styled `X 分钟` duration. */
 export function renderReadTime(
   parent: HTMLElement,

@@ -39,21 +39,31 @@ import { PendingBuffer } from './pendingBuffer';
  * Absent (or null) means a coalesced flush with no moment attached: buffer, never write the file.
  */
 export type FlushTrigger = 'session-end' | 'interval' | 'quit';
-import type { ManualSession, RecordEntry, TimelineEvent } from '../core/types';
+import type {
+  CountdownSession,
+  ManualSession,
+  RecordEntry,
+  TimelineEvent,
+} from '../core/types';
 import type { DataAdapter } from './adapter';
 import type { HistoryStore } from './historyStore';
 import {
   META_SCHEMA_VERSION,
   SQL_MIGRATE_V1_TO_V2,
   SQL_MIGRATE_V2_TO_V3,
+  SQL_MIGRATE_V4_TO_V5_MANUAL,
+  SQL_MIGRATE_V4_TO_V5_COUNTDOWN,
   SQL_CREATE_SCHEMA,
   SQLITE_SCHEMA_VERSION,
+  countdownSessionToRow,
   eventToRow,
   manualSessionToRow,
   recordToRow,
+  rowToCountdownSession,
   rowToEvent,
   rowToManualSession,
   rowToRecord,
+  type CountdownSessionRow,
   type EventRow,
   type ManualSessionRow,
   type RecordRow,
@@ -99,6 +109,10 @@ const SQL_SELECT_RECORDS = 'SELECT * FROM records';
 const SQL_SELECT_MANUAL = 'SELECT * FROM manual_sessions ORDER BY start_time ASC';
 const SQL_SELECT_MANUAL_RANGE =
   'SELECT * FROM manual_sessions WHERE start_time >= ? AND start_time <= ? ' +
+  'ORDER BY start_time ASC';
+const SQL_SELECT_COUNTDOWN = 'SELECT * FROM countdown_sessions ORDER BY start_time ASC';
+const SQL_SELECT_COUNTDOWN_RANGE =
+  'SELECT * FROM countdown_sessions WHERE start_time >= ? AND start_time <= ? ' +
   'ORDER BY start_time ASC';
 
 export class SqliteStore implements HistoryStore {
@@ -272,6 +286,17 @@ export class SqliteStore implements HistoryStore {
     );
   }
 
+  /** every countdown session, oldest first. */
+  getCountdownSessions(): CountdownSession[] {
+    return this.queryAll<CountdownSessionRow>(SQL_SELECT_COUNTDOWN).map(rowToCountdownSession);
+  }
+
+  getCountdownSessionsInRange(start: string, end: string): CountdownSession[] {
+    return this.queryAll<CountdownSessionRow>(SQL_SELECT_COUNTDOWN_RANGE, [start, end]).map(
+      rowToCountdownSession,
+    );
+  }
+
   //  ==========================================================================
   // Writes
   //  ==========================================================================
@@ -390,12 +415,13 @@ export class SqliteStore implements HistoryStore {
   appendManualSession(session: ManualSession): void {
     const row = manualSessionToRow(session);
     this.requireDb().run(
-      `INSERT INTO manual_sessions (id, start_time, end_time, duration_seconds, note, flags, pauses)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO manual_sessions (id, start_time, end_time, duration_seconds, duration_ms, note, flags, pauses)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          start_time       = excluded.start_time,
          end_time         = excluded.end_time,
          duration_seconds = excluded.duration_seconds,
+         duration_ms      = excluded.duration_ms,
          note             = excluded.note,
          flags            = excluded.flags,
          pauses           = excluded.pauses`,
@@ -404,6 +430,7 @@ export class SqliteStore implements HistoryStore {
         row.start_time,
         row.end_time,
         row.duration_seconds,
+        row.duration_ms ?? 0,
         row.note,
         row.flags ?? '[]',
         row.pauses ?? '[]',
@@ -415,6 +442,50 @@ export class SqliteStore implements HistoryStore {
   /** Delete a manual session. */
   deleteManualSession(id: string): void {
     this.requireDb().run('DELETE FROM manual_sessions WHERE id = ?', [id]);
+    this.markDirty();
+  }
+
+  /** Append a countdown session. */
+  appendCountdownSession(session: CountdownSession): void {
+    const row = countdownSessionToRow(session);
+    this.requireDb().run(
+      `INSERT INTO countdown_sessions
+         (id, mode, start_time, end_time, planned_seconds, duration_seconds, duration_ms,
+          completed, note, flags, pauses, phases)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         mode             = excluded.mode,
+         start_time       = excluded.start_time,
+         end_time         = excluded.end_time,
+         planned_seconds  = excluded.planned_seconds,
+         duration_seconds = excluded.duration_seconds,
+         duration_ms      = excluded.duration_ms,
+         completed        = excluded.completed,
+         note             = excluded.note,
+         flags            = excluded.flags,
+         pauses           = excluded.pauses,
+         phases           = excluded.phases`,
+      [
+        row.id,
+        row.mode,
+        row.start_time,
+        row.end_time,
+        row.planned_seconds,
+        row.duration_seconds,
+        row.duration_ms ?? 0,
+        row.completed,
+        row.note,
+        row.flags ?? '[]',
+        row.pauses ?? '[]',
+        row.phases ?? '[]',
+      ],
+    );
+    this.markDirty();
+  }
+
+  /** Delete a countdown session. */
+  deleteCountdownSession(id: string): void {
+    this.requireDb().run('DELETE FROM countdown_sessions WHERE id = ?', [id]);
     this.markDirty();
   }
 
@@ -563,18 +634,66 @@ export class SqliteStore implements HistoryStore {
 
       //  手动计时：id 就是身份，重复的忽略
       //  Manual sessions: the id is the identity, duplicates are ignored
+      //  更旧的快照没有 duration_ms：没有就按整秒×1000 推，别让一次合并因为缺列而失败
+      //  An older snapshot has no duration_ms: derive it from whole seconds rather than fail the merge
+      const otherManualMs = SqliteStore.hasColumnOf(other, 'manual_sessions', 'duration_ms');
       const manIn = other.prepare(
-        'SELECT id, start_time, end_time, duration_seconds, note, flags FROM manual_sessions',
+        'SELECT id, start_time, end_time, duration_seconds, note, flags, ' +
+          (otherManualMs ? 'duration_ms' : 'duration_seconds * 1000 AS duration_ms') +
+          ' FROM manual_sessions',
       );
       const manUp = this.db.prepare(
-        'INSERT OR IGNORE INTO manual_sessions (id, start_time, end_time, duration_seconds, note, flags) VALUES (?,?,?,?,?,?)',
+        'INSERT OR IGNORE INTO manual_sessions (id, start_time, end_time, duration_seconds, duration_ms, note, flags) VALUES (?,?,?,?,?,?,?)',
       );
       while (manIn.step()) {
         const r = manIn.getAsObject();
-        manUp.run([r.id, r.start_time, r.end_time, r.duration_seconds, r.note, r.flags]);
+        manUp.run([r.id, r.start_time, r.end_time, r.duration_seconds, r.duration_ms, r.note, r.flags]);
       }
       manIn.free();
       manUp.free();
+
+      //  倒计时同理：id 即身份，整条插入，重复则忽略。
+      //
+      //  必须先确认对方真有这张表：另一台设备可能还跑着 1.3.1，它写出的快照里没有 countdown_sessions。
+      //  直接 prepare 会在 catch 里吞掉整个合并的收尾（dirty 没置位，前面并进来的行反而落不了盘）。
+      //
+      //  Countdown sessions likewise: the id is the identity, insert whole, ignore duplicates.
+      //
+      //  The table must be checked for first: another device may still be running 1.3.1 and its
+      //  snapshot has no countdown_sessions. Preparing straight away would throw into the catch and
+      //  skip the tail of the merge, leaving rows merged above without the dirty flag that writes them.
+      if (SqliteStore.hasTable(other, 'countdown_sessions')) {
+        const otherCountdownMs = SqliteStore.hasColumnOf(other, 'countdown_sessions', 'duration_ms');
+        const cdIn = other.prepare(
+          'SELECT id, mode, start_time, end_time, planned_seconds, duration_seconds, ' +
+            (otherCountdownMs ? 'duration_ms' : 'duration_seconds * 1000 AS duration_ms') +
+            ', completed, note, flags, pauses, phases FROM countdown_sessions',
+        );
+        const cdUp = this.db.prepare(
+          'INSERT OR IGNORE INTO countdown_sessions (id, mode, start_time, end_time, planned_seconds, ' +
+            'duration_seconds, duration_ms, completed, note, flags, pauses, phases) ' +
+            'VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+        );
+        while (cdIn.step()) {
+          const r = cdIn.getAsObject();
+          cdUp.run([
+            r.id,
+            r.mode,
+            r.start_time,
+            r.end_time,
+            r.planned_seconds,
+            r.duration_seconds,
+            r.duration_ms,
+            r.completed,
+            r.note,
+            r.flags,
+            r.pauses,
+            r.phases,
+          ]);
+        }
+        cdIn.free();
+        cdUp.free();
+      }
 
       this.dirty = true;
       if (added > 0) {
@@ -793,6 +912,46 @@ export class SqliteStore implements HistoryStore {
     return row?.value ?? null;
   }
 
+  /**
+   * 另一份快照里有没有这张表 / whether a snapshot carries a given table.
+   *
+   * 合并的对象可能来自更旧的版本，问一句比让 prepare 抛错安全：抛错会被合并的 catch 接住，而那条
+   * 路径会跳过 dirty 置位。
+   * The merge source may come from an older version, and asking is safer than letting `prepare`
+   * throw: that throw is caught by the merge's catch, which skips setting the dirty flag.
+   */
+  private static hasTable(db: Database, table: string): boolean {
+    try {
+      const result = db.exec(
+        `SELECT name FROM sqlite_master WHERE type = 'table' AND name = '${table.replace(/'/g, "''")}'`,
+      );
+      return result.length > 0 && (result[0]?.values.length ?? 0) > 0;
+    } catch (error) {
+      console.warn('[RTT][sqlite] 表检测失败 / table probe failed:', error);
+      return false;
+    }
+  }
+
+  /**
+   * 另一份快照里某张表有没有某一列 / whether a snapshot's table carries a column.
+   * 与 hasTable 同理：旧版本写出的快照缺列时，直接 SELECT 会抛错并中断整个合并。
+   * Same reasoning as hasTable: selecting a column an older snapshot lacks throws and aborts the
+   * whole merge.
+   */
+  private static hasColumnOf(db: Database, table: string, column: string): boolean {
+    try {
+      const result = db.exec(`PRAGMA table_info(${table.replace(/'/g, "''")})`);
+      const first = result[0];
+      if (!first) return false;
+      const nameIndex = first.columns.indexOf('name');
+      if (nameIndex < 0) return false;
+      return first.values.some((row) => row[nameIndex] === column);
+    } catch (error) {
+      console.warn('[RTT][sqlite] 列检测失败 / column probe failed:', error);
+      return false;
+    }
+  }
+
   /** whether a table already has a column. */
   private hasColumn(table: string, column: string): boolean {
     const rows = this.queryAll<{ name: string }>(`PRAGMA table_info(${table})`);
@@ -823,6 +982,26 @@ export class SqliteStore implements HistoryStore {
     if (current >= 2 && !this.hasColumn('manual_sessions', 'pauses')) {
       this.requireDb().run(SQL_MIGRATE_V2_TO_V3);
       this.log.info('[RTT][sqlite] 补列 / added column: manual_sessions.pauses');
+    }
+
+    //  v3 → v4 只多一张表，`CREATE TABLE IF NOT EXISTS` 已经在上面的 DDL 里建好；这里只留一条
+    //  记录，好让升级在日志里看得见。
+    //  v3 → v4 adds only a table, which the idempotent DDL above already created; this line is
+    //  here so the upgrade is visible in the log.
+    if (current >= 3 && current < 4) {
+      this.log.info('[RTT][sqlite] 新增倒计时表 / added table: countdown_sessions');
+    }
+
+    //  v4 → v5：毫秒列。同样不能用 DDL 补列 —— `CREATE TABLE IF NOT EXISTS` 对已有表什么都不做。
+    //  v4 → v5: the millisecond columns. The DDL cannot add columns to an existing table.
+    if (current >= 4 && !this.hasColumn('manual_sessions', 'duration_ms')) {
+      this.requireDb().run(SQL_MIGRATE_V4_TO_V5_MANUAL);
+      this.log.info('[RTT][sqlite] 补列 / added column: manual_sessions.duration_ms');
+    }
+    if (current >= 4 && SqliteStore.hasTable(this.requireDb(), 'countdown_sessions')
+      && !this.hasColumn('countdown_sessions', 'duration_ms')) {
+      this.requireDb().run(SQL_MIGRATE_V4_TO_V5_COUNTDOWN);
+      this.log.info('[RTT][sqlite] 补列 / added column: countdown_sessions.duration_ms');
     }
 
     this.setMeta(META_SCHEMA_VERSION, String(SQLITE_SCHEMA_VERSION));

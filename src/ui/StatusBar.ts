@@ -20,14 +20,19 @@ import { eventFileRefs } from '../core/migration';
 import { t } from '../core/i18n';
 import type { Logger } from '../core/logger';
 import { manualDayTotalSeconds } from '../core/manualTimeline';
-import { documentIntervals, manualIntervals, overviewTotals } from '../core/overview';
+import { dayAccount } from '../core/account';
 import {
   selectDocumentDisplayState,
+  selectLiveSessionState,
   selectManualElapsedSeconds,
   selectReadingSeconds,
   selectUnfocusedSeconds,
 } from '../core/selectors';
-import { countsPluginViewsAsReading, countsUnfocusedAsReading } from '../core/settings';
+import {
+  attributionPolicy,
+  countsPluginViewsAsReading,
+  countsUnfocusedAsReading,
+} from '../core/settings';
 import { activeSelection, type PanelId, type StatusMetricDef } from '../core/statusMetrics';
 import { todayStr } from '../core/time';
 import { buildFileRecords, getAllTodaySeconds } from '../core/timeline';
@@ -480,16 +485,29 @@ export class StatusBarMetrics {
       };
     }
 
-    if (needed.has('todayTotal')) {
-      values['todayTotal'] = {
-        seconds: getAllTodaySeconds(
-          this.deps.history.getEvents(),
-          state.files.values(),
-          today,
-          countsUnfocusedAsReading(settings),
-          countsPluginViewsAsReading(settings),
-        ),
-      };
+    //  今日的三个数从同一份账本出：以前「今日总时长」在这里是"专注（+离开）"，在面板上是
+    //  "专注 + 离开 + 暂停"，同一个标签两个数。
+    //  Today's three figures come from one account. "Today's total" used to mean "focus (+away)"
+    //  here and "focus + away + paused" on the panel — one label, two numbers.
+    if (needed.has('todayTotal') || needed.has('todayRead') || needed.has('idleToday')) {
+      const path = state.activeFilePath;
+      const file = path ? state.files.get(path) : undefined;
+      const policy = attributionPolicy(settings);
+      const account = dayAccount({
+        events: this.deps.history.getEvents(),
+        manual: this.deps.history.getManualSessions(),
+        countdown: this.deps.history.getCountdownSessions(),
+        day: today,
+        nowMs: this.deps.clock.now(),
+        policy: { ...policy, pluginViews: countsPluginViewsAsReading(settings) },
+        live: path && file && file.status !== 'idle'
+          ? { filePath: path, state: selectLiveSessionState(state, file) }
+          : null,
+      });
+
+      values['todayTotal'] = { seconds: account.total };
+      values['todayRead'] = { seconds: account.reading };
+      values['idleToday'] = { seconds: account.idle };
     }
 
     if (needed.has('rounds')) {
@@ -514,30 +532,25 @@ export class StatusBarMetrics {
 
     const wantsOverview = [...needed].some((id) => OVERVIEW_METRICS.has(id));
     if (wantsOverview) {
-      const records = buildFileRecords(
-        this.deps.history.getEvents(),
-        this.deps.clock.now(),
-        today,
-        { countUnfocused: countsUnfocusedAsReading(settings), countPluginViews: countsPluginViewsAsReading(settings) },
-      );
-      const entries = Object.entries(records);
-      const intervals = [
-        ...documentIntervals(
-          entries.filter(([key]) => !isPluginViewKey(key)).map(([, r]) => r.readTimeLine),
-          { includeUnfocused: countsUnfocusedAsReading(settings) },
-        ),
-        ...(countsPluginViewsAsReading(settings) ? documentIntervals(
-          entries.filter(([key]) => isPluginViewKey(key)).map(([, r]) => r.readTimeLine),
-          { source: 'view', includeUnfocused: countsUnfocusedAsReading(settings) },
-        ) : []),
-        ...manualIntervals(this.deps.history.getManualSessions()),
-      ];
+      const path = state.activeFilePath;
+      const file = path ? state.files.get(path) : undefined;
+      const policy = attributionPolicy(settings);
+      const account = dayAccount({
+        events: this.deps.history.getEvents(),
+        manual: this.deps.history.getManualSessions(),
+        countdown: this.deps.history.getCountdownSessions(),
+        day: today,
+        nowMs: this.deps.clock.now(),
+        policy: { ...policy, pluginViews: countsPluginViewsAsReading(settings) },
+        live: path && file && file.status !== 'idle'
+          ? { filePath: path, state: selectLiveSessionState(state, file) }
+          : null,
+      });
 
-      const totals = overviewTotals(intervals, today);
-      values['union'] = { seconds: Math.round(totals.unionMinutes * 60) };
-      values['docTotal'] = { seconds: Math.round(totals.documentMinutes * 60) };
-      values['viewTotal'] = { seconds: Math.round(totals.viewMinutes * 60) };
-      values['overlap'] = { seconds: Math.round(totals.overlapMinutes * 60) };
+      values['union'] = { seconds: account.union };
+      values['docTotal'] = { seconds: account.document };
+      values['viewTotal'] = { seconds: account.view };
+      values['overlap'] = { seconds: account.overlap };
     }
 
     return values;

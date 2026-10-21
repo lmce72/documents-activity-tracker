@@ -11,7 +11,7 @@
 
 import { DEFAULT_SETTINGS } from './defaults';
 import { normalizeSelection } from './statusMetrics';
-import type { PluginSettings } from './types';
+import type { AttributionPolicy, PluginSettings } from './types';
 
 /**
  * upper bound for the idle timeout: 24 hours.
@@ -77,6 +77,13 @@ export function mergeSettings(loaded: unknown): PluginSettings {
   }
 
   merged.idleTimeout = normalizeIdleTimeoutSeconds(source.idleTimeout);
+
+  //  旧配置只有一个布尔值，把它换算成三选之一；缺了新键时才走这条，换过一次之后就以新键为准。
+  //  The old config had only a boolean; translate it once. This only runs when the new key is
+  //  absent, so after the first save the new key wins.
+  const legacyAway = source.countUnfocusedAsReading === true;
+  merged.awayPolicy = normalizePolicy(source.awayPolicy, legacyAway ? 'reading' : 'paused');
+  merged.idlePolicy = normalizePolicy(source.idlePolicy, 'paused');
   //  The status-bar slots come from a JSON file a user may have hand-edited, so unknown ids
   //  and duplicates are dropped and the array is padded to a fixed width.
   //  Only a real array from disk is normalised. Passing `undefined` through would produce
@@ -123,7 +130,30 @@ export function isDocumentRecordingEnabled(settings: PluginSettings): boolean {
  * Defaults to off; unfocused intervals remain available for explicit classification.
  */
 export function countsUnfocusedAsReading(settings: PluginSettings): boolean {
-  return settings.countUnfocusedAsReading === true;
+  return attributionPolicy(settings).away === 'reading';
+}
+
+/** 三选值兜底 / coerce a stored policy, falling back when it is missing or bogus. */
+export function normalizePolicy(raw: unknown, fallback: AttributionPolicy): AttributionPolicy {
+  return raw === 'reading' || raw === 'paused' || raw === 'ignored' ? raw : fallback;
+}
+
+/**
+ * 现行口径 / the policy in force.
+ *
+ * 一个入口，所有面板与统计都读它 —— 之前「离开窗口算不算阅读」被四处各读一遍，四处各答一次。
+ * One entry point that every panel and total reads: "does away time count as reading" used to be
+ * read in four places, each answering for itself.
+ */
+export function attributionPolicy(settings: PluginSettings): {
+  away: AttributionPolicy;
+  idle: AttributionPolicy;
+} {
+  const legacy = settings.countUnfocusedAsReading === true;
+  return {
+    away: normalizePolicy(settings.awayPolicy, legacy ? 'reading' : 'paused'),
+    idle: normalizePolicy(settings.idlePolicy, 'paused'),
+  };
 }
 
 /** Plugin activity is reading by default; the raw ledger is always retained. */

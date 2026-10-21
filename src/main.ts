@@ -25,9 +25,21 @@ import {
   writeSharedSettings,
 } from './data/sharedSettings';
 import { VolatileHistoryStore } from './data/VolatileHistoryStore';
+import {
+  readLiveSnapshot,
+  writeLiveSnapshot,
+  LIVE_SNAPSHOT_VERSION,
+  type LiveSnapshot,
+  type LiveTimerEntry,
+} from './data/liveTimerSnapshot';
+import { selectCountdownElapsedSeconds, selectManualElapsedSeconds } from './core/selectors';
+import { ActionTypes, MANUAL_STATUS } from './core/constants';
 import { TimerStore } from './services/TimerStore';
 import { TimerService } from './services/TimerService';
 import { ManualTimerService } from './services/ManualTimerService';
+import { CountdownTimerService } from './services/CountdownTimerService';
+import { buildCountdownPlan, countdownConfigFrom } from './core/countdown';
+import { formatDurationWithSeconds } from './core/time';
 import { systemClock } from './services/clock';
 import { ActivitySidebarView, VIEW_TYPE_RTT_SIDEBAR } from './ui/SidebarView';
 import { RecordsModal } from './ui/RecordsModal';
@@ -59,6 +71,27 @@ export default class ReadTimeTrackerPlugin extends Plugin {
   private timerStore!: TimerStore;
   private timerService!: TimerService;
   private manualService!: ManualTimerService;
+  private countdownService!: CountdownTimerService;
+  /**
+   * 自动收尾正在进行中 / an automatic finish is in flight.
+   * 备注框开着的时候秒针还在走，没有这个闸门就会每秒弹一个框。
+   * The second hand keeps running while the note dialog is open; without this gate it would open a
+   * new dialog every second.
+   */
+  private countdownFinishing = false;
+
+  /**
+   * 上次重载留下的未保存计时 / unsaved runs left by the previous reload.
+   * 读到之后一直留着，直到用户恢复或丢弃 —— 它不属于状态树，因为"还没被接上"本身就是它的状态。
+   * Read once and kept until the user restores or discards: it is not part of the state tree because
+   * "not yet picked up" is itself its state.
+   */
+  private pendingLive: LiveSnapshot | null = null;
+
+  /** 快照写入节流 / throttle for snapshot writes. */
+  private lastLiveWrite = 0;
+  private lastLiveSignature = '';
+
   private binding: Binding | null = null;
   private statusBar: StatusBarMetrics | null = null;
 
@@ -161,6 +194,25 @@ export default class ReadTimeTrackerPlugin extends Plugin {
       newId: () => this.newSessionId(),
     });
 
+    this.countdownService = new CountdownTimerService({
+      store: this.timerStore,
+      history,
+      clock: systemClock,
+      log: this.log,
+      newId: () => this.newSessionId(),
+    });
+
+    //  重载/崩溃前留下的那一轮：只读出来备着，**不自动恢复** —— 用户得自己决定要不要接上。
+    //  A run left behind by a reload or a crash is read but **not** restored automatically: the user
+    //  decides whether to pick it up.
+    this.pendingLive = readLiveSnapshot();
+    this.timerStore.subscribe(() => this.persistLiveSnapshot());
+
+    if (this.pendingLive) {
+      this.log.info('[RTT] 发现未保存的计时 / unsaved timers found:', this.pendingLive.savedAt);
+      new Notice(t('recoveryNotice'), 12000);
+    }
+
     this.binding = installBindings({
       app: this.app,
       plugin: this,
@@ -182,6 +234,12 @@ export default class ReadTimeTrackerPlugin extends Plugin {
           settings: () => this.settings,
           service: this.timerService,
           manual: this.manualService,
+          countdown: this.countdownService,
+          recovery: {
+            pending: (kind) => (kind === 'manual' ? this.pendingLive?.manual : this.pendingLive?.countdown) ?? null,
+            restore: () => this.restorePendingLive(),
+            discard: () => this.discardPendingLive(),
+          },
           storageWarning: () => this.storageWarning,
           promptNote: (onDone) => new ManualNoteModal(this.app, onDone).open(),
           openRecords: (filePath) => this.openRecords(filePath),
@@ -225,6 +283,20 @@ export default class ReadTimeTrackerPlugin extends Plugin {
           void this.history.flushNow({ trigger: 'interval' });
         }
       }, 60_000),
+    );
+
+    //  倒计时跑完最后一段要自己收尾：秒针仍然是墙钟推导的，但"跑完了"这件事得有人每秒问一次。
+    //  放在这里而不是侧栏里：侧栏关着的时候倒计时照样要走完并存下来。
+    //  A countdown that finishes its last phase has to settle itself. The seconds stay wall-clock
+    //  derived, but "it is over" needs someone to ask once a second — and it lives here rather than
+    //  in the sidebar, so a closed sidebar cannot swallow the finish.
+    this.registerInterval(
+      window.setInterval(() => {
+        this.checkCountdownFinish();
+
+        //  快照兜底：状态没变也要定期刷新已计时 / a periodic refresh even when nothing changed
+        this.persistLiveSnapshot();
+      }, 1000),
     );
 
     this.addSettingTab(
@@ -310,6 +382,47 @@ export default class ReadTimeTrackerPlugin extends Plugin {
       checkCallback: (checking) => {
         if (!this.settings.manualTimerEnabled) return false;
         if (!checking) this.manualService.start();
+        return true;
+      },
+    });
+
+    //  恢复入口放在命令面板：即便侧栏关着、面板没打开，也能把上次没保存的那一轮接回来
+    //  The restore entry lives in the palette so a run can be picked up even with the sidebar closed
+    this.addCommand({
+      id: 'recover-timer',
+      name: t('cmdRecoverTimer'),
+      checkCallback: (checking) => {
+        if (!this.hasPendingLive()) return false;
+        if (!checking) this.restorePendingLive();
+        return true;
+      },
+    });
+
+    this.addCommand({
+      id: 'countdown-start',
+      name: t('countdownStart'),
+      checkCallback: (checking) => {
+        if (this.settings.countdownTimerEnabled === false) return false;
+        if (!checking) {
+          this.countdownService.start(
+            buildCountdownPlan(countdownConfigFrom(this.settings)),
+          );
+        }
+        return true;
+      },
+    });
+
+    this.addCommand({
+      id: 'countdown-stop',
+      name: t('countdownStop'),
+      checkCallback: (checking) => {
+        if (!this.countdownService.isActive()) return false;
+        if (!checking) {
+          new ManualNoteModal(this.app, (note) => {
+            if (note === null) return;
+            void this.countdownService.stop(note);
+          }).open();
+        }
         return true;
       },
     });
@@ -449,6 +562,9 @@ export default class ReadTimeTrackerPlugin extends Plugin {
     if (patch.manualTimerEnabled === false) {
       this.manualService.discard();
     }
+    if (patch.countdownTimerEnabled === false) {
+      this.countdownService.discard();
+    }
 
     //  设置必须**立即**生效，而不是等下一次切换标签页。
     //
@@ -528,6 +644,193 @@ export default class ReadTimeTrackerPlugin extends Plugin {
   }
 
   /**
+   * 倒计时跑完的最后一段 / the countdown's last phase finished.
+   *
+   * 备注开关关着（默认）就直接保存并提示；开着就弹备注框，**取消也保存** —— 这一段已经跑完了，
+   * 没写备注不该成为丢掉它的理由。
+   *
+   * With the note toggle off (the default) the run saves itself and says so. With it on, a note
+   * dialog opens and cancelling still saves: the stretch already happened, and not writing a note is
+   * no reason to throw it away.
+   */
+  private checkCountdownFinish(): void {
+    if (this.countdownFinishing) return;
+    if (this.settings.countdownTimerEnabled === false) return;
+    if (!this.countdownService.isComplete()) return;
+
+    this.countdownFinishing = true;
+
+    const finish = (note: string): void => {
+      void this.countdownService
+        .stop(note)
+        .then((session) => {
+          if (!session) return;
+          new Notice(
+            t('countdownFinishedNotice').replace(
+              '{time}',
+              formatDurationWithSeconds(session.durationSeconds),
+            ),
+            5000,
+          );
+        })
+        .finally(() => {
+          this.countdownFinishing = false;
+        });
+    };
+
+    if (this.settings.countdownPromptNote === true) {
+      new ManualNoteModal(this.app, (note) => {
+        finish(note ?? '');
+      }).open();
+    } else {
+      finish('');
+    }
+  }
+
+  //  ==========================================================================
+  // 未保存计时的临时快照与恢复 / live snapshot and recovery
+  //  ==========================================================================
+
+  /**
+   * 把正在跑的计时写进 localStorage / write the running timers to localStorage.
+   *
+   * 触发点是状态树订阅：正计时与倒计时的子状态只在它们自己的动作里换对象，TICK 每秒换的是整棵
+   * 树，所以"子状态引用变了"就是"真的有事发生"。再加上五秒兜底，崩溃最多丢五秒。
+   *
+   * Driven by the store subscription: the two sub-states only change identity on their own actions,
+   * while TICK replaces the root every second — so "reference changed" means "something happened".
+   * A five-second fallback caps a crash at five lost seconds.
+   */
+  private persistLiveSnapshot(): void {
+    try {
+      const state = this.timerStore.getState();
+      const now = systemClock.now();
+
+      const active = state.manual.status !== MANUAL_STATUS.IDLE
+        || state.countdown.status !== MANUAL_STATUS.IDLE;
+      const signature = [
+        state.manual.status,
+        state.manual.flags.length,
+        state.manual.pauses.length,
+        state.countdown.status,
+        state.countdown.flags.length,
+        state.countdown.pauses.length,
+      ].join('|');
+
+      //  空闲且没有待恢复的残留：不必再写
+      //  Idle with nothing pending: nothing to write
+      if (!active && !this.hasPendingLive()) {
+        if (this.lastLiveSignature !== '') {
+          writeLiveSnapshot(null);
+          this.lastLiveSignature = '';
+        }
+        return;
+      }
+      if (signature === this.lastLiveSignature && now - this.lastLiveWrite < 5000) return;
+
+      this.lastLiveSignature = signature;
+      this.lastLiveWrite = now;
+
+      const manual: LiveTimerEntry | undefined = state.manual.status !== MANUAL_STATUS.IDLE
+        ? {
+            startedAt: state.manual.startedAt,
+            elapsedMs: selectManualElapsedSeconds(state, now) * 1000,
+            pausedMs: state.manual.pausedMs,
+            pauses: state.manual.pauses,
+            flags: state.manual.flags,
+            running: state.manual.status === MANUAL_STATUS.RUNNING,
+          }
+        : this.pendingLive?.manual;
+
+      const countdown = state.countdown.status !== MANUAL_STATUS.IDLE && state.countdown.plan
+        ? {
+            startedAt: state.countdown.startedAt,
+            elapsedMs: selectCountdownElapsedSeconds(state, now) * 1000,
+            pausedMs: state.countdown.pausedMs,
+            pauses: state.countdown.pauses,
+            flags: state.countdown.flags,
+            running: state.countdown.status === MANUAL_STATUS.RUNNING,
+            plan: state.countdown.plan,
+          }
+        : this.pendingLive?.countdown;
+
+      writeLiveSnapshot({
+        version: LIVE_SNAPSHOT_VERSION,
+        savedAt: now,
+        ...(manual ? { manual } : {}),
+        ...(countdown ? { countdown } : {}),
+      });
+    } catch (error) {
+      this.log.warn('[RTT] 临时快照写入失败 / snapshot write failed:', error);
+    }
+  }
+
+  /** 有没有待恢复的计时 / whether anything is waiting to be restored. */
+  private hasPendingLive(): boolean {
+    return !!(this.pendingLive?.manual || this.pendingLive?.countdown);
+  }
+
+  /**
+   * 恢复待处理的计时 / bring the pending runs back.
+   *
+   * 恢复成**暂停**、累计值等于快照那一刻：应用关着的时间不算进去，否则恢复等于凭空造一段专注。
+   * Restored **paused** at the snapshotted elapsed; time while the app was closed is not counted,
+   * or restoring would invent focus that never happened.
+   */
+  private restorePendingLive(): void {
+    const pending = this.pendingLive;
+    if (!pending) return;
+
+    const now = systemClock.now();
+    try {
+      if (pending.manual) {
+        const entry = pending.manual;
+        this.timerStore.dispatch({
+          type: ActionTypes.MANUAL_RESTORE,
+          payload: {
+            startTimestamp: now - Math.round(entry.elapsedMs) - entry.pausedMs,
+            startedAt: entry.startedAt,
+            pausedMs: entry.pausedMs,
+            pauses: entry.pauses,
+            flags: entry.flags,
+          },
+        });
+      }
+
+      if (pending.countdown) {
+        const entry = pending.countdown;
+        this.timerStore.dispatch({
+          type: ActionTypes.COUNTDOWN_RESTORE,
+          payload: {
+            startTimestamp: now - Math.round(entry.elapsedMs) - entry.pausedMs,
+            startedAt: entry.startedAt,
+            pausedMs: entry.pausedMs,
+            pauses: entry.pauses,
+            flags: entry.flags,
+            plan: entry.plan,
+          },
+        });
+      }
+
+      this.pendingLive = null;
+      new Notice(t('recoveryRestored'), 6000);
+      this.persistLiveSnapshot();
+      this.refreshSidebar();
+    } catch (error) {
+      this.log.warn('[RTT] 恢复未保存计时失败 / restore failed:', error);
+      new Notice(String(error), 6000);
+    }
+  }
+
+  /** 丢弃待恢复的计时 / drop the pending runs. */
+  private discardPendingLive(): void {
+    this.pendingLive = null;
+    writeLiveSnapshot(null);
+    this.lastLiveSignature = '';
+    this.refreshSidebar();
+  }
+
+  /**
    * 保存记录并把计时器归位 / write everything down and settle the timers.
    *
    * 文档会话直接落盘（保存即结束），手动计时只**暂停**而不是丢弃 —— 那一段是真实发生的专注时间，
@@ -542,6 +845,10 @@ export default class ReadTimeTrackerPlugin extends Plugin {
       }
       if (this.manualService.isActive()) {
         this.manualService.pause();
+      }
+      //  倒计时同理：暂停而不是丢弃 / the countdown likewise: pause, never discard
+      if (this.countdownService.isActive()) {
+        this.countdownService.pause();
       }
       await this.history.flushNow({ force: true });
       this.refreshSidebar();

@@ -16,7 +16,6 @@
  */
 
 import { Modal, Notice, Setting, setIcon, setTooltip, type App } from 'obsidian';
-import { UnfocusedModal } from './UnfocusedModal';
 import type { TimerService } from '../services/TimerService';
 
 import { t } from '../core/i18n';
@@ -469,9 +468,11 @@ export class RecordsModal extends Modal {
       return;
     }
 
-    if (this.deps.service) new Setting(root).setName(t('unfocusedManage')).addButton((button) => button.setButtonText(t('unfocusedManage')).onClick(() => {
-      new UnfocusedModal(this.app, { history: this.deps.history, service: this.deps.service!, log: this.deps.log, filePath, day: this.day, onChanged: () => { this.deps.onChanged?.(); this.render(); } }).open();
-    }));
+    //  失焦归类搬到了侧栏文档面板的「离开与空闲」区块：那是同一个面板里的一段列表，不再单开一层
+    //  弹窗。这里留一句指路，用户不会在记录浏览器里找那个已经不存在的按钮。
+    //  Blur classification moved to the document panel's "away and idle" block — one list inside a
+    //  panel instead of a layer of modal. A line of signposting beats a button that no longer exists.
+    root.createDiv({ cls: 'rtt-empty-hint', text: t('unfocusedMoved') });
     // day navigation
     const nav = root.createDiv({ cls: 'rtt-timeline-nav' });
     const prev = nav.createEl('button', { cls: 'rtt-nav-btn', text: '‹' });

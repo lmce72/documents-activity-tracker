@@ -56,6 +56,27 @@ export interface TimerServiceDeps {
 /** why a session closed. */
 export type SaveKind = 'save' | 'auto-save';
 
+/**
+ * 一段失焦该记成什么 / how a blur stretch should be recorded.
+ *
+ * 只写**结构性事实**：暂停中的会话是暂停、分屏阅读期间是阅读，其余一律不写归类 —— 没有归类的
+ * 时段由口径在展示时解释（见 core/account.ts）。把口径烧进事件是错的：口径改了，历史数据会跟着
+ * 变成一个当时并不成立的判断，而且实时计数器（它只有"离开"一个通道）会与事件里的归类对不上。
+ *
+ * Only **structural facts** are written: a paused session is paused, split reading is reading, and
+ * everything else is left unclassified — the policy interprets unclassified stretches at display time
+ * (see core/account.ts). Baking the policy into events would be wrong twice: changing it would rewrite
+ * what the past meant, and the live counters (which have one "away" channel) would stop agreeing with
+ * the disposition in the event.
+ */
+function awayDisposition(
+  file: TimerFileState,
+): 'reading' | 'paused' | undefined {
+  if (file.status === STATUS.PAUSED) return 'paused';
+  if (file.splitReading === true) return 'reading';
+  return undefined;
+}
+
 export class TimerService {
   private readonly activityTitles = new Map<string, string>();
   constructor(private readonly deps: TimerServiceDeps) {}
@@ -114,7 +135,7 @@ export class TimerService {
     if (!isDocumentRecordingEnabled(this.deps.settings())) return;
 
     try {
-      this.applyIdleState();
+      await this.applyIdleState();
       this.applyDayRollover();
       await this.closeOrphanSessions();
 
@@ -140,14 +161,14 @@ export class TimerService {
    * The current idle flag is preserved instead. The cost is that leaving the window open
    * while away still counts, bounded by the 90s tick gap and the 4h attribution cap.
    */
-  private applyIdleState(): void {
+  private async applyIdleState(): Promise<void> {
     const settings = this.deps.settings();
     const state = this.deps.store.getState();
 
     if (!state.isWindowFocused) return;
 
     if (!settings.idleTimeoutEnabled) {
-      if (state.isIdle) this.deps.store.dispatch({ type: ActionTypes.CLEAR_IDLE });
+      if (state.isIdle) await this.settleIdle(false);
       return;
     }
 
@@ -155,11 +176,53 @@ export class TimerService {
     const idleMs = this.deps.clock.now() - state.lastActivityTime;
 
     if (idleMs > timeoutMs) {
-      if (!state.isIdle) this.deps.store.dispatch({ type: ActionTypes.SET_IDLE });
+      if (!state.isIdle) await this.settleIdle(true);
       return;
     }
 
-    if (state.isIdle) this.deps.store.dispatch({ type: ActionTypes.CLEAR_IDLE });
+    if (state.isIdle) await this.settleIdle(false);
+  }
+
+  /**
+   * 进入或离开空闲 / enter or leave an idle stretch.
+   *
+   * 事件是必需的，不是装饰：时长由事件推导，没有 idle/idle-end 这两条边界，空闲那段会被并进上一条
+   * 事件之后的区间，在推导里变成专注或暂停 —— 总数对不上，而这一段恰恰是最容易被误当成"还在读"的。
+   *
+   * The events are load-bearing: durations are derived from the event stream, and without an
+   * idle/idle-end boundary the stretch would fall into the gap after the previous event and be
+   * derived as active or paused time. The one stretch most likely to be mistaken for reading is
+   * exactly the one that needs its own boundary.
+   */
+  private async settleIdle(entering: boolean): Promise<void> {
+    try {
+      await this.flushPendingWrites();
+
+      //  只有进行中的会话才有边界可写 / only a session in progress has a boundary worth writing
+      const state = this.deps.store.getState();
+      const filePath = state.activeFilePath;
+      const file = filePath ? state.files.get(filePath) : undefined;
+      const hasSession = !!filePath && !!file && file.status === STATUS.TRACKING;
+
+      if (hasSession) {
+        this.appendEvent({
+          time: this.deps.clock.nowFull(),
+          type: entering ? 'idle' : 'idle-end',
+          file: filePath,
+          state: entering ? 'idle' : 'tracking',
+          reason: entering ? 'idle-timeout' : 'idle-resume',
+
+        });
+      }
+
+      this.deps.store.dispatch({
+        type: entering ? ActionTypes.SET_IDLE : ActionTypes.CLEAR_IDLE,
+      });
+
+      if (hasSession) await this.flushPendingWrites();
+    } catch (error) {
+      this.deps.log.warn('[RTT][service] 空闲结算失败 / idle settle failed:', error);
+    }
   }
 
   /** day rollover, made idempotent by the reducer. */
@@ -316,7 +379,7 @@ export class TimerService {
                 : 'pausing'
               : 'inactive',
             reason: focused ? 'window-focus' : 'window-blur',
-            ...(!focused ? { unfocusedDisposition: file.status === STATUS.PAUSED ? 'paused' as const : file.splitReading ? 'reading' as const : 'unfocused' as const } : {}),
+            ...(!focused ? { unfocusedDisposition: awayDisposition(file) } : {}),
           });
         }
       }
@@ -341,7 +404,12 @@ export class TimerService {
     this.deps.store.dispatch({ type: ActionTypes.SET_SPLIT_READING, payload: { filePath, enabled } });
     if (!state.isWindowFocused) this.appendEvent({ time: this.deps.clock.nowFull(), type: 'blur', file: filePath,
       state: file.status === STATUS.PAUSED ? 'pausing' : enabled ? 'tracking' : 'inactive', reason: 'split-reading-toggle',
-      unfocusedDisposition: file.status === STATUS.PAUSED ? 'paused' : enabled ? 'reading' : 'unfocused',
+      //  关掉分屏阅读后，这段回到用户设定的默认口径（而不是硬编码成"不算"）
+      //  Turning split reading off hands this stretch back to the configured default instead of a
+      //  hard-coded "not counted".
+      unfocusedDisposition: file.status === STATUS.PAUSED
+        ? 'paused'
+        : enabled ? 'reading' : undefined,
     });
     await this.flushPendingWrites();
   }
@@ -657,6 +725,7 @@ export class TimerService {
       duration: write.totalSeconds,
       activeSeconds: write.activeSeconds,
       unfocusedSeconds: write.unfocusedSeconds,
+      idleSeconds: write.idleSeconds ?? 0,
     };
   }
 

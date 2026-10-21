@@ -13,13 +13,19 @@
  */
 
 import { removeFileEvents as removeFileEventsPure } from '../core/timeline';
-import type { ManualSession, RecordEntry, TimelineEvent } from '../core/types';
+import type {
+  CountdownSession,
+  ManualSession,
+  RecordEntry,
+  TimelineEvent,
+} from '../core/types';
 import type { HistoryStore } from './historyStore';
 
 export class VolatileHistoryStore implements HistoryStore {
   protected events: TimelineEvent[] = [];
   protected records = new Map<string, RecordEntry>();
   protected manual: ManualSession[] = [];
+  protected countdown: CountdownSession[] = [];
 
   isReady(): boolean {
     return true;
@@ -105,6 +111,22 @@ export class VolatileHistoryStore implements HistoryStore {
 
   deleteManualSession(id: string): void {
     this.manual = this.manual.filter((s) => s.id !== id);
+  }
+
+  getCountdownSessions(): CountdownSession[] {
+    return [...this.countdown];
+  }
+
+  getCountdownSessionsInRange(start: string, end: string): CountdownSession[] {
+    return this.countdown.filter((s) => s.startTime >= start && s.startTime <= end);
+  }
+
+  appendCountdownSession(session: CountdownSession): void {
+    this.countdown.push(session);
+  }
+
+  deleteCountdownSession(id: string): void {
+    this.countdown = this.countdown.filter((s) => s.id !== id);
   }
 
   clearAll(): void {

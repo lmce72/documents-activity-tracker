@@ -9,7 +9,12 @@
  *
  */
 
-import type { ManualSession, RecordEntry, TimelineEvent } from '../core/types';
+import type {
+  CountdownSession,
+  ManualSession,
+  RecordEntry,
+  TimelineEvent,
+} from '../core/types';
 
 export interface HistoryStore {
   /** whether the store is ready */
@@ -36,6 +41,12 @@ export interface HistoryStore {
   getManualSessionsInRange(start: string, end: string): ManualSession[];
   appendManualSession(session: ManualSession): void;
   deleteManualSession(id: string): void;
+
+  //  倒计时是另一本账 / the countdown is a separate ledger
+  getCountdownSessions(): CountdownSession[];
+  getCountdownSessionsInRange(start: string, end: string): CountdownSession[];
+  appendCountdownSession(session: CountdownSession): void;
+  deleteCountdownSession(id: string): void;
 
   /** clear document data only */
   clearAll(): void;

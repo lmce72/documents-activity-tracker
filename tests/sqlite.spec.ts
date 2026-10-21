@@ -16,7 +16,12 @@ import {
   SqliteStore,
   resolveDatabasePath,
 } from '../src/data/SqliteStore';
-import type { HistoryCache, ManualSession, TimelineEvent } from '../src/core/types';
+import type {
+  CountdownSession,
+  HistoryCache,
+  ManualSession,
+  TimelineEvent,
+} from '../src/core/types';
 import { MemoryAdapter } from './helpers/memory-adapter';
 
 const WASM_PATH = path.join(
@@ -280,6 +285,7 @@ describe('SqliteStore — 手动计时 / manual sessions', () => {
       startTime: '2026-09-07 09:00:00',
       endTime: '2026-09-07 09:25:00',
       durationSeconds: 1500,
+      durationMs: 1_500_000,
       note: '写周报',
       flags: [],
       pauses: [],
@@ -289,6 +295,7 @@ describe('SqliteStore — 手动计时 / manual sessions', () => {
       startTime: '2026-09-08 14:00:00',
       endTime: '2026-09-08 14:10:00',
       durationSeconds: 600,
+      durationMs: 600_000,
       note: '复习英语',
       flags: [],
       pauses: [],
@@ -345,6 +352,115 @@ describe('SqliteStore — 手动计时 / manual sessions', () => {
     await reopened.init();
     expect(reopened.getManualSessions()).toEqual(sessions);
     await reopened.close();
+  });
+});
+
+describe('SqliteStore — 倒计时 / countdown sessions', () => {
+  const run: CountdownSession = {
+    id: 'c1',
+    mode: 'pomodoro',
+    startTime: '2026-09-09 09:00:00',
+    endTime: '2026-09-09 09:30:00',
+    plannedSeconds: 1800,
+    durationSeconds: 1800,
+    durationMs: 1_800_000,
+    completed: true,
+    note: '两轮番茄',
+    flags: [{ atSeconds: 1500, atTime: '2026-09-09 09:25:00', label: '', phase: 1 }],
+    pauses: [],
+    phases: [
+      { kind: 'focus', seconds: 1500 },
+      { kind: 'break', seconds: 300 },
+    ],
+  };
+
+  it('往返无损，并在重开后仍是同一条', async () => {
+    const adapter = makeAdapter();
+    const store = new SqliteStore(adapter, DB_PATH, silentLogger);
+    await store.init();
+
+    store.appendCountdownSession(run);
+    await store.flushNow();
+    await store.close();
+
+    const reopened = new SqliteStore(adapter, DB_PATH, silentLogger);
+    await reopened.init();
+    expect(reopened.getCountdownSessions()).toEqual([run]);
+    await reopened.close();
+  });
+
+  it('与正计时分表：两边互不出现，clearAll 也不动倒计时', async () => {
+    const adapter = makeAdapter();
+    const store = new SqliteStore(adapter, DB_PATH, silentLogger);
+    await store.init();
+
+    store.appendCountdownSession(run);
+    store.appendManualSession({
+      id: 'm9',
+      startTime: '2026-09-09 10:00:00',
+      endTime: '2026-09-09 10:05:00',
+      durationSeconds: 300,
+      durationMs: 300_000,
+      note: '',
+      flags: [],
+      pauses: [],
+    });
+
+    expect(store.getCountdownSessions().map((s) => s.id)).toEqual(['c1']);
+    expect(store.getManualSessions().map((s) => s.id)).toEqual(['m9']);
+
+    store.clearAll();
+    expect(store.getCountdownSessions()).toHaveLength(1);
+    expect(store.getManualSessions()).toHaveLength(1);
+
+    await store.close();
+  });
+
+  it('按区间查询与删除', async () => {
+    const adapter = makeAdapter();
+    const store = new SqliteStore(adapter, DB_PATH, silentLogger);
+    await store.init();
+
+    store.appendCountdownSession(run);
+    expect(
+      store.getCountdownSessionsInRange('2026-09-09 00:00:00', '2026-09-09 23:59:59'),
+    ).toHaveLength(1);
+    expect(
+      store.getCountdownSessionsInRange('2026-09-10 00:00:00', '2026-09-10 23:59:59'),
+    ).toHaveLength(0);
+
+    store.deleteCountdownSession('c1');
+    expect(store.getCountdownSessions()).toHaveLength(0);
+
+    await store.close();
+  });
+
+  it('损坏的 phases 列降级为空数组，时长与备注照常读出', async () => {
+    const adapter = makeAdapter();
+    const store = new SqliteStore(adapter, DB_PATH, silentLogger);
+    await store.init();
+
+    store.appendCountdownSession({ ...run, phases: [] });
+    await store.flushNow();
+    await store.close();
+
+    const reopened = new SqliteStore(adapter, DB_PATH, silentLogger);
+    await reopened.init();
+    const [stored] = reopened.getCountdownSessions();
+    expect(stored!.durationSeconds).toBe(1800);
+    expect(stored!.phases).toEqual([]);
+    await reopened.close();
+  });
+
+  it('schema 版本升到 5，旧库升级后仍有表与毫秒列', async () => {
+    expect(SQLITE_SCHEMA_VERSION).toBe(5);
+
+    const adapter = makeAdapter();
+    const store = new SqliteStore(adapter, DB_PATH, silentLogger);
+    await store.init();
+    expect(store.getMeta(META_SCHEMA_VERSION)).toBe('5');
+    expect(store.getCountdownSessions()).toEqual([]);
+    await store.close();
   });
 });
 

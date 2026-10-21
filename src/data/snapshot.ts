@@ -15,7 +15,7 @@
  */
 
 import { LS_SNAPSHOT_KEY } from '../core/constants';
-import { createIdleManualState } from '../core/reducer';
+import { createIdleCountdownState, createIdleManualState } from '../core/reducer';
 import type { TimerFileState, TimerState } from '../core/types';
 
 /** The on-disk snapshot shape. */
@@ -85,6 +85,7 @@ export function deserializeState(
         activeSeconds: typeof v.activeSeconds === 'number' ? v.activeSeconds : 0,
         // absent in older snapshots
         unfocusedSeconds: typeof v.unfocusedSeconds === 'number' ? v.unfocusedSeconds : 0,
+        idleSeconds: typeof v.idleSeconds === 'number' ? v.idleSeconds : 0,
         pausedSeconds: typeof v.pausedSeconds === 'number' ? v.pausedSeconds : 0,
 
         //  Timestamps must not survive a crash, or the first tick would be dropped
@@ -110,6 +111,10 @@ export function deserializeState(
     //  ended explicitly by the user, and silently resuming one after a crash would
     //  fabricate a multi-hour record. Better to let the user start it again.
     manual: createIdleManualState(),
+    //  倒计时同样不恢复：崩溃后悄悄接着跑，会凭空造出一段没发生过的专注
+    //  The countdown is not restored either: silently resuming after a crash would invent focus
+    //  time that never happened.
+    countdown: createIdleCountdownState(),
     lastActivityTime: now,
     lastTickTime: null,
     lastCheckDay: typeof p.lastCheckDay === 'string' ? p.lastCheckDay : today,

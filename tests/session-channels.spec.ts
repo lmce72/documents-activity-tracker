@@ -196,18 +196,26 @@ describe('窗口焦点双通道 / window-focus channels', () => {
     expect(ctx.getState().files.get(FILE)!.unfocusedSeconds).toBe(0);
   });
 
-  it('暂停或空闲时不累加任何通道', () => {
+  it('空闲记进 idle 通道而不是丢弃；窗口失焦优先于空闲', () => {
     const ctx = setup();
     startTracking(ctx);
-    setFocus(ctx, false);
 
+    //  有焦点但空闲：记 idle，不记 active
     ctx.dispatch({ type: ActionTypes.SET_IDLE });
     tick(ctx, 3);
-    expect(ctx.getState().files.get(FILE)!.unfocusedSeconds).toBe(0);
+    expect(ctx.getState().files.get(FILE)!.activeSeconds).toBe(0);
+    expect(ctx.getState().files.get(FILE)!.idleSeconds).toBe(3);
 
     ctx.dispatch({ type: ActionTypes.CLEAR_IDLE });
     tick(ctx, 3);
+    expect(ctx.getState().files.get(FILE)!.activeSeconds).toBe(3);
+
+    //  窗口都失焦了：走离开通道，即使空闲标志还在
+    setFocus(ctx, false);
+    ctx.dispatch({ type: ActionTypes.SET_IDLE });
+    tick(ctx, 3);
     expect(ctx.getState().files.get(FILE)!.unfocusedSeconds).toBe(3);
+    expect(ctx.getState().files.get(FILE)!.idleSeconds).toBe(3);
   });
 
   it('失焦期间写入的会话状态是 inactive，焦点期间是 tracking', () => {
@@ -457,6 +465,7 @@ describe('computeSessionDurations — 按事件类型归属', () => {
     expect(computeSessionDurations([], 1000, true)).toEqual({
       activeSeconds: 0,
       unfocusedSeconds: 0,
+      idleSeconds: 0,
       pausedSeconds: 0,
       abnormal: false,
     });

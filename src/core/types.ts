@@ -9,6 +9,18 @@
 
 import type { FileStatus, ActionType, ManualStatus } from './constants';
 
+/**
+ * 一段时间算作什么 / what a stretch of time counts as.
+ *
+ * 三选而不是开关：窗口失焦与空闲超时都能被理解成「照算阅读」「算作暂停」或「根本不该记」，
+ * 一个布尔值表达不了第三种。逐段归类优先于这里，这里只决定**新时段**与没被单独归类的时段。
+ *
+ * Three options rather than a switch: blur and idle can each mean "still reading", "paused", or
+ * "should not be recorded at all", and a boolean cannot say the third. Per-stretch classification
+ * wins over this; this decides **new** stretches and ones never classified by hand.
+ */
+export type AttributionPolicy = 'reading' | 'paused' | 'ignored';
+
 //  ============================================================================
 // Settings
 //  ============================================================================
@@ -34,7 +46,11 @@ export interface PluginSettings {
   autoStartMode: string;
   useIconize: boolean;
   dataFilePath: string;
-  /** 'idle' | 'always' | 'never' */
+  /**
+   * 旧设置：控制文档面板里那张「今日总时长」卡。该卡已被四条通道取代，键保留只为兼容旧 data.json。
+   * Legacy: used to control a today-total cell that the four channel cells replaced. Kept only so an
+   * older data.json still loads.
+   */
   todayTotalDisplay: string;
   /** legacy, intentionally untouched */
   autoSaveEnabled: boolean;
@@ -66,6 +82,17 @@ export interface PluginSettings {
   manualShowSeconds: boolean;
 
   /**
+   * 正计时显示毫秒 / show milliseconds on the count-up stopwatch.
+   *
+   * 计算与存储一直是毫秒级的（`durationMs`），这个开关只决定**读出来**要不要那三位小数：
+   * 长时间专注时跳动的末位是干扰，需要卡点的人则正相反。
+   * The arithmetic and the stored record are millisecond-based either way (`durationMs`); this
+   * switch only decides whether the readout shows those three decimals — noise during a long focus
+   * session, and exactly what someone timing a short task wants.
+   */
+  manualShowMilliseconds: boolean;
+
+  /**
    *
    * Whether document activity is still recorded while manual timing runs. On by default.
    * When off, the heartbeat and file switches stop producing events, so nothing lands in
@@ -87,6 +114,22 @@ export interface PluginSettings {
    * history rather than losing the stretches.
    */
   countUnfocusedAsReading: boolean;
+
+  /**
+   * 离开窗口时默认算作什么 / what a blur stretch counts as by default.
+   *
+   * 控制落在视图里（文档面板的「离开与空闲」区块），不再放设置页：它是一个会随时改的判断，
+   * 改的时候人正看着那几个数。
+   * The control lives in the view (the document panel's "away and idle" block), not in the settings
+   * tab: it is a judgement the user changes while looking at the very numbers it moves.
+   *
+   * `countUnfocusedAsReading` 只用于迁移旧配置，运行期不再读它。
+   * `countUnfocusedAsReading` is read only when migrating an older config.
+   */
+  awayPolicy: AttributionPolicy;
+
+  /** 空闲超时时默认算作什么 / what an idle stretch counts as by default. */
+  idlePolicy: AttributionPolicy;
   /** Keep recording plugin activity even when excluded from reading totals. */
   countPluginViewsAsReading: boolean;
 
@@ -132,6 +175,44 @@ export interface PluginSettings {
   /** 定时批量写的间隔（分钟）/ the timer interval, in minutes */
   flushIntervalMinutes: number;
 
+  //  --------------------------------------------------------------------------
+  // 倒计时 / countdown modes
+  //  --------------------------------------------------------------------------
+  //
+  //  倒计时与正计时是**两套独立的账**：各自的状态、记录表、面板与统计，互不混用。下面的字段只
+  //  属于倒计时，正计时的 `manual*` 字段一个也不读它们。
+  //
+  //  The countdown and the count-up are two **separate ledgers**: their own state, their own
+  //  records table, their own panel and their own statistics. The fields below belong to the
+  //  countdown only; no `manual*` field reads any of them.
+
+  /** 倒计时功能开关 / countdown feature toggle */
+  countdownTimerEnabled: boolean;
+  /** 'down' | 'pomodoro' | 'interval' */
+  countdownMode: CountdownMode;
+  /** 倒计时模式的分钟数 / minutes for a plain countdown */
+  countdownMinutes: number;
+  /** 番茄钟专注分钟 / pomodoro focus minutes */
+  countdownFocusMinutes: number;
+  /** 番茄钟休息分钟 / pomodoro break minutes */
+  countdownBreakMinutes: number;
+  /** 番茄钟重复的轮数 / pomodoro cycles when repeating */
+  countdownCycles: number;
+  /** 番茄钟是否重复（关闭＝单周期）/ whether pomodoro repeats; off means a single cycle */
+  countdownRepeat: boolean;
+  /** 不规则周期的各段分钟数 / minutes per phase for the irregular mode */
+  countdownIntervals: number[];
+  /**
+   * 自动跑完最后一段时是否询问备注 / whether finishing the last phase asks for a note.
+   *
+   * 默认关闭：跑完直接保存（备注为空）并给一条提示。开启后弹出备注框，取消也算保存 ——
+   * 一段已经走完的专注不该因为没写备注就消失。
+   *
+   * Off by default: the run saves itself with an empty note and says so. On: a note dialog
+   * opens, and cancelling still saves — completed focus must not vanish for want of a note.
+   */
+  countdownPromptNote: boolean;
+
   /**
    * 设备独立设置 / settings kept per device.
    *
@@ -156,7 +237,7 @@ export interface PluginSettings {
  * of the active total, since `calculateSessionDuration` only counts `tracking` — which
  * fixes the original's bug of counting blur stretches as active time.
  */
-export type SessionState = 'tracking' | 'pausing' | 'saved' | 'inactive';
+export type SessionState = 'tracking' | 'pausing' | 'saved' | 'inactive' | 'idle';
 
 /**
  * Session timeline object.
@@ -192,6 +273,21 @@ export interface TimerFileState {
    * `activeSeconds`, so in-window and out-of-window time stay separable.
    */
   unfocusedSeconds: number;
+
+  /**
+   * 有焦点但无输入的空闲秒数 / seconds of focused-but-no-input time.
+   *
+   * 以前这段被直接丢弃：TICK 在 isIdle 时提前返回，CLEAR_IDLE 又把基准重置，于是它既不是阅读也
+   * 不是暂停，任何合计里都找不到。现在它是一条独立通道，按 `idlePolicy` 决定算作什么。
+   *
+   * This used to be discarded outright: TICK returned early while idle and CLEAR_IDLE reset the
+   * baseline, so the stretch was neither reading nor paused and appeared in no total. It is now a
+   * channel of its own, attributed by `idlePolicy`.
+   *
+   * 可选：旧快照与旧测试夹具没有这个字段，读作 0。
+   * Optional: older snapshots and fixtures lack it; read as zero.
+   */
+  idleSeconds?: number;
 
   lastTickTimestamp: number | null;
   pauseStartTimestamp: number | null;
@@ -234,7 +330,7 @@ export function readingSeconds(file: TimerFileState): number {
  * for pre-existing data `unfocusedSeconds` is 0 and the value is unchanged.
  */
 export function wallClockSeconds(file: TimerFileState): number {
-  return file.activeSeconds + file.unfocusedSeconds + file.pausedSeconds;
+  return file.activeSeconds + file.unfocusedSeconds + (file.idleSeconds ?? 0) + file.pausedSeconds;
 }
 
 /** 未结算暂停也参与显示和保存 / include an ongoing pause in display and save. */
@@ -298,6 +394,18 @@ export interface ManualFlag {
   atTime: string;
   /** optional label, may be empty */
   label: string;
+  /**
+   * 打标记那一刻的净毫秒 / net milliseconds at the moment it was placed.
+   * 旧数据没有它，按 `atSeconds × 1000` 读。
+   * Absent in older data; read it as `atSeconds × 1000`.
+   */
+  atMs?: number;
+  /**
+   * 倒计时专用：是在第几段打的标记（从 1 起）/ countdown only: which phase it was placed in.
+   * 正计时的标记没有段可指，留空。
+   * A count-up mark has no phase to point at, so it stays empty.
+   */
+  phase?: number;
 }
 
 /** 一段暂停的起止 / one pause, by wall clock. */
@@ -319,6 +427,19 @@ export interface ManualSession {
   endTime: string;
 
   durationSeconds: number;
+
+  /**
+   * 净毫秒 / net milliseconds.
+   *
+   * 计算与显示都以它为准，`durationSeconds` 是它的整秒投影（统计仍按秒汇总）。旧记录没有这个
+   * 字段，读作 `durationSeconds × 1000` —— 秒级的旧数据本来也只有那么多信息。
+   *
+   * The authoritative figure; `durationSeconds` is its whole-second projection, since totals still
+   * roll up in seconds. Older records lack it and are read as `durationSeconds × 1000` — second-level
+   * data never had more information than that.
+   */
+  durationMs?: number;
+
   /** what the user wrote, may be empty */
   note: string;
 
@@ -329,6 +450,83 @@ export interface ManualSession {
    * A total says how long, not where, and a heatmap needs where.
    */
   pauses: ManualPause[];
+}
+
+//  ============================================================================
+// Countdown timer
+//  ============================================================================
+
+/** 三种倒计时模式 / the three countdown modes. */
+export type CountdownMode = 'down' | 'pomodoro' | 'interval';
+
+/**
+ * 一段固定长度的计时 / one fixed-length phase.
+ *
+ * `kind` 只影响显示（专注／休息／第 N 段），不参与计时。
+ * `kind` only affects the wording; it plays no part in timing.
+ */
+export interface CountdownPhase {
+  kind: 'focus' | 'break' | 'segment';
+  seconds: number;
+}
+
+/** 一次运行的完整方案 / the whole plan for one run. */
+export interface CountdownPlan {
+  mode: CountdownMode;
+  phases: CountdownPhase[];
+}
+
+/**
+ * 倒计时状态 / countdown state.
+ *
+ * 与 `ManualTimerState` 平行而不是复用：两者可以各自运行、各自暂停，共用一份状态就必然要加一个
+ * "这是谁的"标志，而那正是会把两边搅在一起的地方。
+ *
+ * Parallel to `ManualTimerState` rather than shared: the two run and pause independently, and one
+ * shared slice would need a "whose is this" flag — exactly the thing that would tangle them.
+ */
+export interface CountdownTimerState {
+  status: ManualStatus;
+  /** start timestamp in ms, null when idle */
+  startTimestamp: number | null;
+  /** local full timestamp for persistence */
+  startedAt: string;
+  /** accumulated paused milliseconds */
+  pausedMs: number;
+  /** start of the current pause, null when not paused */
+  pauseStartTimestamp: number | null;
+  /** local timestamp of the current pause */
+  pauseStartFull: string;
+  /** pauses that have already ended */
+  pauses: ManualPause[];
+  /** marks placed during this run */
+  flags: ManualFlag[];
+  /**
+   * 本次运行解析好的方案 / the plan resolved when this run started.
+   * 运行中改设置不碰它 —— 这正是"方案在开始时冻结"的实现。
+   * Editing settings mid-run never touches it: that is what freezing the plan at start means.
+   */
+  plan: CountdownPlan | null;
+}
+
+/**
+ * 一次已完成的倒计时 / a completed countdown run.
+ *
+ * 继承 `ManualSession`，所以 `manualTimeline` 的热力图、列表与统计函数可以直接用；多出来的四个
+ * 字段说明这次是哪种倒计时、计划多久、有没有走完。
+ *
+ * Extends `ManualSession` so the manual timeline helpers (heatmap, list, totals) work on it
+ * unchanged; the four extra fields say which mode it was, how long it planned to run, and whether
+ * it got there.
+ */
+export interface CountdownSession extends ManualSession {
+  mode: CountdownMode;
+  /** planned length in seconds */
+  plannedSeconds: number;
+  /** whether the last phase finished on its own */
+  completed: boolean;
+  /** the plan's phases, so an old session still explains itself */
+  phases: CountdownPhase[];
 }
 
 //  ============================================================================
@@ -368,6 +566,8 @@ export interface SessionWrite {
   activeSeconds: number;
   /** out-of-window seconds, accumulated separately */
   unfocusedSeconds: number;
+  /** focused-but-idle seconds, accumulated separately / 有焦点但无输入的秒数 */
+  idleSeconds?: number;
   /** wall clock, written as event.duration */
   totalSeconds: number;
 }
@@ -408,6 +608,8 @@ export interface TimerState {
   isWindowFocused: boolean;
   /** manual-timer state, unrelated to files */
   manual: ManualTimerState;
+  /** countdown state, unrelated to files and to `manual` */
+  countdown: CountdownTimerState;
   lastActivityTime: number;
   lastTickTime: number | null;
   /** used for day-rollover detection */
@@ -495,6 +697,48 @@ export type TimerAction =
   | {
       type: Extract<ActionType, 'MANUAL_FLAG'>;
       payload: { atSeconds: number; atTime: string; label: string };
+    }
+  | {
+      type: Extract<ActionType, 'COUNTDOWN_START'>;
+      /** 方案在这里冻结 / the plan is frozen here */
+      payload: { plan: CountdownPlan };
+    }
+  | {
+      type: Extract<ActionType, 'MANUAL_RESTORE'>;
+      /**
+       * 恢复一份未保存的计时 / bring back an unsaved run.
+       *
+       * 时间戳由调用方算好：恢复出来是**暂停**态，且累计值等于快照那一刻的值 —— 应用关着的
+       * 那段时间不算进去，否则"恢复"就等于凭空造出一段没发生过的专注。
+       * The caller computes the timestamp: the run comes back **paused** with exactly the elapsed
+       * value it had when snapshotted. Time while the app was closed is not counted — otherwise
+       * "restore" would invent focus that never happened.
+       */
+      payload: {
+        startTimestamp: number;
+        startedAt: string;
+        pausedMs: number;
+        pauses: ManualPause[];
+        flags: ManualFlag[];
+      };
+    }
+  | {
+      type: Extract<ActionType, 'COUNTDOWN_RESTORE'>;
+      payload: {
+        startTimestamp: number;
+        startedAt: string;
+        pausedMs: number;
+        pauses: ManualPause[];
+        flags: ManualFlag[];
+        plan: CountdownPlan;
+      };
+    }
+  | { type: Extract<ActionType, 'COUNTDOWN_PAUSE'> }
+  | { type: Extract<ActionType, 'COUNTDOWN_RESUME'> }
+  | { type: Extract<ActionType, 'COUNTDOWN_STOP'> }
+  | {
+      type: Extract<ActionType, 'COUNTDOWN_FLAG'>;
+      payload: { atSeconds: number; atTime: string; label: string; phase: number };
     };
 
 //  ============================================================================
@@ -524,6 +768,8 @@ export type TimelineEventType =
   | 'discard'
   | 'blur'
   | 'focus'
+  | 'idle'
+  | 'idle-end'
   | 'switch';
 
 /**
@@ -534,10 +780,20 @@ export interface FileTimelineEvent {
   time: string;
   /** Full native view title, preserved at each activity boundary. */
   activityTitle?: string;
-  type: 'activity' | 'start' | 'pause' | 'resume' | 'save' | 'auto-save' | 'blur' | 'focus';
+  type:
+    | 'activity'
+    | 'start'
+    | 'pause'
+    | 'resume'
+    | 'save'
+    | 'auto-save'
+    | 'blur'
+    | 'focus'
+    | 'idle'
+    | 'idle-end';
   file: string;
   state?: string;
-  /** cause for blur/focus events */
+  /** cause for blur/focus/idle events */
   reason?: string;
   /** wall-clock seconds on save events */
   duration?: number;
@@ -545,6 +801,8 @@ export interface FileTimelineEvent {
   activeSeconds?: number;
 
   unfocusedSeconds?: number;
+  /** focused-but-idle seconds on save events / 保存事件上的空闲秒数 */
+  idleSeconds?: number;
   /** 保留失焦来源，仅修改归属 / preserve blur provenance while changing attribution. */
   unfocusedDisposition?: 'reading' | 'paused' | 'unfocused';
 }

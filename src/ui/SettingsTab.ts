@@ -8,6 +8,7 @@
 
 import { PluginSettingTab, Setting, type App, type Plugin } from 'obsidian';
 
+import { clampCycles, clampMinutes, normalizeIntervals, normalizeMode } from '../core/countdown';
 import { t } from '../core/i18n';
 import { metricById, normalizeSelection, optionsForSlot } from '../core/statusMetrics';
 import type { PluginSettings } from '../core/types';
@@ -110,17 +111,15 @@ export class ReadTimeSettingTab extends PluginSettingTab {
         }),
       );
 
-    // 失焦是否算作阅读 / whether out-of-window time is reading
-    new Setting(containerEl)
-      .setName(t('settingCountUnfocused'))
-      .setDesc(t('settingCountUnfocusedDesc'))
-      .addToggle((toggle) =>
-        toggle
-          .setValue(settings.countUnfocusedAsReading === true)
-          .onChange(async (value) => {
-            await this.deps.save({ countUnfocusedAsReading: value });
-          }),
-      );
+    //  「离开窗口算作什么」搬到了侧栏文档面板的「离开与空闲」区块：改这个判断时，人正看着它影响的
+    //  那几个数字，隔着一层设置页去改既看不见效果，也容易忘了自己设过什么。
+    //  "What away time counts as" moved to the document panel's "away and idle" block: the judgement is
+    //  made while looking at the numbers it moves, and a settings page both hides the effect and is
+    //  easy to forget.
+    containerEl.createEl('p', {
+      cls: 'setting-item-description',
+      text: t('settingCountUnfocusedMoved'),
+    });
 
     new Setting(containerEl)
       .setName(t('settingCountPluginViews'))
@@ -128,6 +127,78 @@ export class ReadTimeSettingTab extends PluginSettingTab {
       .addToggle(toggle => toggle
         .setValue(settings.countPluginViewsAsReading !== false)
         .onChange(async value => { await this.deps.save({ countPluginViewsAsReading: value }); }));
+
+    // 倒计时 / countdown ──────────────────────────────────────────
+    //
+    //  与正计时分开的一整组：它是另一本账，开关、模式与时长都只属于它。方案在开始时冻结，所以这里
+    //  改的东西只影响**下一次**开始。
+    //  A group of its own, separate from the count-up: another ledger, with its own toggle, mode and
+    //  lengths. The plan is frozen at start, so anything changed here applies to the **next** run.
+    new Setting(containerEl)
+      .setName(t('settingCountdown'))
+      .setDesc(t('settingCountdownDesc'))
+      .setHeading();
+
+    new Setting(containerEl)
+      .setName(t('countdownEnabledToggle'))
+      .setDesc(t('countdownEnabledToggleDesc'))
+      .addToggle((toggle) =>
+        toggle
+          .setValue(settings.countdownTimerEnabled !== false)
+          .onChange(async (value) => {
+            await this.deps.save({ countdownTimerEnabled: value });
+            this.display();
+          }),
+      );
+
+    const mode = normalizeMode(settings.countdownMode);
+    new Setting(containerEl)
+      .setName(t('countdownModeSetting'))
+      .setDesc(t('countdownModeSettingDesc'))
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption('down', t('countdownModeDown'))
+          .addOption('pomodoro', t('countdownModePomodoro'))
+          .addOption('interval', t('countdownModeInterval'))
+          .setValue(mode)
+          .onChange(async (value) => {
+            await this.deps.save({ countdownMode: normalizeMode(value) });
+            this.display();
+          }),
+      );
+
+    if (mode === 'down') {
+      this.minutesRow(containerEl, t('countdownMinutes'), 'countdownMinutes', settings.countdownMinutes, 25);
+    } else if (mode === 'pomodoro') {
+      this.minutesRow(containerEl, t('countdownFocusMinutes'), 'countdownFocusMinutes', settings.countdownFocusMinutes, 25);
+      this.minutesRow(containerEl, t('countdownBreakMinutes'), 'countdownBreakMinutes', settings.countdownBreakMinutes, 5);
+
+      new Setting(containerEl)
+        .setName(t('countdownRepeat'))
+        .setDesc(t('countdownRepeatDesc'))
+        .addToggle((toggle) =>
+          toggle.setValue(settings.countdownRepeat === true).onChange(async (value) => {
+            await this.deps.save({ countdownRepeat: value });
+            this.display();
+          }),
+        );
+
+      if (settings.countdownRepeat === true) {
+        this.cyclesRow(containerEl, settings.countdownCycles);
+      }
+
+    } else {
+      this.intervalRows(containerEl, settings.countdownIntervals);
+    }
+
+    new Setting(containerEl)
+      .setName(t('countdownPromptNote'))
+      .setDesc(t('countdownPromptNoteDesc'))
+      .addToggle((toggle) =>
+        toggle.setValue(settings.countdownPromptNote === true).onChange(async (value) => {
+          await this.deps.save({ countdownPromptNote: value });
+        }),
+      );
 
     // 落盘时机 / when the vault file is written ────────────────────
     new Setting(containerEl).setName(t('flushTitle')).setDesc(t('flushDesc')).setHeading();
@@ -204,20 +275,6 @@ export class ReadTimeSettingTab extends PluginSettingTab {
           .setValue(settings.timeDisplayMode)
           .onChange(async (value) => {
             await this.deps.save({ timeDisplayMode: value });
-          }),
-      );
-
-    new Setting(containerEl)
-      .setName(t('todayTotalDisplay'))
-      .setDesc(t('todayTotalDisplayDesc'))
-      .addDropdown((dropdown) =>
-        dropdown
-          .addOption('idle', t('todayTotalIdle'))
-          .addOption('always', t('todayTotalAlways'))
-          .addOption('never', t('todayTotalNever'))
-          .setValue(settings.todayTotalDisplay)
-          .onChange(async (value) => {
-            await this.deps.save({ todayTotalDisplay: value });
           }),
       );
 
@@ -316,5 +373,103 @@ export class ReadTimeSettingTab extends PluginSettingTab {
         `新库从空开始，只记录从此以后的使用。旧文件原样保留，需要时请自行处置。\n` +
         `The database starts empty and records only what happens from now on; the old file is left exactly as it is.`,
     });
+  }
+
+  //  ==========================================================================
+  // countdown helpers / 倒计时的几行设置
+  //  ==========================================================================
+
+  /** 一个分钟数输入行 / one minutes field. */
+  private minutesRow(
+    container: HTMLElement,
+    name: string,
+    key: 'countdownMinutes' | 'countdownFocusMinutes' | 'countdownBreakMinutes',
+    value: number,
+    fallback: number,
+  ): void {
+    new Setting(container).setName(name).addText((text) =>
+      text
+        .setValue(String(clampMinutes(value, fallback)))
+        .onChange(async (raw) => {
+          const parsed = Number.parseInt(raw, 10);
+          const patch: Partial<PluginSettings> = {};
+          patch[key] = Number.isFinite(parsed) ? clampMinutes(parsed, fallback) : fallback;
+          await this.deps.save(patch);
+        }),
+    );
+  }
+
+  /** 重复轮数 / the cycle count. */
+  private cyclesRow(container: HTMLElement, cycles: number): void {
+    new Setting(container).setName(t('countdownCycles')).addText((text) =>
+      text.setValue(String(clampCycles(cycles))).onChange(async (raw) => {
+        const parsed = Number.parseInt(raw, 10);
+        await this.deps.save({
+          countdownCycles: Number.isFinite(parsed) ? clampCycles(parsed) : 4,
+        });
+      }),
+    );
+  }
+
+  /**
+   * 不规则周期的分段列表 / the irregular phase list.
+   *
+   * 每行一个分钟数，右侧是"复制这一段"和"删除这一段"。复制就是用户说的"单周期复用"：把同一段
+   * 再排一份在后面，而不是让运行时去循环。
+   *
+   * One minutes field per row, with "duplicate" and "delete" on the right. Duplicating is the
+   * "reuse a single phase" affordance: lay the same phase down again rather than looping at runtime.
+   */
+  private intervalRows(container: HTMLElement, values: readonly number[]): void {
+    const intervals = normalizeIntervals(values);
+    const write = async (next: number[]): Promise<void> => {
+      await this.deps.save({ countdownIntervals: next });
+      this.display();
+    };
+
+    intervals.forEach((minutes, index) => {
+      new Setting(container)
+        .setName(t('countdownSegmentN').replace('{n}', String(index + 1)))
+        .addText((text) =>
+          text.setValue(String(minutes)).onChange(async (raw) => {
+            const parsed = Number.parseInt(raw, 10);
+            const next = [...intervals];
+            next[index] = Number.isFinite(parsed) ? clampMinutes(parsed, 1) : minutes;
+            await this.deps.save({ countdownIntervals: next });
+          }),
+        )
+        .addExtraButton((button) =>
+          button
+            .setIcon('copy')
+            .setTooltip(t('countdownIntervalCopy'))
+            .onClick(() => {
+              const next = [...intervals];
+              next.splice(index + 1, 0, intervals[index] ?? 5);
+              void write(next);
+            }),
+        )
+        .addExtraButton((button) =>
+          button
+            .setIcon('trash-2')
+            .setTooltip(t('countdownIntervalDelete'))
+            .setDisabled(intervals.length <= 1)
+            .onClick(() => {
+              const next = [...intervals];
+              next.splice(index, 1);
+              void write(next);
+            }),
+        );
+    });
+
+    new Setting(container)
+      .setName(t('countdownIntervalList'))
+      .setDesc(t('countdownIntervalListDesc'))
+      .addButton((button) =>
+        button.setButtonText(t('countdownIntervalAdd')).onClick(() => {
+          const next = [...intervals, intervals[intervals.length - 1] ?? 5];
+          void write(next);
+        }),
+      );
+
   }
 }

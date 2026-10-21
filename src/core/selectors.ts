@@ -109,13 +109,25 @@ export function selectReadingSeconds(
  *
  */
 export function selectManualElapsedSeconds(state: TimerState, nowMs: number): number {
+  return Math.floor(selectManualElapsedMs(state, nowMs) / 1000);
+}
+
+/**
+ * 正计时的净毫秒 / the count-up's net milliseconds.
+ *
+ * 毫秒是这套计时天然的精度（时间戳本来就是 ms），秒只是它的投影 —— 所以这里不做任何舍入，
+ * 要按秒读的地方自己 floor。
+ * Milliseconds are this timer's native resolution (the timestamps already are), and a second is just
+ * a projection of it — so nothing is rounded here; whoever wants seconds floors it themselves.
+ */
+export function selectManualElapsedMs(state: TimerState, nowMs: number): number {
   const { status, startTimestamp, pausedMs, pauseStartTimestamp } = state.manual;
   if (status === MANUAL_STATUS.IDLE || startTimestamp === null) return 0;
 
   const ongoingPause =
     status === MANUAL_STATUS.PAUSED ? Math.max(0, nowMs - (pauseStartTimestamp ?? nowMs)) : 0;
 
-  return Math.max(0, Math.floor((nowMs - startTimestamp - pausedMs - ongoingPause) / 1000));
+  return Math.max(0, nowMs - startTimestamp - pausedMs - ongoingPause);
 }
 
 export function selectManualIsRunning(state: TimerState): boolean {
@@ -127,6 +139,55 @@ export function selectManualIsPaused(state: TimerState): boolean {
   return state.manual.status === MANUAL_STATUS.PAUSED;
 }
 
+/**
+ * 正在跑的那一轮属于哪条通道 / which channel the running session is in.
+ *
+ * 与 reducer 的 TICK 同一套判定：失焦优先、其次空闲、最后专注。两处必须同答，否则面板上的"现在"
+ * 与保存后的账本会差一段。
+ * The same precedence the reducer's TICK uses: away wins, then idle, then active. The two must
+ * answer alike, or "now" on the panel and the settled account will differ by one stretch.
+ */
+export function selectLiveSessionState(
+  state: TimerState,
+  file: TimerFileState,
+): 'tracking' | 'pausing' | 'inactive' | 'idle' {
+  if (file.status === STATUS.PAUSED) return 'pausing';
+  if (!state.isWindowFocused && file.splitReading !== true) return 'inactive';
+  if (state.isIdle) return 'idle';
+  return 'tracking';
+}
+
 export function selectManualIsIdle(state: TimerState): boolean {
   return state.manual.status === MANUAL_STATUS.IDLE;
+}
+
+//  ============================================================================
+// Countdown timer
+//  ============================================================================
+
+/**
+ * Net seconds elapsed on the countdown / 倒计时已过的净秒数.
+ *
+ * 与正计时同一条公式（暂停不计），位置由 `locatePhase` 在已过秒数上推导 —— 段边界不是另一份
+ * 状态，因此不会和计时器走散。
+ * The same formula as the count-up (pauses excluded); the position is derived from those seconds by
+ * `locatePhase`, so a phase boundary is not second state that can drift out of step.
+ */
+export function selectCountdownElapsedSeconds(state: TimerState, nowMs: number): number {
+  return Math.floor(selectCountdownElapsedMs(state, nowMs) / 1000);
+}
+
+/** 倒计时的净毫秒，与正计时同一精度 / the countdown's net milliseconds, same resolution. */
+export function selectCountdownElapsedMs(state: TimerState, nowMs: number): number {
+  const { status, startTimestamp, pausedMs, pauseStartTimestamp } = state.countdown;
+  if (status === MANUAL_STATUS.IDLE || startTimestamp === null) return 0;
+
+  const ongoingPause =
+    status === MANUAL_STATUS.PAUSED ? Math.max(0, nowMs - (pauseStartTimestamp ?? nowMs)) : 0;
+
+  return Math.max(0, nowMs - startTimestamp - pausedMs - ongoingPause);
+}
+
+export function selectCountdownIsIdle(state: TimerState): boolean {
+  return state.countdown.status === MANUAL_STATUS.IDLE;
 }

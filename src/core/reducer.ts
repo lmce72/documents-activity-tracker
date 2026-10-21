@@ -29,6 +29,7 @@ import { nowFullStr, todayStr } from './time';
 import {
   readingSeconds,
   liveWallClockSeconds,
+  type CountdownTimerState,
   type ManualTimerState,
   type SessionStateMap,
   type TimerAction,
@@ -110,6 +111,25 @@ export function createIdleManualState(): ManualTimerState {
   };
 }
 
+/**
+ * An idle countdown state / 空闲的倒计时状态.
+ * 与正计时同一套字段，只是多一个 `plan`：两边形状相同，界面才能共用同一套读数与圆环渲染。
+ * Same fields as the count-up plus `plan`, so the UI can share one readout and one ring renderer.
+ */
+export function createIdleCountdownState(): CountdownTimerState {
+  return {
+    status: MANUAL_STATUS.IDLE,
+    startTimestamp: null,
+    startedAt: '',
+    pausedMs: 0,
+    pauseStartTimestamp: null,
+    pauseStartFull: '',
+    pauses: [],
+    flags: [],
+    plan: null,
+  };
+}
+
 /** Build a fresh initial state. */
 export function createInitialState(deps: ReducerDeps): TimerState {
   return {
@@ -120,6 +140,7 @@ export function createInitialState(deps: ReducerDeps): TimerState {
     //  The window is necessarily focused at load time — the plugin loads inside it
     isWindowFocused: true,
     manual: createIdleManualState(),
+    countdown: createIdleCountdownState(),
     lastActivityTime: deps.now(),
     lastTickTime: null,
     lastCheckDay: deps.today(),
@@ -136,6 +157,7 @@ function clearedFile(file: TimerFileState): TimerFileState {
     sessionObject: null,
     activeSeconds: 0,
     unfocusedSeconds: 0,
+    idleSeconds: 0,
     pausedSeconds: 0,
     pausedRanges: [],
     pauseStartTimestamp: null,
@@ -167,10 +189,14 @@ export function createTimerReducer(deps: ReducerDeps) {
 
         if (!file || file.status !== STATUS.TRACKING) return state;
 
-        //  `file.status !== TRACKING` 已经把暂停排除在外，所以这里只需要看"空闲"这一个全局标志。
-        //  The line above already excludes a paused session, so only the global idle flag is left.
-        if (state.isIdle && !(file.splitReading && !state.isWindowFocused)) return state;
-
+        //  空闲不再直接丢弃：它继续走秒，只是记进 idle 通道。以前这里提前返回，那段时间既不算
+        //  阅读也不算暂停，任何合计里都没有它 —— 设置里那句"无交互多少秒后暂停计时"读起来像是
+        //  记了暂停，实际是凭空消失。
+        //
+        //  Idle is no longer discarded: the clock keeps going and the seconds land in the idle
+        //  channel. This used to return early, leaving the stretch neither reading nor paused and
+        //  absent from every total, while the setting's wording ("pause after N seconds") read as if
+        //  it were recorded.
         const currentTime = deps.now();
         const lastTick = file.lastTickTimestamp;
         const gap = lastTick === null ? 0 : currentTime - lastTick;
@@ -199,9 +225,20 @@ export function createTimerReducer(deps: ReducerDeps) {
         //  measure and starts at 1s, mirroring the focused channel.
         const gained = focused ? 1 : lastTick === null ? 1 : gapToSeconds(gap);
 
-        const nextFile: TimerFileState = (focused || file.splitReading)
-          ? { ...file, activeSeconds: file.activeSeconds + gained }
-          : { ...file, unfocusedSeconds: file.unfocusedSeconds + gained };
+        //  一段只归一类：窗口失焦优先（那是更强的信号），其次是有焦点但空闲，最后才是专注
+        //  One stretch, one channel: being out of the window wins (the stronger signal), then
+        //  focused-but-idle, then active.
+        const countsAsActive = focused || file.splitReading === true;
+        const isIdle = state.isIdle && countsAsActive;
+
+        let nextFile: TimerFileState;
+        if (!countsAsActive) {
+          nextFile = { ...file, unfocusedSeconds: file.unfocusedSeconds + gained };
+        } else if (isIdle) {
+          nextFile = { ...file, idleSeconds: (file.idleSeconds ?? 0) + gained };
+        } else {
+          nextFile = { ...file, activeSeconds: file.activeSeconds + gained };
+        }
 
         newFiles.set(filePath, {
           ...nextFile,
@@ -209,10 +246,10 @@ export function createTimerReducer(deps: ReducerDeps) {
 
           //  Blur writes 'inactive' rather than 'tracking' so derived durations (which
           //  count only `tracking`) and the heatmap's three-way stats cannot mistake
-          //  unfocused time for active time.
+          //  unfocused time for active time. Idle gets its own state for the same reason.
           sessionObject: {
             ...(file.sessionObject ?? {}),
-            [timeStr]: (focused || file.splitReading) ? 'tracking' : 'inactive',
+            [timeStr]: !countsAsActive ? 'inactive' : isIdle ? 'idle' : 'tracking',
           },
         });
 
@@ -341,6 +378,28 @@ export function createTimerReducer(deps: ReducerDeps) {
         };
       }
 
+      case ActionTypes.MANUAL_RESTORE: {
+        if (state.manual.status !== MANUAL_STATUS.IDLE) return state;
+        const { startTimestamp, startedAt, pausedMs, pauses, flags } = action.payload;
+
+        //  恢复成**暂停**：累计值等于快照那一刻，之后由用户自己按下继续
+        //  Restored **paused**, holding exactly the elapsed value from the snapshot; the user
+        //  presses resume when they are ready.
+        return {
+          ...state,
+          manual: {
+            status: MANUAL_STATUS.PAUSED,
+            startTimestamp,
+            startedAt,
+            pausedMs,
+            pauseStartTimestamp: deps.now(),
+            pauseStartFull: deps.nowFull(),
+            pauses: [...pauses],
+            flags: [...flags],
+          },
+        };
+      }
+
       case ActionTypes.MANUAL_PAUSE: {
         if (state.manual.status !== MANUAL_STATUS.RUNNING) return state;
         return {
@@ -405,6 +464,119 @@ export function createTimerReducer(deps: ReducerDeps) {
             flags: [
               ...state.manual.flags,
               { atSeconds: Math.max(0, Math.round(atSeconds)), atTime, label },
+            ],
+          },
+        };
+      }
+
+      //  ----------------------------------------------------------------------
+      // countdown
+      //
+      //  与正计时同一套时间口径：全部由时间戳推导，不按 tick 累加。多出来的是 `plan` ——
+      //  它在开始时被写进状态，之后只读，所以改设置动不了正在跑的这一次。
+      //  The same timestamp-derived accounting as the count-up; the extra piece is `plan`, written
+      //  once at start and read-only afterwards, so editing settings cannot alter a run in flight.
+      //  ----------------------------------------------------------------------
+      case ActionTypes.COUNTDOWN_START: {
+        if (state.countdown.status !== MANUAL_STATUS.IDLE) return state;
+
+        //  空方案没有可跑的东西，拒绝开始而不是留下一个永远完不成的计时
+        //  An empty plan has nothing to run: refuse rather than leave an unfinishable timer
+        if (action.payload.plan.phases.length === 0) return state;
+
+        return {
+          ...state,
+          countdown: {
+            ...createIdleCountdownState(),
+            status: MANUAL_STATUS.RUNNING,
+            startTimestamp: deps.now(),
+            startedAt: deps.nowFull(),
+            plan: action.payload.plan,
+          },
+        };
+      }
+
+      case ActionTypes.COUNTDOWN_RESTORE: {
+        if (state.countdown.status !== MANUAL_STATUS.IDLE) return state;
+        const { startTimestamp, startedAt, pausedMs, pauses, flags, plan } = action.payload;
+        if (plan.phases.length === 0) return state;
+        return {
+          ...state,
+          countdown: {
+            status: MANUAL_STATUS.PAUSED,
+            startTimestamp,
+            startedAt,
+            pausedMs,
+            pauseStartTimestamp: deps.now(),
+            pauseStartFull: deps.nowFull(),
+            pauses: [...pauses],
+            flags: [...flags],
+            plan,
+          },
+        };
+      }
+
+      case ActionTypes.COUNTDOWN_PAUSE: {
+        if (state.countdown.status !== MANUAL_STATUS.RUNNING) return state;
+        return {
+          ...state,
+          countdown: {
+            ...state.countdown,
+            status: MANUAL_STATUS.PAUSED,
+            pauseStartTimestamp: deps.now(),
+            pauseStartFull: deps.nowFull(),
+          },
+        };
+      }
+
+      case ActionTypes.COUNTDOWN_RESUME: {
+        if (state.countdown.status !== MANUAL_STATUS.PAUSED) return state;
+        const currentTime = deps.now();
+        const pausedAt = state.countdown.pauseStartTimestamp;
+        const pauseDuration = currentTime - (pausedAt ?? currentTime);
+        const resumedAt = deps.nowFull();
+        return {
+          ...state,
+          countdown: {
+            ...state.countdown,
+            status: MANUAL_STATUS.RUNNING,
+            pausedMs: state.countdown.pausedMs + Math.max(0, pauseDuration),
+            pauseStartTimestamp: null,
+            pauses:
+              state.countdown.pauseStartFull.length > 0
+                ? [
+                    ...state.countdown.pauses,
+                    { from: state.countdown.pauseStartFull, to: resumedAt },
+                  ]
+                : state.countdown.pauses,
+            pauseStartFull: '',
+          },
+        };
+      }
+
+      case ActionTypes.COUNTDOWN_STOP: {
+        if (state.countdown.status === MANUAL_STATUS.IDLE) return state;
+
+        //  与正计时同理：调用方先读走时长与标记，再发这个动作
+        //  Same as the count-up: the caller reads the duration and marks before dispatching this
+        return { ...state, countdown: createIdleCountdownState() };
+      }
+
+      case ActionTypes.COUNTDOWN_FLAG: {
+        if (state.countdown.status === MANUAL_STATUS.IDLE) return state;
+        const { atSeconds, atTime, label, phase } = action.payload;
+        return {
+          ...state,
+          countdown: {
+            ...state.countdown,
+            flags: [
+              ...state.countdown.flags,
+              {
+                atSeconds: Math.max(0, Math.round(atSeconds)),
+                atTime,
+                label,
+                phase: Math.max(1, Math.round(phase)),
+              },
             ],
           },
         };
@@ -494,6 +666,7 @@ export function createTimerReducer(deps: ReducerDeps) {
             sessionStartTime: startTimeStr,
             activeSeconds: 0,
             unfocusedSeconds: 0,
+            idleSeconds: 0,
             pausedSeconds: 0,
             lastTickTimestamp: autoStart ? deps.now() : null,
             pauseStartTimestamp: null,
@@ -593,6 +766,7 @@ export function createTimerReducer(deps: ReducerDeps) {
               eventType: eventType ?? 'save',
               activeSeconds: file.activeSeconds,
               unfocusedSeconds: file.unfocusedSeconds,
+              idleSeconds: file.idleSeconds ?? 0,
 
               totalSeconds: liveWallClockSeconds(file, deps.now()),
             },
@@ -657,6 +831,7 @@ export function createTimerReducer(deps: ReducerDeps) {
             eventType: 'auto-save',
             activeSeconds: file.activeSeconds,
             unfocusedSeconds: file.unfocusedSeconds,
+            idleSeconds: file.idleSeconds ?? 0,
             totalSeconds: liveWallClockSeconds(file, deps.now()),
           });
 
@@ -669,6 +844,7 @@ export function createTimerReducer(deps: ReducerDeps) {
             splitReading: false,
             activeSeconds: 0,
             unfocusedSeconds: 0,
+            idleSeconds: 0,
             pausedSeconds: 0,
             pausedRanges: [],
             pauseStartTimestamp: null,

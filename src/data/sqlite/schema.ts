@@ -19,6 +19,9 @@
  */
 
 import type {
+  CountdownMode,
+  CountdownPhase,
+  CountdownSession,
   ManualFlag,
   ManualPause,
   ManualSession,
@@ -29,8 +32,11 @@ import type {
 /**
  * schema version, kept in the meta table.
  * 1 → 2: manual_sessions gains the `flags` column for manual-timer marks.
+ * 2 → 3: manual_sessions gains `pauses`; 3 → 4 adds the separate `countdown_sessions` table;
+ * 4 → 5 adds `duration_ms` to both, because the arithmetic is millisecond-based and a whole-second
+ * column would throw the fraction away at save time.
  */
-export const SQLITE_SCHEMA_VERSION = 3;
+export const SQLITE_SCHEMA_VERSION = 5;
 
 /** the meta key holding the schema version. */
 export const META_SCHEMA_VERSION = 'schema_version';
@@ -76,12 +82,36 @@ CREATE TABLE IF NOT EXISTS manual_sessions (
   start_time       TEXT NOT NULL,
   end_time         TEXT NOT NULL,
   duration_seconds REAL NOT NULL,
+  duration_ms      REAL NOT NULL DEFAULT 0,
   note             TEXT NOT NULL DEFAULT '',
   flags            TEXT NOT NULL DEFAULT '[]',
   pauses           TEXT NOT NULL DEFAULT '[]'
 );
 
 CREATE INDEX IF NOT EXISTS idx_manual_start ON manual_sessions(start_time);
+
+--  倒计时自成一表 / the countdown keeps its own table.
+--
+--  与 manual_sessions 分表的理由不是性能，而是隔离：正计时的总计、热力图与记录列表只查
+--  manual_sessions，倒计时的任何一条都进不去，反之亦然。
+--  The reason is isolation, not speed: the count-up's totals, heatmap and list query only
+--  manual_sessions, so no countdown row can leak in — or the other way round.
+CREATE TABLE IF NOT EXISTS countdown_sessions (
+  id               TEXT PRIMARY KEY,
+  mode             TEXT NOT NULL,
+  start_time       TEXT NOT NULL,
+  end_time         TEXT NOT NULL,
+  planned_seconds  REAL NOT NULL DEFAULT 0,
+  duration_seconds REAL NOT NULL,
+  duration_ms      REAL NOT NULL DEFAULT 0,
+  completed        INTEGER NOT NULL DEFAULT 0,
+  note             TEXT NOT NULL DEFAULT '',
+  flags            TEXT NOT NULL DEFAULT '[]',
+  pauses           TEXT NOT NULL DEFAULT '[]',
+  phases           TEXT NOT NULL DEFAULT '[]'
+);
+
+CREATE INDEX IF NOT EXISTS idx_countdown_start ON countdown_sessions(start_time);
 `;
 
 /**
@@ -95,6 +125,12 @@ CREATE INDEX IF NOT EXISTS idx_manual_start ON manual_sessions(start_time);
  *  never adds a column, so an existing table needs the explicit ALTER. */
 export const SQL_MIGRATE_V2_TO_V3 =
   "ALTER TABLE manual_sessions ADD COLUMN pauses TEXT NOT NULL DEFAULT '[]';";
+
+/** v4 -> v5: 毫秒列 / the millisecond columns. */
+export const SQL_MIGRATE_V4_TO_V5_MANUAL =
+  'ALTER TABLE manual_sessions ADD COLUMN duration_ms REAL NOT NULL DEFAULT 0;';
+export const SQL_MIGRATE_V4_TO_V5_COUNTDOWN =
+  'ALTER TABLE countdown_sessions ADD COLUMN duration_ms REAL NOT NULL DEFAULT 0;';
 
 export const SQL_MIGRATE_V1_TO_V2 =
   "ALTER TABLE manual_sessions ADD COLUMN flags TEXT NOT NULL DEFAULT '[]';";
@@ -129,11 +165,31 @@ export interface ManualSessionRow {
   start_time: string;
   end_time: string;
   duration_seconds: number;
+  /** millisecond figure; absent in rows written before v5 */
+  duration_ms?: number;
   note: string;
   /** the marks, as JSON text */
   flags?: string;
   /** the pauses, as JSON text */
   pauses?: string;
+}
+
+/** A row of the countdown_sessions table. */
+export interface CountdownSessionRow {
+  id: string;
+  mode: string;
+  start_time: string;
+  end_time: string;
+  planned_seconds: number;
+  duration_seconds: number;
+  /** millisecond figure; absent in rows written before v5 */
+  duration_ms?: number;
+  /** SQLite has no boolean: 0/1 */
+  completed: number;
+  note: string;
+  flags?: string;
+  pauses?: string;
+  phases?: string;
 }
 
 /** Read an optional numeric field off an event. */
@@ -228,6 +284,7 @@ export function manualSessionToRow(session: ManualSession): ManualSessionRow {
     start_time: session.startTime,
     end_time: session.endTime,
     duration_seconds: session.durationSeconds,
+    duration_ms: session.durationMs ?? session.durationSeconds * 1000,
     note: session.note ?? '',
     flags: JSON.stringify(session.flags ?? []),
     pauses: JSON.stringify(session.pauses ?? []),
@@ -263,8 +320,67 @@ export function rowToManualSession(row: ManualSessionRow): ManualSession {
     startTime: row.start_time,
     endTime: row.end_time,
     durationSeconds: row.duration_seconds,
+    durationMs: typeof row.duration_ms === 'number' && row.duration_ms > 0
+      ? row.duration_ms
+      : row.duration_seconds * 1000,
     note: row.note,
     flags: parseArray<ManualFlag>(row.flags, (item) => typeof item.atSeconds === 'number'),
     pauses: parseArray<ManualPause>(row.pauses, (item) => typeof item.from === 'string'),
+  };
+}
+
+/** Countdown session to row. */
+export function countdownSessionToRow(session: CountdownSession): CountdownSessionRow {
+  return {
+    id: session.id,
+    mode: session.mode,
+    start_time: session.startTime,
+    end_time: session.endTime,
+    planned_seconds: session.plannedSeconds ?? 0,
+    duration_seconds: session.durationSeconds,
+    duration_ms: session.durationMs ?? session.durationSeconds * 1000,
+    completed: session.completed ? 1 : 0,
+    note: session.note ?? '',
+    flags: JSON.stringify(session.flags ?? []),
+    pauses: JSON.stringify(session.pauses ?? []),
+    phases: JSON.stringify(session.phases ?? []),
+  };
+}
+
+/** 一段方案的自检 / a phase must be a known kind with a positive length. */
+function isPhase(item: CountdownPhase): boolean {
+  return (
+    typeof item.seconds === 'number' &&
+    Number.isFinite(item.seconds) &&
+    (item.kind === 'focus' || item.kind === 'break' || item.kind === 'segment')
+  );
+}
+
+/**
+ * Row to a countdown session.
+ *
+ * 一个坏掉的分段不该让整条记录消失：`phases` 读不出来时留空数组，其余字段照常还原 ——
+ * 时长和备注才是这条记录的主干。
+ * A corrupt phase list must not make the whole record vanish: `phases` degrades to an empty array
+ * while the rest is restored as usual, since duration and note are what the record is really about.
+ */
+export function rowToCountdownSession(row: CountdownSessionRow): CountdownSession {
+  const mode: CountdownMode =
+    row.mode === 'pomodoro' || row.mode === 'interval' ? row.mode : 'down';
+  return {
+    id: row.id,
+    mode,
+    startTime: row.start_time,
+    endTime: row.end_time,
+    plannedSeconds: row.planned_seconds ?? 0,
+    durationSeconds: row.duration_seconds,
+    durationMs: typeof row.duration_ms === 'number' && row.duration_ms > 0
+      ? row.duration_ms
+      : row.duration_seconds * 1000,
+    completed: row.completed === 1,
+    note: row.note,
+    flags: parseArray<ManualFlag>(row.flags, (item) => typeof item.atSeconds === 'number'),
+    pauses: parseArray<ManualPause>(row.pauses, (item) => typeof item.from === 'string'),
+    phases: parseArray<CountdownPhase>(row.phases, isPhase),
   };
 }

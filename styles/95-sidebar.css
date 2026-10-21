@@ -234,12 +234,123 @@
     color: var(--text-muted);
 }
 
+/* 毫秒读数 / the millisecond readout: fixed-width digits, the fraction smaller and muted.
+ * tabular-nums 是必需的：末位每 100 毫秒都在变，比例数字会让整行左右抖动。
+ * tabular-nums is not optional here: the last digit changes every 100ms, and proportional digits
+ * would make the whole line jitter sideways. */
+.rtt-clock {
+    font-variant-numeric: tabular-nums;
+}
+
+.rtt-clock-ms {
+    font-size: 0.62em;
+    color: var(--text-faint);
+}
+
 .rtt-stopwatch-hint {
     grid-column: 1;
     margin-top: 6px;
     color: var(--text-faint);
     font-size: var(--font-ui-smaller);
     text-align: center;
+}
+
+/* ── 未保存计时的恢复卡 / the unsaved-timer recovery card ────────────────
+ *
+ * 用警告底色而不是普通卡片底：这是一条"有东西还没落地"的提醒，和旁边的计时器不是一类信息。
+ * Warn-tinted rather than a plain card: it says "something has not been written down yet", which is
+ * not the same kind of information as the timer beside it.
+ */
+.rtt-recovery-card {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px 10px;
+    margin-bottom: 8px;
+    border: 1px solid var(--background-modifier-border);
+    border-left: 3px solid var(--color-orange);
+    border-radius: var(--radius-m);
+    background: var(--background-secondary);
+}
+
+.rtt-recovery-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--color-orange);
+}
+
+.rtt-recovery-icon {
+    display: inline-flex;
+}
+
+.rtt-recovery-icon svg {
+    width: 15px;
+    height: 15px;
+}
+
+.rtt-recovery-title {
+    font-size: var(--font-ui-small);
+    font-weight: 600;
+}
+
+/* ── 倒计时的方案 / the countdown plan ────────────────────────────────────
+ *
+ * 一排小格，每格一段：读的是"这次由哪几段组成、现在在第几段"，所以用可换行的块而不是一整句。
+ * 已跑过的段压暗、当前段用强调色描边 —— 状态靠类名切换，不靠重绘。
+ *
+ * One small block per phase: what the run is made of and which phase is current. Finished phases
+ * are dimmed and the current one is outlined in the accent colour; the state is a class change,
+ * never a re-render.
+ */
+.rtt-cd-plan {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 6px 0 4px;
+}
+
+.rtt-cd-chip {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 5px;
+    padding: 3px 8px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-s);
+    color: var(--text-muted);
+    font-size: var(--font-ui-smaller);
+}
+
+.rtt-cd-chip-icon {
+    display: inline-flex;
+    color: var(--text-faint);
+}
+
+.rtt-cd-chip-icon svg {
+    width: 13px;
+    height: 13px;
+}
+
+/* 当前段：强调色 + 边框跟着亮，眼睛一眼落到"现在在哪一段"上
+   The current phase: accent colour and a lit border, so the eye lands on where the run is now */
+.rtt-cd-chip.is-active {
+    border-color: var(--interactive-accent);
+    color: var(--text-accent);
+}
+
+.rtt-cd-chip.is-active .rtt-cd-chip-icon {
+    color: var(--interactive-accent);
+}
+
+/* 已经跑过的段：退到背景里，但仍看得见 / finished phases recede but stay legible */
+.rtt-cd-chip.is-done {
+    color: var(--text-faint);
+    border-style: dashed;
+}
+
+.rtt-cd-chip-time {
+    color: var(--text-faint);
+    font-variant-numeric: tabular-nums;
 }
 
 /* ── 标记 / marks ──────────────────────────────────────────────────────── */

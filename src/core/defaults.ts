@@ -33,8 +33,16 @@ export const DEFAULT_SETTINGS: PluginSettings = {
   documentTrackingEnabled: true,
   manualTimerEnabled: true,
   manualShowSeconds: true,
+  //  毫秒默认不显示：多数时候那是干扰，需要的人自己打开
+  //  Milliseconds off by default: usually noise, and whoever needs them can switch them on
+  manualShowMilliseconds: false,
   manualRecordDocActivity: true,
   countUnfocusedAsReading: false,
+  //  默认「算作暂停」：既不算阅读，也仍然留在合计里 —— 与旧的「不计入阅读但计入总时长」一致
+  //  Default "counts as paused": not reading, still in the total — matching the old behaviour of
+  //  "not reading but still recorded".
+  awayPolicy: 'paused',
+  idlePolicy: 'paused',
   countPluginViewsAsReading: true,
   // Two of four slots filled: enough to be useful out of the box, without crowding the
   // status bar before the user has asked for anything.
@@ -52,4 +60,19 @@ export const DEFAULT_SETTINGS: PluginSettings = {
   //  默认共用一套设置：各设备显示口径一致，才不会「同一批数据两个数」
   //  One shared set of settings by default, so the same data does not read two ways
   perDeviceSettings: false,
+
+  //  倒计时默认开着，但停在最朴素的「倒计时 25 分钟」：番茄钟与不规则周期要用的人自己切。
+  //  Countdown is on by default but idle at the plainest mode — a 25-minute countdown; pomodoro and
+  //  irregular phases are there for whoever switches to them.
+  countdownTimerEnabled: true,
+  countdownMode: 'down',
+  countdownMinutes: 25,
+  countdownFocusMinutes: 25,
+  countdownBreakMinutes: 5,
+  countdownCycles: 4,
+  countdownRepeat: false,
+  countdownIntervals: [25, 5, 25],
+  //  收尾备注默认不问：跑完直接保存，想要备注的人自己打开
+  //  No note prompt by default: the run saves itself, and whoever wants a note turns it on
+  countdownPromptNote: false,
 };
