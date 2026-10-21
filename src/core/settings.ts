@@ -125,3 +125,8 @@ export function isDocumentRecordingEnabled(settings: PluginSettings): boolean {
 export function countsUnfocusedAsReading(settings: PluginSettings): boolean {
   return settings.countUnfocusedAsReading === true;
 }
+
+/** Plugin activity is reading by default; the raw ledger is always retained. */
+export function countsPluginViewsAsReading(settings: PluginSettings): boolean {
+  return settings.countPluginViewsAsReading !== false;
+}

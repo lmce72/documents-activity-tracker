@@ -168,7 +168,7 @@ export function buildFileRecords(
   timeline: readonly TimelineEvent[],
   nowMs: number,
   today: string = todayStr(),
-  options: { countUnfocused?: boolean } = {},
+  options: { countUnfocused?: boolean; countPluginViews?: boolean } = {},
 ): Record<string, FileRecord> {
   //  Reading is "in-window plus out-of-window" unless the user turned that off. The
   //  out-of-window figures are still collected either way — the toggle changes what counts
@@ -255,6 +255,7 @@ export function buildFileRecords(
     let readTimeToday = 0;
     let lastReadAt = '';
     let hasAbnormalSession = false;
+    let activityTitle: string | undefined;
 
     for (const session of sessions) {
       if (session.events.length === 0) continue;
@@ -262,6 +263,7 @@ export function buildFileRecords(
       const sessionObj: SessionStateMap = {};
 
       for (const event of session.events) {
+        if ('activityTitle' in event && event.activityTitle) activityTitle = event.activityTitle;
         const disposition = 'unfocusedDisposition' in event ? event.unfocusedDisposition : undefined;
         const state = disposition ? disposition === 'reading' ? 'tracking' : disposition === 'paused' ? 'pausing' : 'inactive' : event.type === 'blur' ? 'inactive' : (event as { state?: string }).state;
         if (state) {
@@ -312,7 +314,8 @@ export function buildFileRecords(
       //  Total reading time = in-window + out-of-window, the second half only when the user
       //  counts it as reading.
       const sessionDuration =
-        durations.activeSeconds + (countUnfocused ? durations.unfocusedSeconds : 0);
+        options.countPluginViews === false && isPluginViewKey(filePath) ? 0
+          : durations.activeSeconds + (countUnfocused ? durations.unfocusedSeconds : 0);
       totalReadTime += sessionDuration;
       unfocusedReadTime += durations.unfocusedSeconds;
 
@@ -333,7 +336,7 @@ export function buildFileRecords(
       //  Plugin views have no filename; naming them here means every consumer (lists, the
       //  records browser, its search box, modal headings) reads well without special cases.
       fileName: isPluginViewKey(filePath)
-        ? pluginViewLabel(filePath)
+        ? activityTitle || pluginViewLabel(filePath)
         : (filePath.split('/').pop() ?? filePath).replace(/\.md$/, ''),
       totalReadTime,
       unfocusedReadTime,
@@ -383,7 +386,9 @@ export function getTodaySeconds(
   filePath: string,
   today: string = todayStr(),
   countUnfocused = true,
+  countPluginViews = true,
 ): number {
+  if (!countPluginViews && isPluginViewKey(filePath)) return 0;
   let total = 0;
 
   for (const event of timeline) {
@@ -443,11 +448,13 @@ export function getAllTodaySeconds(
   files: Iterable<TimerFileState>,
   today: string = todayStr(),
   countUnfocused = true,
+  countPluginViews = true,
 ): number {
   let total = 0;
 
   for (const event of timeline) {
     if (event.type === 'switch') continue;
+    if (!countPluginViews && isPluginViewKey(event.file)) continue;
     if (event.time.startsWith(today) && isSaveLike(event)) {
       const e = event as { activeSeconds?: number; unfocusedSeconds?: number };
       total += (e.activeSeconds ?? 0) + (countUnfocused ? (e.unfocusedSeconds ?? 0) : 0);
@@ -455,6 +462,7 @@ export function getAllTodaySeconds(
   }
 
   for (const file of files) {
+    if (!countPluginViews && isPluginViewKey(file.filePath)) continue;
     if (file.sessionStartTime?.startsWith(today)) {
       total += file.activeSeconds + (countUnfocused ? file.unfocusedSeconds : 0);
     }

@@ -76,7 +76,7 @@ export interface PluginSettings {
   manualRecordDocActivity: boolean;
 
   /**
-   * Whether unfocused time counts as reading time. On by default.
+   * Whether unfocused time counts as reading time. Off by default.
    *
    * On: `reading = in-window + out-of-window`, the behaviour the unfocused channel was added
    * for. Off: out-of-window stretches are still recorded and still shown in their own card,
@@ -87,6 +87,8 @@ export interface PluginSettings {
    * history rather than losing the stretches.
    */
   countUnfocusedAsReading: boolean;
+  /** Keep recording plugin activity even when excluded from reading totals. */
+  countPluginViewsAsReading: boolean;
 
   /**
    * Which durations the status bar pins, as exactly {@link MAX_STATUS_METRICS} slots.
@@ -129,6 +131,18 @@ export interface PluginSettings {
 
   /** 定时批量写的间隔（分钟）/ the timer interval, in minutes */
   flushIntervalMinutes: number;
+
+  /**
+   * 设备独立设置 / settings kept per device.
+   *
+   * 关（默认）：设置写进数据旁边的共享文件，随 vault 同步，各设备用同一套口径。
+   * 开：只写本机的 data.json，各设备各用各的。
+   *
+   * Off (default): settings go into a shared file beside the data and travel with the vault, so
+   * every device reads the data by the same rules. On: only this device's data.json is written and
+   * each device keeps its own.
+   */
+  perDeviceSettings: boolean;
 }
 
 //  ============================================================================
@@ -501,6 +515,7 @@ export interface RecordEntry {
 
 /** Timeline event types. */
 export type TimelineEventType =
+  | 'activity'
   | 'start'
   | 'pause'
   | 'resume'
@@ -517,7 +532,9 @@ export type TimelineEventType =
  */
 export interface FileTimelineEvent {
   time: string;
-  type: 'start' | 'pause' | 'resume' | 'save' | 'auto-save' | 'blur' | 'focus';
+  /** Full native view title, preserved at each activity boundary. */
+  activityTitle?: string;
+  type: 'activity' | 'start' | 'pause' | 'resume' | 'save' | 'auto-save' | 'blur' | 'focus';
   file: string;
   state?: string;
   /** cause for blur/focus events */

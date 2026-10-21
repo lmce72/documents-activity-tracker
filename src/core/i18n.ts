@@ -176,6 +176,13 @@ export const I18N = {
     manualCollapseFlags: '收起 Flag 记录',
     manualStopRecorded: '停止并记录',
     manualNoFlags: '本轮还没有标记',
+    manualFocusOn: '专注视图',
+    manualFocusTable: '标记表（悬停预览，点击常显示）',
+    manualFocusOff: '退出专注视图',
+    manualFlagCol: '标记',
+    manualFlagDiff: '时间差',
+    manualFlagRecorded: '累计时长',
+    manualFlagRow: '标记 {n}',
     manualFlagAt: '第 {n}',
     manualShowSeconds: '秒表显示秒',
     manualShowSecondsDesc: '关闭后只显示到时和分，长时间专注时少一点跳动的干扰。',
@@ -226,6 +233,11 @@ export const I18N = {
     flushIntervalMinutes: '定时写入间隔（分钟）',
     flushIntervalMinutesDesc: '最少 1 分钟。',
 
+    perDeviceSettings: '设备独立设置',
+    perDeviceSettingsDesc:
+      '关闭（默认）：设置写进数据文件旁边的共享文件，随 vault 同步，各设备用同一套口径。' +
+      '开启：只写本机的 data.json，各设备各用各的 —— 同一批数据在两台设备上可能显示不同的数。',
+
     // ── 状态栏指标 / status-bar metrics ──────────────────────────────
     metricSession: '本轮阅读',
     metricUnfocused: '脱离窗口',
@@ -255,6 +267,8 @@ export const I18N = {
     unfocusedOpen: '当前时段尚未结束，恢复焦点后可处理',
     unfocusedPausePending: '当前暂停尚未结算，恢复或保存本轮后可处理',
     unfocusedEmpty: '没有可处理的失焦时段',
+    settingCountPluginViews: '插件视图计入阅读时长',
+    settingCountPluginViewsDesc: '默认开启。关闭后仍记录插件视图的活动标题与时段，并保留在热力图中，但不计入阅读合计。',
     settingCountUnfocused: '失焦时间计入阅读时长',
     settingCountUnfocusedDesc:
       '默认关闭。开启：阅读时长 = 窗口内 + 脱离窗口。关闭：脱离窗口的时间仍会被记录并单独显示，但不计入任何阅读时长（统计卡、列表、总看板并集）。切换只影响计算口径，不丢历史。',
@@ -408,6 +422,13 @@ export const I18N = {
     manualCollapseFlags: 'Collapse flag records',
     manualStopRecorded: 'Stopped and recorded',
     manualNoFlags: 'No marks yet in this run',
+    manualFocusOn: 'Focus view',
+    manualFocusTable: 'Mark table (hover to peek, click to pin)',
+    manualFocusOff: 'Leave focus view',
+    manualFlagCol: 'Flag',
+    manualFlagDiff: 'Time difference',
+    manualFlagRecorded: 'Recorded time',
+    manualFlagRow: 'Flag {n}',
     manualFlagAt: 'At {n}',
     manualShowSeconds: 'Show seconds on the stopwatch',
     manualShowSecondsDesc:
@@ -456,6 +477,12 @@ export const I18N = {
     flushIntervalMinutes: 'Timer interval (minutes)',
     flushIntervalMinutesDesc: 'At least 1 minute.',
 
+    perDeviceSettings: 'Per-device settings',
+    perDeviceSettingsDesc:
+      'Off (default): settings are written to a shared file beside the data and travel with the ' +
+      'vault, so every device uses the same rules. On: only this device keeps its own, and the same ' +
+      'data can read differently on two devices.',
+
     metricSession: 'This session',
     metricUnfocused: 'Out of window',
     metricTodayTotal: 'Today total',
@@ -484,6 +511,8 @@ export const I18N = {
     unfocusedOpen: 'This interval is ongoing. Refocus before changing it.',
     unfocusedPausePending: 'Resume or save this session before changing an unsettled pause.',
     unfocusedEmpty: 'No unfocused intervals to manage',
+    settingCountPluginViews: 'Count plugin views as reading',
+    settingCountPluginViewsDesc: 'Enabled by default. Turning this off keeps activity titles and intervals in the history and heatmap, but excludes them from reading totals.',
     settingCountUnfocused: 'Count out-of-window time as reading',
     settingCountUnfocusedDesc:
       'Off by default. On: reading = in-window + out-of-window. Off: out-of-window stretches are still recorded and shown on their own, but excluded from every reading total (stat cards, lists, the overview union). The toggle only changes the accounting, never the history.',

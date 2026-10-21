@@ -33,7 +33,7 @@ import {
   formatReadTimeParts,
   todayStr,
 } from '../core/time';
-import { countsUnfocusedAsReading } from '../core/settings';
+import { countsPluginViewsAsReading, countsUnfocusedAsReading } from '../core/settings';
 import { buildFileRecords } from '../core/timeline';
 import { appendDurationParts, setReadTime } from './durationText';
 import {
@@ -122,7 +122,7 @@ export class RecordsModal extends Modal {
       this.deps.history.getEvents(),
       this.deps.clock.now(),
       todayStr(),
-      { countUnfocused: countsUnfocusedAsReading(this.deps.settings()) },
+      { countUnfocused: countsUnfocusedAsReading(this.deps.settings()), countPluginViews: countsPluginViewsAsReading(this.deps.settings()) },
     );
   }
 

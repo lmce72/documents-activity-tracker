@@ -183,39 +183,47 @@ export class SqliteStore implements HistoryStore {
     //  The buffered snapshot is newer than the vault file: it is the write that was deferred and
     //  the file never caught up. After a crash it is what continues the story — the stale file is
     //  not the truth.
-    const buffered = await this.pending.read();
-    if (buffered && buffered.bytes.byteLength > 0) {
-      this.db = new this.SQL.Database(new Uint8Array(buffered.bytes));
-      this.migrateSchemaIfNeeded();
-      await this.pending.clear();
-      const eventCount = this.count('SELECT COUNT(*) AS n FROM events');
-      this.log.info(
-        '[RTT][sqlite] 已从浏览器暂存恢复 / recovered from the browser buffer:',
-        eventCount,
-        '条事件 / events',
-      );
-      return { created: false, eventCount };
-    }
-
     const exists = await this.adapter.exists(this.dbPath);
     if (exists) {
       const bytes = await this.adapter.readBinary(this.dbPath);
+
+      //  记住刚读到的那份，写盘前才能判断文件是否被别人改过
+      //  Remember what we read, so a write can tell whether someone else touched the file
+      this.lastKnownHash = SqliteStore.hashBytes(new Uint8Array(bytes));
       this.db = new this.SQL.Database(new Uint8Array(bytes));
       this.migrateSchemaIfNeeded();
-      const eventCount = this.count('SELECT COUNT(*) AS n FROM events');
-      this.log.info('[RTT][sqlite] 已打开库 / opened database:', this.dbPath, eventCount);
-      return { created: false, eventCount };
+    } else {
+      this.db = new this.SQL.Database();
+      this.db.run(SQL_CREATE_SCHEMA);
+      this.setMeta(META_SCHEMA_VERSION, String(SQLITE_SCHEMA_VERSION));
+      this.lastKnownHash = null;
     }
 
-    this.db = new this.SQL.Database();
-    this.db.run(SQL_CREATE_SCHEMA);
-    this.setMeta(META_SCHEMA_VERSION, String(SQLITE_SCHEMA_VERSION));
+    //  暂存**并进**文件里读到的那份，而不是整份替换：替换会把另一台设备在这段时间写进文件的数据抹掉。
+    //  The buffer is **merged into** what the file held, never substituted for it: substituting would
+    //  erase whatever the other device wrote into the file in the meantime.
+    const buffered = await this.pending.read();
+    if (buffered && buffered.bytes.byteLength > 0) {
+      this.mergeSnapshot(new Uint8Array(buffered.bytes));
+      await this.pending.clear();
+      this.log.info('[RTT][sqlite] 已把浏览器暂存并入 / merged the browser buffer in');
+    }
 
-    this.dirty = true;
-    await this.flushNow();
+    const eventCount = this.count('SELECT COUNT(*) AS n FROM events');
 
-    this.log.info('[RTT][sqlite] 已新建空库 / created empty database:', this.dbPath);
-    return { created: true, eventCount: 0 };
+    if (!exists) {
+      this.dirty = true;
+      await this.flushNow({ force: true });
+      this.log.info('[RTT][sqlite] 已新建空库 / created empty database:', this.dbPath);
+      return { created: true, eventCount };
+    }
+
+    //  并入过暂存就得写回去，否则文件仍然落后
+    //  If the buffer was merged, the file has to catch up or it stays behind
+    if (this.dirty) await this.flushNow({ force: true });
+
+    this.log.info('[RTT][sqlite] 已打开库 / opened database:', this.dbPath, eventCount);
+    return { created: false, eventCount };
   }
 
   /** Flush and close. */
@@ -433,6 +441,178 @@ export class SqliteStore implements HistoryStore {
   }
 
   /**
+   * 库内容的指纹 / a fingerprint of the database bytes.
+   *
+   * 只用来判断「文件是不是被别人改过」，不需要抗碰撞强度。
+   * Only ever compared for "did someone else write this file", so it does not need to resist
+   * collisions.
+   */
+  private static hashBytes(bytes: Uint8Array): number {
+    let hash = 0x811c9dc5;
+    for (let i = 0; i < bytes.length; i++) {
+      hash ^= bytes[i]!;
+      hash = Math.imul(hash, 0x01000193) >>> 0;
+    }
+    return hash;
+  }
+
+  /** 上一次读到/写出的那份内容的指纹 / the fingerprint of the bytes we last read or wrote. */
+  private lastKnownHash: number | null = null;
+
+  /**
+   * 把另一份快照**并进**本库 / merge another snapshot into this database.
+   *
+   * 快照可能来自另一台设备写下的文件，也可能是本机崩溃前留下的暂存。合并规则按三张表各自的性质定：
+   *   - events：只追加，按「时间|类型|文件|状态」去重求并集；
+   *   - records：单调累加的镜像，取较大值 / 较新的时间；
+   *   - manual_sessions：id 即身份，整条插入，重复则忽略。
+   *
+   * The snapshot may be a file another device wrote, or this device's own buffer left by a crash.
+   * Each table is merged by what it actually is: events are append-only (union, deduped by
+   * time|type|file|state); the record mirror only accumulates (keep the larger totals and the later
+   * timestamp); a manual session is identified by its id (insert, ignore duplicates).
+   */
+  private mergeSnapshot(bytes: Uint8Array): void {
+    if (!this.db || !this.SQL || bytes.byteLength === 0) return;
+
+    let other: Database | null = null;
+    try {
+      other = new this.SQL.Database(bytes);
+    } catch (error) {
+      this.log.warn('[RTT][sqlite] 快照无法打开，跳过合并 / cannot open the snapshot, skipping:', error);
+      return;
+    }
+
+    const keyOf = (
+      time: unknown,
+      type: unknown,
+      file: unknown,
+      from: unknown,
+      to: unknown,
+      state: unknown,
+    ): string =>
+      `${String(time)}|${String(type)}|${file === null ? `${String(from ?? '')}>${String(to ?? '')}` : String(file)}|${String(state ?? '')}`;
+
+    let added = 0;
+    try {
+      const seen = new Set<string>();
+      const existing = this.db.prepare(
+        'SELECT time, type, file, from_path, to_path, state FROM events',
+      );
+      while (existing.step()) {
+        const r = existing.getAsObject();
+        seen.add(keyOf(r.time, r.type, r.file, r.from_path, r.to_path, r.state));
+      }
+      existing.free();
+
+      const incoming = other.prepare(
+        'SELECT time, type, file, from_path, to_path, state, reason, duration, active_seconds, unfocused_seconds, raw FROM events',
+      );
+      const insert = this.db.prepare(
+        'INSERT INTO events (time, type, file, from_path, to_path, state, reason, duration, active_seconds, unfocused_seconds, raw) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+      );
+
+      while (incoming.step()) {
+        const r = incoming.getAsObject();
+        const key = keyOf(r.time, r.type, r.file, r.from_path, r.to_path, r.state);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        insert.run([
+          r.time,
+          r.type,
+          r.file,
+          r.from_path,
+          r.to_path,
+          r.state,
+          r.reason,
+          r.duration,
+          r.active_seconds,
+          r.unfocused_seconds,
+          r.raw,
+        ]);
+        added++;
+      }
+      incoming.free();
+      insert.free();
+
+      //  records：单调累加的量取较大值，last_read_at 取较新的
+      //  records: accumulating figures keep the larger value, last_read_at the later one
+      const recIn = other.prepare(
+        'SELECT file_path, file_name, total_read_time, unfocused_read_time, last_read_at FROM records',
+      );
+      const recUp = this.db.prepare(
+        'INSERT INTO records (file_path, file_name, total_read_time, unfocused_read_time, last_read_at) ' +
+          'VALUES (?,?,?,?,?) ON CONFLICT(file_path) DO UPDATE SET ' +
+          'total_read_time = MAX(total_read_time, excluded.total_read_time), ' +
+          'unfocused_read_time = MAX(unfocused_read_time, excluded.unfocused_read_time), ' +
+          'last_read_at = MAX(last_read_at, excluded.last_read_at), ' +
+          'file_name = excluded.file_name',
+      );
+      while (recIn.step()) {
+        const r = recIn.getAsObject();
+        recUp.run([
+          r.file_path,
+          r.file_name,
+          r.total_read_time,
+          r.unfocused_read_time,
+          r.last_read_at,
+        ]);
+      }
+      recIn.free();
+      recUp.free();
+
+      //  手动计时：id 就是身份，重复的忽略
+      //  Manual sessions: the id is the identity, duplicates are ignored
+      const manIn = other.prepare(
+        'SELECT id, start_time, end_time, duration_seconds, note, flags FROM manual_sessions',
+      );
+      const manUp = this.db.prepare(
+        'INSERT OR IGNORE INTO manual_sessions (id, start_time, end_time, duration_seconds, note, flags) VALUES (?,?,?,?,?,?)',
+      );
+      while (manIn.step()) {
+        const r = manIn.getAsObject();
+        manUp.run([r.id, r.start_time, r.end_time, r.duration_seconds, r.note, r.flags]);
+      }
+      manIn.free();
+      manUp.free();
+
+      this.dirty = true;
+      if (added > 0) {
+        this.log.info('[RTT][sqlite] 合并了另一份快照 / merged another snapshot:', added, '新增事件 / new events');
+      }
+    } catch (error) {
+      this.log.warn('[RTT][sqlite] 合并快照失败 / merge failed:', error);
+    } finally {
+      other.close();
+    }
+  }
+
+  /**
+   * 写盘前先和磁盘对一次账 / reconcile with the file before writing it.
+   *
+   * 文件指纹变了就说明别的设备写过：把它整份并进来再写，而不是拿本机这份盖掉对方。
+   * If the fingerprint changed, another device wrote it: merge that whole snapshot in before
+   * writing, instead of covering it with our own.
+   */
+  private async reconcileWithDisk(): Promise<void> {
+    try {
+      if (!(await this.adapter.exists(this.dbPath))) return;
+      const bytes = new Uint8Array(await this.adapter.readBinary(this.dbPath));
+      if (this.lastKnownHash === null) {
+        this.lastKnownHash = SqliteStore.hashBytes(bytes);
+        return;
+      }
+      if (SqliteStore.hashBytes(bytes) === this.lastKnownHash) return;
+
+      this.log.info('[RTT][sqlite] 文件已被别的设备写过，先合并 / the file changed elsewhere, merging first');
+      this.mergeSnapshot(bytes);
+      this.lastKnownHash = SqliteStore.hashBytes(bytes);
+    } catch (error) {
+      this.log.warn('[RTT][sqlite] 与磁盘对账失败 / reconciliation failed:', error);
+    }
+  }
+
+  /**
    * Flush right away.
    * Serialised through a queue: two interleaved exports would write a truncated database.
    */
@@ -488,7 +668,18 @@ export class SqliteStore implements HistoryStore {
         }
 
         if (!stored) {
-          await this.adapter.writeBinary(this.dbPath, payload);
+
+          //  写之前先和磁盘对账：对方写过就先把它并进来，避免相互覆盖
+          //  Reconcile first: if the other device wrote, merge its snapshot in rather than covering it
+          await this.reconcileWithDisk();
+
+          const finalBytes = this.db.export();
+          const finalPayload = finalBytes.buffer.slice(
+            finalBytes.byteOffset,
+            finalBytes.byteOffset + finalBytes.byteLength,
+          ) as ArrayBuffer;
+          await this.adapter.writeBinary(this.dbPath, finalPayload);
+          this.lastKnownHash = SqliteStore.hashBytes(new Uint8Array(finalPayload));
           await this.pending.clear();
           this.buffered = false;
         }

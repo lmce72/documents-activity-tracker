@@ -35,6 +35,7 @@ export const DEFAULT_SETTINGS: PluginSettings = {
   manualShowSeconds: true,
   manualRecordDocActivity: true,
   countUnfocusedAsReading: false,
+  countPluginViewsAsReading: true,
   // Two of four slots filled: enough to be useful out of the box, without crowding the
   // status bar before the user has asked for anything.
   statusBarMetrics: ['session', 'todayTotal', '', ''],
@@ -45,6 +46,10 @@ export const DEFAULT_SETTINGS: PluginSettings = {
   //  user who wants a quieter file turns them off.
   flushOnSessionEnd: true,
   flushOnQuit: true,
-  flushOnInterval: false,
+  flushOnInterval: true,
   flushIntervalMinutes: 5,
+
+  //  默认共用一套设置：各设备显示口径一致，才不会「同一批数据两个数」
+  //  One shared set of settings by default, so the same data does not read two ways
+  perDeviceSettings: false,
 };

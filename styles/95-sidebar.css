@@ -268,6 +268,216 @@
     height: 12px;
 }
 
+/* 专注视图里的标记表 / the mark table in the focus view.
+ * 三列各管一件事：第几轮、打标记的时刻、距上一轮多久。数字用等宽数字，列才对得齐。
+ * Three columns, one thing each: the round, when it was placed, and how long since the previous one.
+ * Tabular digits keep the columns aligned. */
+.rtt-flag-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--font-ui-smaller);
+    font-variant-numeric: tabular-nums;
+}
+
+.rtt-flag-table th {
+    padding: 2px 8px 4px;
+    color: var(--text-faint);
+    font-weight: 400;
+    text-align: left;
+    border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.rtt-flag-table td {
+    padding: 4px 8px;
+    color: var(--text-normal);
+    border-bottom: 1px solid var(--background-modifier-border-hover);
+}
+
+/* 第一列是标记名（左对齐，带图标），第二列时间差左对齐，第三列累计时长靠右 —— 与记录表同一版式
+   The first column is the mark's name (left, with its icon), the second the time difference (left),
+   the third the recorded time (right) — the same shape as the records table. */
+.rtt-flag-table th:last-child,
+.rtt-flag-table td:last-child {
+    text-align: right;
+}
+
+.rtt-flag-cell {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.rtt-flag-cell-icon {
+    display: flex;
+    align-items: center;
+    color: var(--color-orange);
+}
+
+.rtt-flag-cell-icon svg {
+    width: 14px;
+    height: 14px;
+}
+
+.rtt-flag-table tr:last-child td {
+    border-bottom: none;
+}
+
+/* ── 手动计时的专注视图 / the manual timer's focus view ─────────────────────
+ *
+ * 一整块覆盖内容区的视图，不是把几块藏起来。窄时上下叠（圆环在上、表格在下），宽时左右并排。
+ * One view covering the content area rather than a few blocks hidden. Narrow it stacks (ring above,
+ * table below); wide the two sit side by side.
+ */
+.rtt-focus-overlay {
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+    padding: 10px 2px 4px;
+
+    /* 给右下角那枚浮动按钮留出位置，免得压在内容上 */
+    /* Room for the floating button in the corner, so it never sits on top of content */
+    padding-bottom: 44px;
+}
+
+/* 宽时两列：表格收着时右列收成 0，展开时各占一半 —— 两列之间是**过渡**，不是瞬移。
+   Wide, two columns: the right one collapses to zero while the table is folded and takes half when it
+   opens. The change is a transition, not a jump. */
+.view-content.is-wide .rtt-focus-overlay {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 0fr);
+    align-items: start;
+    transition: grid-template-columns 0.28s ease;
+}
+
+.view-content.is-wide .rtt-focus-overlay.is-peek,
+.view-content.is-wide .rtt-focus-overlay.is-pinned {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+/* 圆环占满可用高度：一个屏幕大时它就该是一个屏幕大的圆环，而不是 132px 的小圈缩在中间。
+   The ring fills the available height: on a large screen it should be a large ring, not a 132px circle
+   parked in the middle. */
+.rtt-focus-main {
+    min-height: 82vh;
+    justify-content: center;
+}
+
+/* 尺寸挂在秒表容器上，不能挂在圆环上：圆环的父级是收缩到内容的，给它 100% 会自己绕回一个小值
+   （实测只算出 305px）。先把容器撑开，圆环再取 100%。 */
+/* The size hangs on the stopwatch container, not on the ring: the ring's parent shrinks to its
+   content, so a percentage there resolves against itself and comes back small (measured 305px). Open
+   the container first, then let the ring take 100% of it. */
+/* 尺寸基准 / the reference geometry.
+ *
+ * 原设计：132px 的圈、1.65em 的读数、7px 的环宽。这里整组换成**容器相对单位**，于是圆环放大时
+ * 读数、环宽、状态字一起按同一比例放大，而不是圈变大、字还那么小。
+ *
+ *   读数  24.75 / 132 = 18.75cqw      （1.65em ≈ 24.75px）
+ *   状态  12    / 132 =  9.1cqw
+ *   环宽   7    / 132 =  5.3cqw
+ *
+ * The reference is the original: a 132px circle, a 1.65em readout, a 7px rim. The whole group is
+ * expressed in container units, so enlarging the ring scales the readout, the rim and the state text
+ * by the same factor instead of leaving the text small inside a big circle. */
+.rtt-focus-overlay .rtt-stopwatch {
+
+    width: min(62vh, 100%);
+    container-type: inline-size;
+}
+
+.rtt-focus-overlay .rtt-stopwatch-ring {
+    width: 100%;
+    height: auto;
+    aspect-ratio: 1 / 1;
+    -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 5.3cqw), #000 calc(100% - 5cqw));
+    mask: radial-gradient(farthest-side, transparent calc(100% - 5.3cqw), #000 calc(100% - 5cqw));
+}
+
+.rtt-focus-overlay .rtt-stopwatch-time {
+    font-size: 18.75cqw;
+}
+
+/* 环内的状态字跟着放大；环外的提示文字不跟 —— 它不在圈里，放大反而抢视线 */
+/* The state text inside the ring scales; the hint below it does not — it sits outside the circle and
+   would only compete for attention at that size. */
+.rtt-focus-overlay .rtt-stopwatch-state {
+    font-size: 9.1cqw;
+}
+
+.rtt-focus-overlay .rtt-stopwatch-hint {
+    font-size: var(--font-ui-smaller);
+}
+.rtt-focus-main {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+}
+
+/* 右下角浮动的表格开关 / the table control, floating in the bottom-right corner */
+/* 右下角浮动的表格开关 / the table control, floating in the bottom-right corner.
+ *
+ * 贴到最底边就不叫"浮动"了，抬到内容区下缘之上一点；圆钮本身带强调色底，一眼看得见。
+ * Flush against the bottom edge is not "floating"; it sits a little above the content's lower edge,
+ * and the round button carries the accent fill so it reads at a glance. */
+.rtt-focus-tools {
+    position: absolute;
+    right: 14px;
+    bottom: 15%;
+    display: flex;
+    gap: 6px;
+}
+
+.rtt-focus-tools button.clickable-icon.rtt-icon-btn {
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    border-radius: 50%;
+    background: var(--interactive-accent);
+    color: var(--text-on-accent);
+    box-shadow: var(--shadow-s);
+}
+
+.rtt-focus-tools button.clickable-icon.rtt-icon-btn:hover {
+    background: var(--interactive-accent-hover);
+    color: var(--text-on-accent);
+    box-shadow: var(--shadow-s);
+}
+
+.rtt-focus-tools button.clickable-icon.rtt-icon-btn svg {
+    width: 20px;
+    height: 20px;
+}
+
+/* 右侧的标记表：默认收起；悬停偷看与常显示各由一个类打开
+   The table on the right: folded by default, opened by either the peek or the pin class */
+.rtt-focus-side {
+    min-width: 0;
+    overflow: hidden;
+    opacity: 0;
+    transform: translateX(6px);
+    transition: opacity 0.28s ease, transform 0.28s ease;
+
+    /* 收起时不吃点击 / a folded table must not eat clicks */
+    pointer-events: none;
+}
+
+.rtt-focus-overlay.is-peek .rtt-focus-side,
+.rtt-focus-overlay.is-pinned .rtt-focus-side {
+    opacity: 1;
+    transform: none;
+    pointer-events: auto;
+}
+
+/* 触屏：表格开关撑到可点大小 / touch: the table control grows to a tappable size */
+@media (pointer: coarse) {
+    .rtt-focus-tools button {
+        min-width: var(--touch-size-m, 44px);
+        min-height: var(--touch-size-m, 44px);
+    }
+}
+
 /* ── 总看板：并集热力图的三色 / overview: three colours for the union ────── */
 
 .rtt-hm-seg.rtt-ov-doc {
@@ -1349,6 +1559,38 @@ button.rtt-live-deduct-value.clickable-icon:focus-visible {
 
 .rtt-statusbar-menu-hint:hover {
     background: var(--background-modifier-hover);
+}
+
+/* ── 宽侧栏折成两列 / the wide sidebar folds into two columns ────────────────
+ *
+ * 一把上下顺序从中间折开：左列上面那部分，右列下面那部分。窄时叠回一列，DOM 顺序不变，所以两种宽度
+ * 共用同一份渲染结果；切换只是给 .view-content 加一个类，不重绘。
+ *
+ * The top-to-bottom order is folded in half: the upper part on the left, the lower part on the right.
+ * Narrow, they stack back into one column and the DOM order is unchanged, so both widths share one
+ * render; switching is a class on .view-content, never a re-render.
+ */
+.rtt-panel-cols {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+}
+
+.view-content.is-wide .rtt-panel-cols {
+
+    /* 左 30% / 右 70%：上面那部分（数字与状态）窄，下面那部分（热力图与列表）需要宽度 */
+    /* Left 30% / right 70%: the upper part (figures and state) is narrow, the lower part (heatmap and
+       list) needs the width */
+    grid-template-columns: minmax(0, 3fr) minmax(0, 7fr);
+
+    /* 两列各自从顶部开始排，不互相拉伸 */
+    /* Each column starts at the top and does not stretch to match the other */
+    align-items: start;
+    column-gap: 18px;
+}
+
+/* 列内的最后一块不要留多余的底部间距 / no trailing gap at the bottom of a column */
+.rtt-panel-col > :last-child {
+    margin-bottom: 0;
 }
 
 /* ── 热力图上方的可点图例 / the clickable legend above a heatmap ────────────

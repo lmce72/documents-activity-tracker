@@ -1,3 +1,4 @@
+import { buildVisits } from '../core/activityVisits';
 /**
  * Heatmap rendering
  *
@@ -20,7 +21,7 @@ import type { RecordChannel } from '../core/recordsTimeline';
 import {
   formatDurationParts,
   formatDurationWithSeconds,
-  parseSessionStartTime,
+  formatLocalFull,
   type DurationPart,
 } from '../core/time';
 import type { TimelineEvent } from '../core/types';
@@ -187,7 +188,11 @@ export function renderSegmentDetail(container: HTMLElement, options: SegmentDeta
   const { hour, segment, what, icon, kind, pieces, events, day } = options;
 
   const pad = (value: number): string => String(Math.floor(value)).padStart(2, '0');
-  const clock = (minutes: number): string => `${pad((minutes / 60) % 24)}:${pad(minutes % 60)}`;
+  const clock = (minutes: number): string => {
+    const seconds = Math.round(minutes * 60);
+    return seconds === 86400 ? '24:00:00'
+      : `${pad(seconds / 3600)}:${pad((seconds % 3600) / 60)}:${pad(seconds % 60)}`;
+  };
   const startMinute = hour * 60 + segment.startMinute;
   const endMinute = startMinute + segment.durationMinutes;
 
@@ -213,166 +218,24 @@ export function renderSegmentDetail(container: HTMLElement, options: SegmentDeta
   let visits: TimelineNode[] = [];
 
   if (events) {
-    // The window is widened to whole minutes on both ends. A stretch is measured in minutes and
-    // then rounded, so an exact comparison would drop the very events that define it — measured:
-    // a stretch labelled 14:20–14:20 matched nothing, because its events sit at 14:20:06.
-    const at = (minutes: number, seconds: number): string =>
-      `${day} ${pad((minutes / 60) % 24)}:${pad(minutes % 60)}:${pad(seconds)}`;
-
-    visits = processNodes(events, at(Math.floor(startMinute), 0), at(Math.ceil(endMinute), 59), clock);
+    const at = (minutes: number): string => {
+      if (Math.round(minutes * 60) !== 86400) return day + ' ' + clock(minutes);
+      const next = new Date(day + 'T00:00:00');
+      next.setDate(next.getDate() + 1);
+      return formatLocalFull(next);
+    };
+    visits = processNodes(events, at(startMinute), at(endMinute), clock);
   }
 
   // A single visit already says everything the summary would: its own node carries the range and
   // the duration, and the icon carries the source. Printing both put the same two values on two
   // consecutive lines.
   const nodes = visits.length === 1 ? visits : [summary, ...visits];
-  if (visits.length === 0) nodes.push(summary);
+
 
   // One timeline: the summary and every visit hang off the same line, so the run reads as a
   // sequence rather than a fact plus an appendix.
   renderTimelineList(container, nodes);
-}
-
-/** One visit to a target: from becoming active to handing over. */
-interface TargetVisit {
-  target: string;
-  from: string;
-  to: string;
-  activeSeconds: number;
-  unfocusedSeconds: number;
-  pausedSeconds: number;
-  /** Whether a transition out of this visit led to another target. */
-  nextTarget: string | null;
-}
-
-/** Split a "YYYY-MM-DD HH:mm:ss" into milliseconds for arithmetic. */
-function timeMs(value: string): number {
-  return parseSessionStartTime(value)?.getTime() ?? 0;
-}
-
-/**
- * The stretch as a sequence of visits / 这段时间读过的目标序列.
- *
- * A visit runs from the moment a target became active until it was handed over — by a switch,
- * or by a save that closed it. Blur, focus and pause do not start a visit: they change what the
- * time *means*, so they are accumulated into the visit that contains them rather than becoming
- * nodes of their own.
- */
-function buildVisits(events: readonly TimelineEvent[], from: string, to: string): TargetVisit[] {
-  const visits: TargetVisit[] = [];
-  // A holder rather than a captured `let`: TypeScript narrows a mutable capture to `never`
-  // once a helper assigns null to it, and every read afterwards fails to type-check.
-  const holder: { visit: TargetVisit | null } = { visit: null };
-  let state: 'active' | 'unfocused' | 'paused' = 'active';
-  let stateSince = '';
-
-  const bank = (until: string): void => {
-    const visit = holder.visit;
-    if (!visit || !stateSince) return;
-    const seconds = Math.max(0, (timeMs(until) - timeMs(stateSince)) / 1000);
-    if (state === 'active') visit.activeSeconds += seconds;
-    else if (state === 'unfocused') visit.unfocusedSeconds += seconds;
-    else visit.pausedSeconds += seconds;
-  };
-
-  const open = (target: string, at: string): void => {
-    if (!target) return;
-
-    // Already reading this target: a second `start`, or a `switch` that names the file it is
-    // already on. The log really contains those (an older build wrote every switch twice), and
-    // honouring them would split one visit into several identical nodes.
-    if (holder.visit?.target === target) return;
-
-    // The file was closed by a save and immediately started again. Reopening the previous visit
-    // keeps it one node; anything else would print the same target twice in a row with nothing
-    // between them to explain the split.
-    const last = visits[visits.length - 1];
-    if (!holder.visit && last && last.target === target) {
-      holder.visit = last;
-      state = 'active';
-      stateSince = at;
-      return;
-    }
-
-    bank(at);
-    const visit: TargetVisit = {
-      target,
-      from: at,
-      to: at,
-      activeSeconds: 0,
-      unfocusedSeconds: 0,
-      pausedSeconds: 0,
-      nextTarget: null,
-    };
-    holder.visit = visit;
-    visits.push(visit);
-    state = 'active';
-    stateSince = at;
-  };
-
-  const close = (at: string): void => {
-    const visit = holder.visit;
-    if (!visit) return;
-    bank(at);
-    visit.to = at;
-    holder.visit = null;
-    stateSince = '';
-  };
-
-  for (const event of events) {
-    if (event.time < from || event.time > to) continue;
-
-    switch (event.type) {
-      case 'start':
-        open((event as { file?: string }).file ?? '', event.time);
-        break;
-      case 'switch': {
-        const previous = holder.visit;
-        const next = event.to ?? '';
-        close(event.time);
-        if (previous && next && previous.target !== next) previous.nextTarget = next;
-        open(next, event.time);
-        break;
-      }
-      case 'blur':
-        bank(event.time);
-        state = event.unfocusedDisposition === 'reading' ? 'active' : event.unfocusedDisposition === 'paused' ? 'paused' : 'unfocused';
-        stateSince = event.time;
-        break;
-      case 'focus':
-        bank(event.time);
-        state = 'active';
-        stateSince = event.time;
-        break;
-      case 'pause':
-        bank(event.time);
-        state = 'paused';
-        stateSince = event.time;
-        break;
-      case 'resume':
-        bank(event.time);
-        state = 'active';
-        stateSince = event.time;
-        break;
-      case 'save':
-      case 'auto-save':
-      case 'discard':
-        close(event.time);
-        break;
-      default:
-        break;
-    }
-  }
-
-  // The last visit runs to the end of the stretch: nothing closed it.
-  if (holder.visit) {
-    bank(to);
-    holder.visit.to = to;
-  }
-
-  // A visit that banked nothing is a leftover boundary, not a reading stretch.
-  const withTime = visits.filter((visit) => visit.activeSeconds + visit.unfocusedSeconds + visit.pausedSeconds > 0);
-  return withTime.length > 0 ? withTime : visits;
 }
 
 /**
@@ -394,7 +257,7 @@ function processNodes(
     const total = visit.activeSeconds + visit.unfocusedSeconds;
 
     const lines: Array<string | readonly DurationPart[]> = [
-      `${visit.from.slice(11, 16)} – ${visit.to.slice(11, 16)}`,
+      `${visit.from.slice(11, 19)} – ${visit.to.slice(11, 19)}`,
       formatDurationParts(Math.round(total)),
     ];
 
@@ -415,7 +278,7 @@ function processNodes(
       icon: isView ? 'app-window' : 'file-text',
       kind: isView ? 'view' : 'document',
       title: isView
-        ? `${t('ovView')} · ${pluginViewLabel(visit.target)}`
+        ? `${t('ovView')} · ${visit.title || pluginViewLabel(visit.target)}`
         : `${t('ovKindDocument')} · ${visit.target.split('/').pop() ?? visit.target}`,
       lines,
     });
@@ -567,7 +430,8 @@ export function renderHeatmap<S extends HeatmapSegment>(
 
     // Touching same-class segments become one block: a run of activity is stored as many short
     // pieces, and one-click-per-piece is both unreadable and unhittable.
-    for (const block of mergeSegments(row.segments, classOf, groupOf)) {
+    const blocks = mergeSegments(row.segments, classOf, groupOf);
+    for (const block of blocks) {
       const representative = block.members[0]!;
       const seg = bar.createDiv({ cls: `rtt-hm-seg ${classOf(representative)}` });
       if (groupOf) seg.dataset.rttGroup = groupOf(representative);
@@ -581,7 +445,11 @@ export function renderHeatmap<S extends HeatmapSegment>(
         width: `${Math.max(0.4, (block.durationMinutes / 60) * 100)}%`,
       };
       // A clipped slice loses its rounding so the stretch still reads as one
-      if (block.clipped) props['border-radius'] = '0';
+      const joined = blocks.some(other => other !== block && groupOf
+        && groupOf(other.members[0]!) === groupOf(representative)
+        && (Math.abs(other.startMinute + other.durationMinutes - block.startMinute) < TOUCH_EPSILON
+          || Math.abs(block.startMinute + block.durationMinutes - other.startMinute) < TOUCH_EPSILON));
+      if (block.clipped || joined) props['border-radius'] = '0';
 
       seg.setCssProps(props);
       seg.setAttribute('aria-label', labelOf(representative));

@@ -1,3 +1,4 @@
+import { activityRuns } from '../core/activityRuns';
 /**
  * Sidebar view
  *
@@ -28,7 +29,7 @@ import {
   type DurationPart,
 } from '../core/time';
 import { getLang, t } from '../core/i18n';
-import { countsUnfocusedAsReading } from '../core/settings';
+import { countsPluginViewsAsReading, countsUnfocusedAsReading } from '../core/settings';
 import type { Logger } from '../core/logger';
 import {
   buildManualDayFlags,
@@ -72,6 +73,7 @@ import { appendDurationParts, setClockTime, setReadTime } from './durationText';
 import {
   buildFileRecords,
   getDayChannelSeconds,
+  getAllTodaySeconds,
   getTodaySeconds,
   getTodaySessionCount,
 } from '../core/timeline';
@@ -162,6 +164,24 @@ export class ActivitySidebarView extends ItemView {
   /** Whether the overview's day detail is expanded past its first few entries. */
   private overviewExpanded = false;
 
+  /**
+   * 手动计时的专注视图 / the manual timer's focus view.
+   *
+   * 只留大圆环与本轮的标记表：秒表是这一屏唯一要读的东西，开关、统计、热力图、记录都收起来。
+   * Only the big ring and this round's marks stay: the stopwatch is the one thing to read on this
+   * screen, so the switches, stats, heatmap and session list fold away.
+   */
+  private manualFocus = false;
+
+  /**
+   * 标记表是否常显示 / whether the mark table is pinned open.
+   *
+   * 与"悬停偷看"分开：悬停是临时的（鼠标离开就收），点击是持久状态。分开存，重绘后常显示才记得住。
+   * Kept apart from the hover peek: hovering is transient (it folds away when the pointer leaves) while
+   * a click is a state. Stored separately so a re-render remembers the pin.
+   */
+  private manualFocusTablePinned = false;
+
   /** whether the hand-drawn calendar popover is open */
   private calendarOpen = false;
 
@@ -181,6 +201,21 @@ export class ActivitySidebarView extends ItemView {
    * every render leaves behind a timer still measuring layout.
    */
   private nameTicker: HScrollTicker | null = null;
+
+  /**
+   * 侧栏够不够宽 / whether the sidebar is wide enough to fold into two columns.
+   *
+   * 用 ResizeObserver 而不是 CSS 容器查询：容器查询要求给滚动容器加 contain，而面板顶部的吸顶标签
+   * 依赖那个滚动容器建立 sticky 上下文 —— 为了两列去动它不值。
+   *
+   * A ResizeObserver rather than a CSS container query: the latter needs contain on the scroller,
+   * and the sticky panel tabs depend on that scroller being their sticky context. Not worth moving it
+   * for a two-column layout.
+   */
+  private widthObserver: ResizeObserver | null = null;
+
+  /** 折成两列所需的宽度 / the width at which the fold makes sense. */
+  private static readonly WIDE_PX = 600;
 
   /**
    * 被图例关掉的那几类 / the kinds the legend has switched off.
@@ -236,11 +271,22 @@ export class ActivitySidebarView extends ItemView {
     );
 
     this.render();
+
+    //  宽度变了只切一个类，不重绘：两列是纯排版，重建 DOM 会把滚动位置和选中状态一起丢掉。
+    //  A width change only flips a class, never re-renders: the fold is pure layout, and rebuilding the
+    //  DOM would throw away scroll position and selection with it.
+    this.widthObserver = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width ?? 0;
+      this.contentEl.toggleClass('is-wide', width >= ActivitySidebarView.WIDE_PX);
+    });
+    this.widthObserver.observe(this.contentEl);
   }
 
   override async onClose(): Promise<void> {
     this.unsubscribe?.();
     this.unsubscribe = null;
+    this.widthObserver?.disconnect();
+    this.widthObserver = null;
     this.nameTicker?.destroy();
     this.nameTicker = null;
   }
@@ -254,6 +300,24 @@ export class ActivitySidebarView extends ItemView {
   refresh(): void {
     this.signature = '';
     this.render();
+  }
+
+  /**
+   * 宽侧栏时的两列 / two columns when the sidebar is wide.
+   *
+   * 语义是「把现有的上下顺序从中间折成左右」：左列放上面那部分，右列放下面那部分。窄时两列叠成一列，
+   * DOM 顺序不变 —— 于是只有一套渲染路径，两种宽度共用。
+   *
+   * The idea is to fold the existing top-to-bottom order into two columns: the upper part on the left,
+   * the lower part on the right. Narrow, they stack and the DOM order is unchanged — one rendering
+   * path serves both widths.
+   */
+  private createColumns(root: HTMLElement): { left: HTMLElement; right: HTMLElement } {
+    const cols = root.createDiv({ cls: 'rtt-panel-cols' });
+    return {
+      left: cols.createDiv({ cls: 'rtt-panel-col' }),
+      right: cols.createDiv({ cls: 'rtt-panel-col' }),
+    };
   }
 
   /** 点图例：把这一类收起 / 放回 / toggle one kind off the chart and back. */
@@ -304,6 +368,8 @@ export class ActivitySidebarView extends ItemView {
 
     const shown = filterRowsByClass(rows, classOf, this.hiddenHeatmap);
 
+    const runs = activityRuns(shown);
+    const groupOf = detail?.groupOf ?? ((segment: S) => runs.get(segment)!.id);
     const drawn = renderHeatmap(
       parent,
       shown,
@@ -311,25 +377,27 @@ export class ActivitySidebarView extends ItemView {
       labelOf,
       (block, hour, element) => {
         if (!panel) return;
-        const isSelected = selectSegment(parent, element, detail?.groupOf(block.members[0]!));
+        const isSelected = selectSegment(parent, element, groupOf(block.members[0]!));
         panel.empty();
         // Clicking the lit stretch again clears it, so the block can be dismissed in place.
         if (!isSelected) return;
         if (detail) { detail.render(panel, block.members[0]!); return; }
-        const info = describe(block, hour);
+        const run = runs.get(block.members[0]!)!;
+        const members = shown.flatMap(row => row.segments).filter(segment => runs.get(segment) === run);
+        const info = describe({ ...block, members }, hour);
         renderSegmentDetail(panel, {
           hour,
-          segment: block,
+          segment: { ...block, startMinute: run.start - hour * 60, durationMinutes: run.end - run.start },
           what: info.what,
           icon: info.icon,
           kind: info.kind,
-          pieces: block.members.length,
+          pieces: members.length,
           events,
           day,
         });
       },
       overlay,
-      detail?.groupOf,
+      groupOf,
     );
 
     if (!drawn) return false;
@@ -388,6 +456,8 @@ export class ActivitySidebarView extends ItemView {
       //  the panels keep displaying the old accounting until some unrelated state change
       //  happens to trigger a re-render.
       settings.countUnfocusedAsReading,
+      settings.countPluginViewsAsReading,
+      String(this.deps.history.getEvents().length),
       state.activeFilePath ?? '-',
       state.isWindowFocused,
       state.files.get(state.activeFilePath ?? '')?.splitReading,
@@ -401,6 +471,7 @@ export class ActivitySidebarView extends ItemView {
       //  Expanding the manual list changes how many rows it has, so it belongs here
       String(this.manualExpanded),
       String(this.overviewExpanded),
+      String(this.manualFocus),
 
       //  The calendar's open state shapes the DOM; without it turning pages would not redraw
       String(this.calendarOpen),
@@ -439,17 +510,40 @@ export class ActivitySidebarView extends ItemView {
       this.liveNodes = {};
       this.signature = this.computeSignature();
 
-      this.renderPanelTabs(root);
+      //  每次重绘都按当前宽度定一次，不单靠观察者：观察者的首次回调可能赶在布局之前（宽度读到 0），
+      //  之后又不再变化，于是类名一直没加上。
+      //  Settle the class on every render rather than trusting the observer alone: the observer's first
+      //  callback can land before layout (width 0) and then never fire again, leaving the class off.
+      this.contentEl.toggleClass(
+        'is-wide',
+        this.contentEl.clientWidth >= ActivitySidebarView.WIDE_PX,
+      );
 
-      //  A degraded store must be obvious, or the user assumes records are being saved
+      //  A degraded store must be obvious, or the user assumes records are being saved. It stays
+      //  full width: it is about the whole plugin, not about one column.
       const warning = this.deps.storageWarning();
       if (warning) {
         root.createDiv({ cls: 'rtt-warning-text', text: warning });
       }
 
-      if (this.panel === 'document') this.renderDocumentPanel(root);
-      else if (this.panel === 'manual') this.renderManualPanel(root);
-      else this.renderOverviewPanel(root);
+      //  专注视图不是把几块藏起来，而是换成一个覆盖整幅的视图：下面那些区块干脆不渲染。
+      //  The focus view is not a few blocks hidden — it is one view covering the whole area, and the
+      //  blocks underneath are simply not rendered.
+      if (this.panel === 'manual' && this.manualFocus) {
+        this.renderManualFocus(root);
+        this.updateLiveNumbers();
+        return;
+      }
+
+      //  两列在这里建，而不是各面板自己建：面板标签属于「上面那部分」，要和面板内容一起落在左列。
+      //  The columns are built here rather than inside each panel: the panel tabs belong to the upper
+      //  part and have to land in the left column together with the panel's own content.
+      const { left, right } = this.createColumns(root);
+      this.renderPanelTabs(left);
+
+      if (this.panel === 'document') this.renderDocumentPanel(left, right);
+      else if (this.panel === 'manual') this.renderManualPanel(left, right);
+      else this.renderOverviewPanel(left, right);
 
       this.updateLiveNumbers();
     } catch (error) {
@@ -540,11 +634,11 @@ export class ActivitySidebarView extends ItemView {
   }
 
   /** The document-tracking panel. */
-  private renderDocumentPanel(root: HTMLElement): void {
+  private renderDocumentPanel(left: HTMLElement, right: HTMLElement): void {
     const settings = this.deps.settings();
     if (!settings.documentTrackingEnabled) {
-      root.createDiv({ cls: 'rtt-empty-hint', text: t('trackerOff') });
-      root.createDiv({ cls: 'rtt-empty-hint', text: t('trackerOffDesc') });
+      left.createDiv({ cls: 'rtt-empty-hint', text: t('trackerOff') });
+      left.createDiv({ cls: 'rtt-empty-hint', text: t('trackerOffDesc') });
       return;
     }
 
@@ -557,7 +651,7 @@ export class ActivitySidebarView extends ItemView {
       this.deps.history.getEvents(),
       this.deps.clock.now(),
       todayStr(),
-      { countUnfocused: countsUnfocusedAsReading(settings) },
+      { countUnfocused: countsUnfocusedAsReading(settings), countPluginViews: countsPluginViewsAsReading(settings) },
     );
 
     //  自上而下三段：此刻的数字（四宫格 → 当前状态）、这一天的形状（热力图）、这一天的排名（列表）。
@@ -565,10 +659,12 @@ export class ActivitySidebarView extends ItemView {
     //  Top to bottom: the numbers for now (grid, then the current-session card), the shape of the
     //  day (the heatmap), and the day's ranking (the list). The heatmap sits against the list —
     //  both describe the day — while the card joins the grid as the "right now" block.
-    this.renderDocumentStats(root, records, settings);
-    this.renderCurrentSession(root, filePath, records);
-    this.renderDocumentHeatmap(root, records);
-    this.renderTodayList(root, records);
+    //  上：此刻的数字（四宫格 + 当前状态）；下：这一天的形状与排名
+    //  Top: the numbers for now (grid + current session); bottom: the day's shape and ranking
+    this.renderDocumentStats(left, records, settings);
+    this.renderCurrentSession(left, filePath, records);
+    this.renderDocumentHeatmap(right, records);
+    this.renderTodayList(right, records);
   }
 
   /**
@@ -1015,18 +1111,20 @@ export class ActivitySidebarView extends ItemView {
   }
 
   /** The manual-timer panel. */
-  private renderManualPanel(root: HTMLElement): void {
+  private renderManualPanel(left: HTMLElement, right: HTMLElement): void {
     if (!this.deps.settings().manualTimerEnabled) {
-      root.createDiv({ cls: 'rtt-empty-hint', text: t('manualTimerOff') });
-      root.createDiv({ cls: 'rtt-empty-hint', text: t('manualTimerOffDesc') });
+      left.createDiv({ cls: 'rtt-empty-hint', text: t('manualTimerOff') });
+      left.createDiv({ cls: 'rtt-empty-hint', text: t('manualTimerOffDesc') });
       return;
     }
 
-    this.renderManualControls(root);
-    this.renderManualToggles(root);
-    this.renderManualStats(root);
-    this.renderManualHeatmap(root);
-    this.renderManualList(root);
+    //  上：秒表与开关；下：这一天的热力图与记录
+    //  Top: the stopwatch and its switches; bottom: the day's heatmap and sessions
+    this.renderManualControls(left);
+    this.renderManualToggles(left);
+    this.renderManualStats(left);
+    this.renderManualHeatmap(right);
+    this.renderManualList(right);
   }
 
   /** manual timer controls. */
@@ -1036,60 +1134,170 @@ export class ActivitySidebarView extends ItemView {
 
     this.renderStopwatch(section);
 
-    const state = this.deps.store.getState();
-    const status = state.manual.status;
     const bar = section.createDiv({ cls: 'rtt-timeline-nav' });
+    this.renderManualButtons(bar);
+    this.renderManualFlags(section);
+  }
 
-    if (status === 'idle') {
+  /**
+   * 秒表的操作按钮 / the stopwatch's control row.
+   *
+   * 抽出来给普通面板与专注视图共用：两处按钮一模一样，各写一份迟早会漏掉某个状态。
+   * Pulled out so the panel and the focus overlay share one row: the buttons are identical, and two
+   * copies would eventually miss a state in one of them.
+   */
+  private renderManualButtons(bar: HTMLElement): void {
+    const status = this.deps.store.getState().manual.status;
+
+    if (status !== 'idle') {
+      const paused = status === 'paused';
+      this.iconButton(
+        bar,
+        paused ? 'play' : 'pause',
+        paused ? t('manualResume') : t('manualPause'),
+        () => {
+          if (paused) this.deps.manual.resume();
+          else this.deps.manual.pause();
+          this.render();
+        },
+      );
+
+      //  Marking records the net seconds and nothing else: it neither stops the clock nor opens a
+      //  prompt, because interrupting focus with a form defeats the point.
+      this.iconButton(bar, 'flag', t('manualFlag'), () => {
+        const mark = this.deps.manual.flag();
+        if (mark) this.render();
+      });
+
+      //  Stop means stop-and-save, drawn as the player-metaphor square; the saving half of the
+      //  meaning lives in the tooltip only.
+      this.iconButton(bar, 'square', t('manualStop'), () => {
+        this.deps.promptNote((note) => {
+          if (note === null) return;
+          void this.deps.manual.stop(note).then(() => this.render());
+        });
+      });
+
+      this.iconButton(
+        bar,
+        'x',
+        t('manualDiscard'),
+        () => {
+          this.deps.manual.discard();
+          this.render();
+        },
+        { danger: true },
+      );
+    } else {
       this.iconButton(bar, 'play', t('manualStart'), () => {
         this.deps.manual.start();
         this.render();
       });
-      this.renderManualFlags(section);
+    }
+
+    //  专注切换放最右，任何状态都在：它切的是"看什么"，不是计时动作。
+    //  The focus toggle sits at the end and is present in every state: it switches what is shown,
+    //  never what is timed.
+    this.iconButton(
+      bar,
+      this.manualFocus ? 'minimize-2' : 'maximize-2',
+      this.manualFocus ? t('manualFocusOff') : t('manualFocusOn'),
+      () => {
+        this.manualFocus = !this.manualFocus;
+        this.render();
+      },
+      { ghost: true },
+    );
+  }
+
+  /**
+   * 专注视图 / the focus view.
+   *
+   * 一整块覆盖视图：中间大圆环，圆环下面是操作按钮，右侧是标记表。表格的显示由一个按钮控制 ——
+   * 悬停偷看（离开就收），点击切换常显示。触屏没有悬停，所以点击那条路必须自己就够用。
+   *
+   * One overlay: the big ring centred, its buttons underneath, the mark table on the right. The table
+   * is controlled by one button — hovering peeks it (and leaving folds it away), clicking toggles
+   * whether it stays. A touch screen has no hover, so the click path has to stand on its own.
+   */
+  private renderManualFocus(root: HTMLElement): void {
+    const overlay = root.createDiv({ cls: 'rtt-focus-overlay' });
+    if (this.manualFocusTablePinned) overlay.addClass('is-pinned');
+
+    const main = overlay.createDiv({ cls: 'rtt-focus-main' });
+    this.renderStopwatch(main);
+
+    const bar = main.createDiv({ cls: 'rtt-timeline-nav' });
+    this.renderManualButtons(bar);
+
+    //  表格开关：浮在右下角 —— 它管的是"看什么"，不是计时动作，所以不占按钮那一行。
+    //  The table control floats in the bottom-right corner: it decides what is shown, not what is
+    //  timed, so it does not take a slot in the button row.
+    const tools = overlay.createDiv({ cls: 'rtt-focus-tools' });
+    const tableBtn = this.iconButton(
+      tools,
+      'flag',
+      t('manualFocusTable'),
+      () => {
+        this.manualFocusTablePinned = !this.manualFocusTablePinned;
+        overlay.toggleClass('is-pinned', this.manualFocusTablePinned);
+        tableBtn.setAttribute('aria-pressed', String(this.manualFocusTablePinned));
+      },
+
+      //  不要 ghost：这枚按钮要带强调色圆底，ghost 会把底色和颜色一起抹平
+      //  Not ghost: this one carries an accent circle, and ghost would flatten both its fill and colour
+      {},
+    );
+    tableBtn.setAttribute('aria-pressed', String(this.manualFocusTablePinned));
+
+    //  悬停偷看：只动类，不重绘 —— 表格的位置与内容都不用重建
+    //  Hover peeks: a class only, never a re-render — neither the table's place nor its content changes.
+    tableBtn.addEventListener('mouseenter', () => overlay.addClass('is-peek'));
+    tableBtn.addEventListener('mouseleave', () => overlay.removeClass('is-peek'));
+
+    const side = overlay.createDiv({ cls: 'rtt-focus-side' });
+    this.renderManualFlagTable(side);
+  }
+
+  /**
+   * 本轮的标记表 / this round's marks, as a table.
+   *
+   * 专注视图里用表格而不是胶囊：这里读的是"第几轮、几点、隔了多久"三列对齐的数据，一排圆角小标签
+   * 每次都要重新对齐眼睛。
+   *
+   * A table rather than chips in the focus view: what is read here is three aligned columns — which
+   * round, at what time, how long it took — and a row of rounded chips makes the eye re-align them
+   * every time.
+   */
+  private renderManualFlagTable(root: HTMLElement): void {
+    const flags = this.deps.store.getState().manual.flags;
+
+    new Setting(root).setName(t('manualFlagsTitle')).setHeading();
+
+    if (flags.length === 0) {
+      root.createDiv({ cls: 'rtt-list-empty', text: t('manualNoFlags') });
       return;
     }
 
-    const paused = status === 'paused';
-    this.iconButton(
-      bar,
-      paused ? 'play' : 'pause',
-      paused ? t('manualResume') : t('manualPause'),
-      () => {
-        if (paused) this.deps.manual.resume();
-        else this.deps.manual.pause();
-        this.render();
-      },
-    );
+    //  三列：标记（带图标）/ 时间差（距上一轮）/ 累计时长（这一轮跑了多久）
+    //  Three columns: the mark (with its icon), the gap since the previous one, and how long the
+    //  round had been running when it was placed.
+    const intervals = flagIntervals(flags);
+    const table = root.createEl('table', { cls: 'rtt-flag-table' });
+    const head = table.createEl('thead').createEl('tr');
+    for (const label of [t('manualFlagCol'), t('manualFlagDiff'), t('manualFlagRecorded')]) {
+      head.createEl('th', { text: label });
+    }
 
-    //  Marking records the net seconds and nothing else: it neither stops the clock nor
-    //  opens a prompt, because interrupting focus with a form defeats the point. Any label
-    //  is written when the session stops.
-    this.iconButton(bar, 'flag', t('manualFlag'), () => {
-      const mark = this.deps.manual.flag();
-      if (mark) this.render();
-    });
-
-    //  Stop means stop-and-save, drawn as the player-metaphor square; the saving half of the
-    //  meaning lives in the tooltip only.
-    this.iconButton(bar, 'square', t('manualStop'), () => {
-      this.deps.promptNote((note) => {
-        if (note === null) return;
-        void this.deps.manual.stop(note).then(() => this.render());
-      });
-    });
-
-    this.iconButton(
-      bar,
-      'x',
-      t('manualDiscard'),
-      () => {
-        this.deps.manual.discard();
-        this.render();
-      },
-      { danger: true },
-    );
-
-    this.renderManualFlags(section);
+    const body = table.createEl('tbody');
+    for (const [index, mark] of flags.entries()) {
+      const row = body.createEl('tr');
+      const cell = row.createEl('td', { cls: 'rtt-flag-cell' });
+      setIcon(cell.createSpan({ cls: 'rtt-flag-cell-icon' }), 'flag');
+      cell.createSpan({ text: t('manualFlagRow').replace('{n}', String(index + 1)) });
+      row.createEl('td', { text: formatDurationWithSeconds(intervals[index] ?? 0) });
+      row.createEl('td', { text: formatDurationWithSeconds(mark.atSeconds) });
+    }
   }
 
   /**
@@ -1162,10 +1370,10 @@ export class ActivitySidebarView extends ItemView {
    * stretch of "reading with the stopwatch running" twice. This panel takes the **union**,
    * counting jointly covered time once, and still lists each ledger's total and the overlap.
    */
-  private renderOverviewPanel(root: HTMLElement): void {
+  private renderOverviewPanel(ovLeft: HTMLElement, ovRight: HTMLElement): void {
     const settings = this.deps.settings();
     if (!settings.documentTrackingEnabled && !settings.manualTimerEnabled) {
-      root.createDiv({ cls: 'rtt-empty-hint', text: t('ovEmpty') });
+      ovLeft.createDiv({ cls: 'rtt-empty-hint', text: t('ovEmpty') });
       return;
     }
 
@@ -1173,7 +1381,7 @@ export class ActivitySidebarView extends ItemView {
       this.deps.history.getEvents(),
       this.deps.clock.now(),
       todayStr(),
-      { countUnfocused: countsUnfocusedAsReading(settings) },
+      { countUnfocused: countsUnfocusedAsReading(settings), countPluginViews: countsPluginViewsAsReading(settings) },
     );
 
     // Records split by kind: notes are one ledger, plugin views (RSS dashboard, translator,
@@ -1189,7 +1397,7 @@ export class ActivitySidebarView extends ItemView {
     const manualSessions = this.deps.history.getManualSessions();
     const intervals = [
       ...documentIntervals(noteTimelines, { includeUnfocused: countsUnfocusedAsReading(settings) }),
-      ...documentIntervals(viewTimelines, { source: 'view', includeUnfocused: countsUnfocusedAsReading(settings) }),
+      ...(countsPluginViewsAsReading(settings) ? documentIntervals(viewTimelines, { source: 'view', includeUnfocused: countsUnfocusedAsReading(settings) }) : []),
       ...manualIntervals(manualSessions),
     ];
 
@@ -1209,7 +1417,10 @@ export class ActivitySidebarView extends ItemView {
     ];
     const week = overviewWeekTotals(weekIntervals, this.day);
 
-    this.renderStatCards(root, [
+    //  上：合计；下：日导航 + 热力图 + 明细 —— 导航必须跟着它描述的那张图走
+    //  Top: the totals; bottom: day nav, heatmap and detail — the nav has to travel with the chart it
+    //  describes
+    this.renderStatCards(ovLeft, [
       { label: t('ovUnion'), seconds: Math.round(totals.unionMinutes * 60) },
       { label: t('ovWeekTotal'), seconds: Math.round(week.unionMinutes * 60) },
       { label: t('ovDocument'), seconds: Math.round(totals.documentMinutes * 60) },
@@ -1219,10 +1430,10 @@ export class ActivitySidebarView extends ItemView {
     ]);
 
     // day navigation
-    const head = root.createDiv({ cls: 'rtt-heatmap-wrap' });
+    const head = ovRight.createDiv({ cls: 'rtt-heatmap-wrap' });
     this.renderDayNav(head);
 
-    const rows = buildOverviewRows(intervals, this.day);
+    const rows = buildOverviewRows(weekIntervals, this.day);
     const hasAny = rows.some((row) => row.segments.length > 0);
 
     if (!hasAny) {
@@ -1258,7 +1469,7 @@ export class ActivitySidebarView extends ItemView {
         segment.sources.map(sourceLabel).join(' + '),
       (block) => ({
         // Which ledgers covered this stretch *is* the process here, so the detail names them.
-        what: block.members[0]!.sources.map(sourceLabel).join(' + '),
+        what: [...new Set(block.members.flatMap(segment => segment.sources))].map(sourceLabel).join(' + '),
         icon: 'activity',
         kind: 'overview',
       }),
@@ -1267,8 +1478,8 @@ export class ActivitySidebarView extends ItemView {
       ovLegend,
     );
 
-    root.createDiv({ cls: 'rtt-records-meta', text: t('ovExplain') });
-    this.renderOverviewList(root, entries);
+    ovRight.createDiv({ cls: 'rtt-records-meta', text: t('ovExplain') });
+    this.renderOverviewList(ovRight, entries);
   }
 
   /**
@@ -1931,6 +2142,7 @@ export class ActivitySidebarView extends ItemView {
                 filePath,
                 undefined,
                 countsUnfocusedAsReading(this.deps.settings()),
+                countsPluginViewsAsReading(this.deps.settings()),
               )
             : 0,
           mode,
@@ -1945,8 +2157,10 @@ export class ActivitySidebarView extends ItemView {
           this.deps.clock.today(),
           this.deps.clock.now(),
         );
-        const read = channels.activeSeconds;
-        const notRead = channels.unfocusedSeconds + channels.pausedSeconds;
+        const read = getAllTodaySeconds(this.deps.history.getEvents(), state.files.values(),
+          this.deps.clock.today(), countsUnfocusedAsReading(this.deps.settings()),
+          countsPluginViewsAsReading(this.deps.settings()));
+        const notRead = channels.activeSeconds + channels.unfocusedSeconds + channels.pausedSeconds - read;
 
         if (this.liveNodes.today) setReadTime(this.liveNodes.today, read + notRead, mode);
         if (this.liveNodes.todayRead) setReadTime(this.liveNodes.todayRead, read, mode);

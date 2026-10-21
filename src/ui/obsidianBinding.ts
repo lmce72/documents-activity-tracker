@@ -44,6 +44,7 @@ export interface BindingDeps {
 export interface Binding {
   /** the active markdown file path */
   getActivePath(): string | null;
+  getActiveTitle(): string | null;
   /** markdown paths currently open */
   getOpenPaths(): string[];
   /** tear everything down */
@@ -87,6 +88,13 @@ export function installBindings(deps: BindingDeps): Binding {
       recentViewType: recent?.getViewType() ?? null,
       recentMarkdownPath: recent instanceof MarkdownView ? recent.file?.path ?? null : null,
     });
+  };
+
+  const getActiveTitle = (): string | null => {
+    const focused = app.workspace.activeLeaf?.view;
+    const view = focused && ownViewTypes.has(focused.getViewType())
+      ? app.workspace.getMostRecentLeaf()?.view : focused;
+    return view?.getDisplayText().trim() || null;
   };
 
   const getOpenPaths = (): string[] => {
@@ -245,6 +253,7 @@ export function installBindings(deps: BindingDeps): Binding {
 
   return {
     getActivePath,
+    getActiveTitle,
     getOpenPaths,
     destroy(): void {
       window.clearInterval(timer);

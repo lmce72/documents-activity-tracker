@@ -27,7 +27,7 @@ import {
   selectReadingSeconds,
   selectUnfocusedSeconds,
 } from '../core/selectors';
-import { countsUnfocusedAsReading } from '../core/settings';
+import { countsPluginViewsAsReading, countsUnfocusedAsReading } from '../core/settings';
 import { activeSelection, type PanelId, type StatusMetricDef } from '../core/statusMetrics';
 import { todayStr } from '../core/time';
 import { buildFileRecords, getAllTodaySeconds } from '../core/timeline';
@@ -468,7 +468,8 @@ export class StatusBarMetrics {
     if (needed.has('session')) {
       const path = state.activeFilePath;
       values['session'] = {
-        seconds: path ? selectReadingSeconds(state, path, countsUnfocusedAsReading(settings)) : 0,
+        seconds: path && (countsPluginViewsAsReading(settings) || !isPluginViewKey(path))
+          ? selectReadingSeconds(state, path, countsUnfocusedAsReading(settings)) : 0,
       };
     }
 
@@ -486,6 +487,7 @@ export class StatusBarMetrics {
           state.files.values(),
           today,
           countsUnfocusedAsReading(settings),
+          countsPluginViewsAsReading(settings),
         ),
       };
     }
@@ -516,7 +518,7 @@ export class StatusBarMetrics {
         this.deps.history.getEvents(),
         this.deps.clock.now(),
         today,
-        { countUnfocused: countsUnfocusedAsReading(settings) },
+        { countUnfocused: countsUnfocusedAsReading(settings), countPluginViews: countsPluginViewsAsReading(settings) },
       );
       const entries = Object.entries(records);
       const intervals = [
@@ -524,10 +526,10 @@ export class StatusBarMetrics {
           entries.filter(([key]) => !isPluginViewKey(key)).map(([, r]) => r.readTimeLine),
           { includeUnfocused: countsUnfocusedAsReading(settings) },
         ),
-        ...documentIntervals(
+        ...(countsPluginViewsAsReading(settings) ? documentIntervals(
           entries.filter(([key]) => isPluginViewKey(key)).map(([, r]) => r.readTimeLine),
           { source: 'view', includeUnfocused: countsUnfocusedAsReading(settings) },
-        ),
+        ) : []),
         ...manualIntervals(this.deps.history.getManualSessions()),
       ];
 

@@ -122,6 +122,13 @@ export class ReadTimeSettingTab extends PluginSettingTab {
           }),
       );
 
+    new Setting(containerEl)
+      .setName(t('settingCountPluginViews'))
+      .setDesc(t('settingCountPluginViewsDesc'))
+      .addToggle(toggle => toggle
+        .setValue(settings.countPluginViewsAsReading !== false)
+        .onChange(async value => { await this.deps.save({ countPluginViewsAsReading: value }); }));
+
     // 落盘时机 / when the vault file is written ────────────────────
     new Setting(containerEl).setName(t('flushTitle')).setDesc(t('flushDesc')).setHeading();
 
@@ -155,6 +162,17 @@ export class ReadTimeSettingTab extends PluginSettingTab {
           .setValue(settings.flushOnInterval === true)
           .onChange(async (value) => {
             await this.deps.save({ flushOnInterval: value });
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName(t('perDeviceSettings'))
+      .setDesc(t('perDeviceSettingsDesc'))
+      .addToggle((toggle) =>
+        toggle
+          .setValue(settings.perDeviceSettings === true)
+          .onChange(async (value) => {
+            await this.deps.save({ perDeviceSettings: value });
           }),
       );
 

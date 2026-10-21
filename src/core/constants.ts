@@ -116,6 +116,7 @@ export type ManualStatus = (typeof MANUAL_STATUS)[keyof typeof MANUAL_STATUS];
  * migration becomes non-destructive.
  */
 export const TIMELINE_PERSISTED_TYPES = [
+  'activity',
   'start',
   'pause',
   'resume',

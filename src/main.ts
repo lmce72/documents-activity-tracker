@@ -18,6 +18,12 @@ import type { PluginSettings } from './core/types';
 import { ObsidianAdapter } from './data/adapter';
 import type { HistoryStore } from './data/historyStore';
 import { SqliteStore, resolveDatabasePath } from './data/SqliteStore';
+import {
+  pickDeviceLocal,
+  readSharedSettings,
+  SHARED_SETTINGS_PATH,
+  writeSharedSettings,
+} from './data/sharedSettings';
 import { VolatileHistoryStore } from './data/VolatileHistoryStore';
 import { TimerStore } from './services/TimerStore';
 import { TimerService } from './services/TimerService';
@@ -143,6 +149,7 @@ export default class ReadTimeTrackerPlugin extends Plugin {
       log: this.log,
       settings: () => this.settings,
       getActivePath: () => this.binding?.getActivePath() ?? null,
+      getActiveTitle: () => this.binding?.getActiveTitle() ?? null,
       getOpenPaths: () => this.binding?.getOpenPaths() ?? [],
     });
 
@@ -376,7 +383,38 @@ export default class ReadTimeTrackerPlugin extends Plugin {
 
   private async loadSettings(): Promise<void> {
     try {
-      this.settings = mergeSettings(await this.loadData());
+      const local = await this.loadData();
+      let settings = mergeSettings(local);
+
+      //  默认共用一套设置：设置随 vault 走，各设备才用同一套口径读同一批数据。
+      //  引导键（数据路径、这个开关本身）只认本机 —— 它们决定去哪读、读不读，被对方覆盖就会互相踢。
+      //
+      //  Shared settings by default: they travel with the vault, so every device reads the same data
+      //  by the same rules. The bootstrap keys (the data path and this switch) stay local — they
+      //  decide where to read and whether to read at all, and letting the other device override them
+      //  would have the two kick each other around.
+      if (settings.perDeviceSettings !== true) {
+        const path = SHARED_SETTINGS_PATH;
+        const shared = await readSharedSettings(this.app.vault.adapter, path);
+        if (shared) {
+          settings = mergeSettings({ ...shared, ...pickDeviceLocal(local) });
+        } else {
+
+          //  第一次：把本机这份写出去，别的设备以后就有得读了
+          //  First run: publish this device's settings so the others have something to read
+          try {
+            await writeSharedSettings(
+              this.app.vault.adapter,
+              path,
+              settings as unknown as Record<string, unknown>,
+            );
+          } catch (error) {
+            this.log.warn('[RTT] 共享设置写出失败 / failed to publish shared settings:', error);
+          }
+        }
+      }
+
+      this.settings = settings;
     } catch (error) {
       console.error('[RTT] 设置加载失败，使用默认值 / settings load failed:', error);
       this.settings = mergeSettings(null);
@@ -387,6 +425,21 @@ export default class ReadTimeTrackerPlugin extends Plugin {
   private async updateSettings(patch: Partial<PluginSettings>): Promise<void> {
     this.settings = { ...this.settings, ...patch };
     await this.saveData(this.settings);
+
+    //  共用设置时同时写一份到数据旁边，别的设备下次启动就能拿到同一套口径。
+    //  When settings are shared, keep the copy beside the data in step, so the other device picks up
+    //  the same rules on its next start.
+    if (this.settings.perDeviceSettings !== true) {
+      try {
+        await writeSharedSettings(
+          this.app.vault.adapter,
+          SHARED_SETTINGS_PATH,
+          this.settings as unknown as Record<string, unknown>,
+        );
+      } catch (error) {
+        this.log.warn('[RTT] 共享设置写入失败 / failed to write shared settings:', error);
+      }
+    }
 
     //  Turning document tracking off must actually stop it, or the timer keeps counting
     //  in the background with no UI to show it.

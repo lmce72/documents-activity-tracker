@@ -18,6 +18,7 @@ import {
   STATUS,
 } from '../core/constants';
 import { isTrackableTarget } from '../core/filters';
+import { isPluginViewKey } from '../core/activePath';
 import type { Logger } from '../core/logger';
 import {
   isDocumentRecordingEnabled,
@@ -47,6 +48,7 @@ export interface TimerServiceDeps {
   settings: () => PluginSettings;
   /** the active markdown file path, if any */
   getActivePath: () => string | null;
+  getActiveTitle?: () => string | null;
   /** markdown paths still open in some leaf */
   getOpenPaths: () => string[];
 }
@@ -55,6 +57,7 @@ export interface TimerServiceDeps {
 export type SaveKind = 'save' | 'auto-save';
 
 export class TimerService {
+  private readonly activityTitles = new Map<string, string>();
   constructor(private readonly deps: TimerServiceDeps) {}
 
   //  ==========================================================================
@@ -121,6 +124,7 @@ export class TimerService {
       }
 
       await this.flushPendingWrites();
+      this.syncActivityTitle();
     } catch (error) {
       this.deps.log.warn('[RTT][service] 心跳处理失败 / tick failed:', error);
     }
@@ -607,7 +611,11 @@ export class TimerService {
     }
 
     try {
-      if (events.length > 0) this.deps.history.appendEvents(events);
+      if (events.length > 0) {
+        const titled = events.map(event => this.withActivityTitle(event));
+        this.deps.history.appendEvents(titled);
+        this.rememberActivityTitles(titled);
+      }
     } catch (error) {
 
       //  Nothing was written, so the queue stays put and the next tick retries
@@ -669,13 +677,39 @@ export class TimerService {
     };
   }
 
-  /**
-   * Append one observational event.
-   * Synchronous; the caller decides where to await persistence.
-   */
+  /** Stable target keys keep article-title changes inside the same reading round. */
+  private withActivityTitle(event: TimelineEvent): TimelineEvent {
+    if (event.type === 'switch' || event.type === 'discard' || !isPluginViewKey(event.file)) return event;
+    const title = event.activityTitle ?? (event.type === 'start' && this.deps.getActivePath() === event.file
+      ? this.deps.getActiveTitle?.() : this.activityTitles.get(event.file));
+    if (!title) return event;
+    return { ...event, activityTitle: title };
+  }
+
+  private rememberActivityTitles(events: readonly TimelineEvent[]): void {
+    for (const event of events) {
+      if ('activityTitle' in event && event.activityTitle) this.activityTitles.set(event.file, event.activityTitle);
+    }
+  }
+
+  private syncActivityTitle(): void {
+    const state = this.deps.store.getState();
+    const path = state.activeFilePath;
+    if (!path || !isPluginViewKey(path) || this.deps.getActivePath() !== path) return;
+    const file = state.files.get(path);
+    if (!file || (file.status !== STATUS.TRACKING && file.status !== STATUS.PAUSED)) return;
+    const title = this.deps.getActiveTitle?.();
+    if (!title || title === this.activityTitles.get(path)) return;
+    this.appendEvent({ time: this.deps.clock.nowFull(), type: 'activity', file: path,
+      activityTitle: title, state: file.status === STATUS.PAUSED ? 'pausing'
+        : state.isWindowFocused || file.splitReading ? 'tracking' : 'inactive' });
+  }
+
   private appendEvent(event: TimelineEvent): void {
     try {
-      this.deps.history.appendEvents([event]);
+      const titled = this.withActivityTitle(event);
+      this.deps.history.appendEvents([titled]);
+      this.rememberActivityTitles([titled]);
     } catch (error) {
       this.deps.log.warn('[RTT][service] 事件追加失败 / event append failed:', error);
     }
