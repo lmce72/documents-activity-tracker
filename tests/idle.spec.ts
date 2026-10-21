@@ -12,7 +12,7 @@ import { describe, expect, it } from 'bun:test';
 import { ActionTypes } from '../src/core/constants';
 import { DEFAULT_SETTINGS } from '../src/core/defaults';
 import { createInitialState } from '../src/core/reducer';
-import { computeSessionDurations } from '../src/core/timeline';
+import { buildFileRecords, computeSessionDurations } from '../src/core/timeline';
 import { listIdleIntervals, listUnfocusedIntervals } from '../src/core/unfocused';
 import type { TimelineEvent } from '../src/core/types';
 import { TimerService } from '../src/services/TimerService';
@@ -213,5 +213,85 @@ describe('逐段「不记录」的推导 / an ignored stretch in the derivation'
     expect(durations.unfocusedSeconds).toBe(0);
     expect(durations.idleSeconds).toBe(0);
     expect(durations.pausedSeconds).toBe(0);
+  });
+});
+
+describe('心跳断层 / a frozen gap in the heartbeat', () => {
+  function gapSetup() {
+    const clock = new FakeClock('2026-09-15T10:00:00');
+    const log = new CapturingLogger();
+    const { deps } = testDeps(clock, log);
+    const store = new TimerStore(deps, createInitialState(deps));
+    const history = new MemoryHistory();
+    const service = new TimerService({
+      store,
+      history,
+      clock,
+      log,
+      settings: () => ({
+        ...DEFAULT_SETTINGS,
+        minReadSeconds: 0,
+        autoStartMode: 'always',
+        idleTimeoutEnabled: false,
+      }),
+      getActivePath: () => FILE,
+      getOpenPaths: () => [FILE],
+    });
+    return { clock, store, history, service };
+  }
+
+  it('手机后台/休眠的时间断层补成一段离开，而不是专注', async () => {
+    const ctx = gapSetup();
+    await ctx.service.startCurrent();
+    ctx.clock.advanceSeconds(1);
+    await ctx.service.tick();
+
+    //  七小时的冻结 / seven hours frozen
+    ctx.clock.advanceSeconds(7 * 3600);
+    await ctx.service.tick();
+
+    const events = ctx.history.getEvents();
+    const blur = events.find((event) => event.type === 'blur');
+    const focus = [...events].reverse().find((event) => event.type === 'focus');
+    expect(blur?.time).toBe('2026-09-15 10:00:02');
+    expect(focus?.time).toBe('2026-09-15 17:00:01');
+
+    const durations = computeSessionDurations(events, ctx.clock.now(), true);
+    //  超过 4 小时的失焦段按既有规则不计入任何通道（可信度上限），但它**绝不能**算成专注
+    //  A blur stretch beyond four hours falls outside the credibility cap and enters no channel — but
+    //  it must never be counted as active
+    expect(durations.activeSeconds).toBeLessThan(5);
+
+    //  热力图画的是会话状态表：断层处必须已经是 inactive
+    //  The heatmap draws the session map: the gap must already read as inactive there
+    const records = buildFileRecords(events, ctx.clock.now(), '2026-09-15', {});
+    const line = records[FILE]?.readTimeLine[0];
+    expect(line?.['2026-09-15 10:00:02']).toBe('inactive');
+  });
+
+  it('一小时以内的断层正常计入离开', async () => {
+    const ctx = gapSetup();
+    await ctx.service.startCurrent();
+    ctx.clock.advanceSeconds(1);
+    await ctx.service.tick();
+
+    ctx.clock.advanceSeconds(600);
+    await ctx.service.tick();
+
+    const durations = computeSessionDurations(ctx.history.getEvents(), ctx.clock.now(), true);
+    expect(durations.unfocusedSeconds).toBeGreaterThan(590);
+    expect(durations.activeSeconds).toBeLessThan(5);
+  });
+
+  it('正常心跳不写任何边界', async () => {
+    const ctx = gapSetup();
+    await ctx.service.startCurrent();
+    for (let i = 0; i < 3; i++) {
+      ctx.clock.advanceSeconds(1);
+      await ctx.service.tick();
+    }
+    const types = ctx.history.getEvents().map((event) => event.type);
+    expect(types).not.toContain('blur');
+    expect(types).not.toContain('focus');
   });
 });

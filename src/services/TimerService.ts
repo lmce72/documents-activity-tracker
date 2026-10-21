@@ -13,10 +13,7 @@
  *
  */
 
-import {
-  ActionTypes,
-  STATUS,
-} from '../core/constants';
+import { ActionTypes, STATUS, TICK_GAP_LIMIT_MS, UNFOCUSED_GAP_LIMIT_MS } from '../core/constants';
 import { isTrackableTarget } from '../core/filters';
 import { isPluginViewKey } from '../core/activePath';
 import type { Logger } from '../core/logger';
@@ -27,7 +24,7 @@ import {
 import { eventFileRefs } from '../core/migration';
 import { classifyUnfocusedInterval, listUnfocusedIntervals } from '../core/unfocused';
 import { buildFileRecords } from '../core/timeline';
-import { parseSessionStartTime } from '../core/time';
+import { formatLocalFull, parseSessionStartTime } from '../core/time';
 import type {
   PluginSettings,
   SessionWrite,
@@ -139,6 +136,10 @@ export class TimerService {
       this.applyDayRollover();
       await this.closeOrphanSessions();
 
+      //  时间断层必须先补边界，再让 TICK 记账
+      //  A time gap gets its boundary before TICK does any accounting
+      await this.closeFrozenGap();
+
       const filePath = this.deps.store.getState().activeFilePath;
       if (filePath) {
         this.deps.store.dispatch({ type: ActionTypes.TICK, payload: { filePath } });
@@ -148,6 +149,76 @@ export class TimerService {
       this.syncActivityTitle();
     } catch (error) {
       this.deps.log.warn('[RTT][service] 心跳处理失败 / tick failed:', error);
+    }
+  }
+
+  /**
+   * 处理心跳断开的时间断层 / account for a gap in the heartbeat.
+   *
+   * 手机退到后台、锁屏，或桌面休眠时，WebView 被冻结，心跳与 Capacitor 的状态事件可能都不来。
+   * 实测：23:46:46 有一条 start，下一条事件是次日 07:17 的 blur —— 中间 7.5 小时没有任何边界，
+   * 推导只能把它算成专注，热力图于是画出一整条通宵蓝。实时计数那边反而是对的（大间隔的 tick 被丢弃）。
+   *
+   * 断层是真的"没在计时"，所以这里把它补成一段离开：在最后一个心跳之后写 blur、在现在写 focus。
+   * 判据与 TICK 丢弃大间隔的那条线完全一致，两套账才不会各说各的。
+   *
+   * When a phone is backgrounded or locked, or a desktop sleeps, the WebView freezes and neither the
+   * heartbeat nor Capacitor's state event necessarily arrives. Measured: a `start` at 23:46:46 with the
+   * next event at 07:17 the following morning — 7.5 hours with no boundary, so the derivation could only
+   * call it focus and the heatmap drew one solid overnight bar. The live counters were right (the large
+   * tick was dropped); only the event stream was missing the truth.
+   *
+   * The gap really is time not being timed, so it is closed as an away stretch: a blur right after the
+   * last heartbeat and a focus now. The threshold is exactly the one TICK uses to drop a large gap, so
+   * the two ledgers cannot disagree.
+   */
+  private async closeFrozenGap(): Promise<void> {
+    const state = this.deps.store.getState();
+    const filePath = state.activeFilePath;
+    const file = filePath ? state.files.get(filePath) : undefined;
+    if (!filePath || !file || file.status !== STATUS.TRACKING) return;
+
+    const last = file.lastTickTimestamp;
+    if (last === null) return;
+
+    const now = this.deps.clock.now();
+    const gap = now - last;
+    const limit = state.isWindowFocused ? TICK_GAP_LIMIT_MS : UNFOCUSED_GAP_LIMIT_MS;
+    if (gap <= limit) return;
+
+    try {
+      await this.flushPendingWrites();
+
+      //  最后一个心跳覆盖的是它自己那一秒，从下一毫秒起才算离开
+      //  The last heartbeat covered its own second; the stretch starts right after it
+      const awayFrom = new Date(last + 1000);
+      this.appendEvent({
+        time: formatLocalFull(awayFrom),
+        type: 'blur',
+        file: filePath,
+        state: 'inactive',
+        reason: 'frozen-gap',
+        ...(awayDisposition(file) ? { unfocusedDisposition: awayDisposition(file) } : {}),
+      });
+      this.appendEvent({
+        time: this.deps.clock.nowFull(),
+        type: 'focus',
+        file: filePath,
+        state: 'tracking',
+        reason: 'frozen-gap-end',
+      });
+
+      //  基准挪到"现在"：这段已经记进事件流，TICK 不该再按大间隔处理一次
+      //  Move the baseline to now: the stretch is in the event stream, so TICK must not handle it again
+      this.deps.store.dispatch({
+        type: ActionTypes.RESTORE_FILE,
+        payload: { filePath, fileState: { ...file, lastTickTimestamp: now } },
+      });
+
+      await this.flushPendingWrites();
+      this.deps.log.info('[RTT][service] 心跳断层已记为离开 / frozen gap recorded as away:', Math.round(gap / 1000), 's');
+    } catch (error) {
+      this.deps.log.warn('[RTT][service] 断层处理失败 / frozen-gap handling failed:', error);
     }
   }
 

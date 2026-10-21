@@ -149,21 +149,72 @@ export function installBindings(deps: BindingDeps): Binding {
     }),
   );
 
+  /**
+   * 挂起/恢复的唯一入口 / the one place suspended and active are applied.
+   *
+   * 信号有好几个来源（桌面失焦、可见性、Capacitor、Page Lifecycle），同一件事会被报告两三次。
+   * 这里按"状态真的变了才处理"去重，顺带保证挂起时**先结算分屏阅读再落盘** —— 挂起之后 WebView
+   * 可能立刻被冻结，排在后面的异步写入就没机会执行了。
+   *
+   * Several sources report the same thing (desktop blur, visibility, Capacitor, Page Lifecycle). This
+   * dedupes on "the state actually changed", and makes sure suspending settles split reading *before*
+   * the write — the WebView may be frozen immediately afterwards and an async write queued behind it
+   * would never run.
+   */
+  let suspended: boolean | null = null;
+
+  const setSuspended = (next: boolean, reason: string): void => {
+    if (suspended === next) return;
+    suspended = next;
+    log.info('[RTT][binding] 活动状态 / activity state:', next ? 'suspended' : 'active', reason);
+
+    if (next) {
+      void service
+        .setSplitReading(false)
+        .then(() => service.onWindowFocusChange(false))
+        .then(() => service.flushPendingWrites())
+        .catch((error: unknown) => log.warn('[RTT] 挂起处理失败 / suspend handling failed:', error));
+    } else {
+      void service
+        .onWindowFocusChange(true)
+        .catch((error: unknown) => log.warn('[RTT] 恢复处理失败 / resume handling failed:', error));
+    }
+  };
+
   // window focus ────────────────────────────────────────────
   plugin.registerDomEvent(window, 'focus', () => {
-    void service.onWindowFocusChange(true);
+    setSuspended(false, 'window-focus');
   });
   plugin.registerDomEvent(window, 'blur', () => {
-    void service.onWindowFocusChange(false);
+    setSuspended(true, 'window-blur');
   });
 
   //  Minimising or switching virtual desktops fires visibilitychange but not blur
   plugin.registerDomEvent(document, 'visibilitychange', () => {
-    if (document.visibilityState !== 'visible') {
-      void service.setSplitReading(false).then(() => service.onWindowFocusChange(false)).catch((error: unknown) => log.warn('[RTT] visibility handling failed:', error));
-    } else {
-      void service.onWindowFocusChange(document.hasFocus());
-    }
+    if (document.visibilityState !== 'visible') setSuspended(true, 'visibility-hidden');
+    else setSuspended(!document.hasFocus(), 'visibility-visible');
+  });
+
+  //  Page Lifecycle：后台标签页被冻结时触发，移动端 WebView 的"退到后台/锁屏"也会走到这里。
+  //  它比 blur 更接近真正的"冻结"，而且不依赖 Capacitor 是否挂着。
+  //  Page Lifecycle fires when a page is frozen in the background — which is also what a mobile WebView
+  //  does when backgrounded or the screen locks. Closer to a real freeze than blur, and independent of
+  //  whether Capacitor is wired up.
+  //  `freeze`/`resume` 属于 Page Lifecycle，尚未进 TS 的 DocumentEventMap
+  //  Page Lifecycle events are not in TS's DocumentEventMap yet
+  plugin.registerDomEvent(document, 'freeze' as keyof DocumentEventMap, () => {
+    setSuspended(true, 'page-freeze');
+  });
+  plugin.registerDomEvent(document, 'resume' as keyof DocumentEventMap, () => {
+    setSuspended(false, 'page-resume');
+  });
+
+  //  页面被移出后台存储/关闭前也记一次 / also on hide and unload
+  plugin.registerDomEvent(window, 'pagehide', () => {
+    setSuspended(true, 'pagehide');
+  });
+  plugin.registerDomEvent(window, 'pageshow', () => {
+    setSuspended(false, 'pageshow');
   });
 
   // Mobile: neither `window.blur/focus` nor `visibilitychange` is reliable once the app is
@@ -184,8 +235,9 @@ export function installBindings(deps: BindingDeps): Binding {
           App?: {
             addListener?: (
               event: string,
-              handler: (state: { isActive?: boolean }) => void,
+              handler: (state?: { isActive?: boolean }) => void,
             ) => Promise<{ remove?: () => Promise<void> }>;
+            getState?: () => Promise<{ isActive?: boolean }>;
           };
         };
       };
@@ -195,20 +247,48 @@ export function installBindings(deps: BindingDeps): Binding {
   let capacitorListener: { remove?: () => Promise<void> } | null = null;
 
   if (typeof capacitorApp?.addListener === 'function') {
+    //  按官方文档，三个事件各有不同的原生触发点：
+    //    appStateChange  Android onResume / onStop      iOS willResignActive / didBecomeActive
+    //    pause           Android onPause（比 onStop 早） iOS didEnterBackground
+    //    resume          Android onResume               iOS willEnterForeground
+    //  只订阅 appStateChange 时，Android 走的是 onStop —— 后台进程被系统回收或进入 Doze 时它可能
+    //  根本不执行，于是"退到后台"没有任何事件。两个都订，谁先到算谁的（setSuspended 去重）。
+    //
+    //  Per the official docs each event has its own native trigger; Android's appStateChange uses
+    //  onStop, which may never run when the process is reclaimed or the device enters Doze. Subscribe to
+    //  both pause and resume as well; whichever arrives first wins (setSuspended dedupes).
+    const subscriptions: Array<[string, (state?: { isActive?: boolean }) => void]> = [
+      ['appStateChange', (state) => setSuspended(state?.isActive === false, 'capacitor-app-state')],
+      ['pause', () => setSuspended(true, 'capacitor-pause')],
+      ['resume', () => setSuspended(false, 'capacitor-resume')],
+    ];
+
+    for (const [event, handler] of subscriptions) {
+      capacitorApp
+        .addListener(event, handler)
+        .then((handle) => {
+          capacitorListener = handle;
+        })
+        .catch((error: unknown) => {
+          log.warn(`[RTT][binding] Capacitor 监听注册失败 / listener failed: ${event}:`, error);
+        });
+    }
+
+    //  注册那一刻可能已经在后台（例如从通知栏冷启动后退回）
+    //  It may already be in the background when we subscribe
     capacitorApp
-      .addListener('appStateChange', (state) => {
-        // `isActive` is the only field; treat a missing payload as "still active" rather than
-        // inventing an out-of-window stretch.
-        if (state?.isActive === false) {
-          void service.setSplitReading(false).then(() => service.onWindowFocusChange(false)).catch((error: unknown) => log.warn('[RTT] background handling failed:', error));
-        } else void service.onWindowFocusChange(true);
-      })
-      .then((handle) => {
-        capacitorListener = handle;
+      .getState?.()
+      .then((state) => {
+        if (state?.isActive === false) setSuspended(true, 'capacitor-initial-state');
       })
       .catch((error: unknown) => {
-        log.warn('[RTT][binding] Capacitor 状态监听注册失败 / app-state listener failed:', error);
+        log.warn('[RTT][binding] Capacitor getState 失败 / getState failed:', error);
       });
+  } else {
+    //  桌面端没有 Capacitor；手机端如果真的缺这个插件，日志里要能看见，而不是安静地降级
+    //  Desktops have no Capacitor; if a phone genuinely lacks the plugin, that must be visible in the
+    //  log rather than a silent downgrade.
+    log.info('[RTT][binding] 无 Capacitor App 插件，使用 Web 事件 / no Capacitor App plugin');
   }
 
   // user activity ───────────────────────────────────────────
