@@ -20,7 +20,7 @@ import { eventFileRefs } from '../core/migration';
 import { t } from '../core/i18n';
 import type { Logger } from '../core/logger';
 import { manualDayTotalSeconds } from '../core/manualTimeline';
-import { dayAccount } from '../core/account';
+import { dayAccount, RecordsCache } from '../core/account';
 import {
   selectDocumentDisplayState,
   selectLiveSessionState,
@@ -35,7 +35,7 @@ import {
 } from '../core/settings';
 import { activeSelection, type PanelId, type StatusMetricDef } from '../core/statusMetrics';
 import { todayStr } from '../core/time';
-import { buildFileRecords, getAllTodaySeconds } from '../core/timeline';
+import { buildFileRecords } from '../core/timeline';
 import type { PluginSettings } from '../core/types';
 import type { Clock } from '../services/clock';
 import type { TimerStore } from '../services/TimerStore';
@@ -464,6 +464,9 @@ export class StatusBarMetrics {
   // ==========================================================================
 
   /** Compute just the requested metrics. */
+  /** 账本 records 的缓存 / cache for the account's derived records. */
+  private readonly recordsCache = new RecordsCache();
+
   private computeValues(needed: Set<string>): Record<string, Value> {
     const state = this.deps.store.getState();
     const settings = this.deps.settings();
@@ -493,8 +496,12 @@ export class StatusBarMetrics {
       const path = state.activeFilePath;
       const file = path ? state.files.get(path) : undefined;
       const policy = attributionPolicy(settings);
+      const records = this.recordsCache.get(this.deps.history.getRevision(), () =>
+        buildFileRecords(this.deps.history.getEvents(), this.deps.clock.now(), today, {}),
+      );
+
       const account = dayAccount({
-        events: this.deps.history.getEvents(),
+        records,
         manual: this.deps.history.getManualSessions(),
         countdown: this.deps.history.getCountdownSessions(),
         day: today,

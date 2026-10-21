@@ -53,9 +53,10 @@ import {
   accountIntervals,
   dayAccount,
   weekAccount,
+  RecordsCache,
   type AccountInput,
 } from '../core/account';
-import { listUnfocusedIntervals } from '../core/unfocused';
+import { listIdleIntervals, listUnfocusedIntervals } from '../core/unfocused';
 import type { AttributionPolicy } from '../core/types';
 import { buildOverviewRows } from '../core/overview';
 import { buildDocumentDayRows } from '../core/recordsTimeline';
@@ -337,6 +338,31 @@ export class ActivitySidebarView extends ItemView {
     this.widthObserver.observe(this.contentEl);
   }
 
+  /**
+   * 事件流的短命缓存 / a short-lived cache for the event log.
+   *
+   * SQLite 的 getEvents() 每次都要把整张表读出来、逐行 JSON.parse；真实库上万条时单次就要几十毫秒。
+   * 版本号没变就复用同一份数组 —— 事件只在追加/替换时变，版本号正是这件事的信号。
+   *
+   * SQLite's getEvents() reads the whole table and JSON-parses every row; on a real vault with tens of
+   * thousands of events that is tens of milliseconds per call. The same array is reused until the
+   * revision moves, which happens exactly when events are appended or replaced.
+   */
+  private eventsCache: TimelineEvent[] = [];
+  private eventsRevision = -1;
+
+  private cachedEvents(): TimelineEvent[] {
+    const revision = this.deps.history.getRevision();
+    if (revision !== this.eventsRevision) {
+      this.eventsCache = this.deps.history.getEvents();
+      this.eventsRevision = revision;
+    }
+    return this.eventsCache;
+  }
+
+  /** 账本 records 的缓存 / cache for the account derived records. */
+  private readonly recordsCache = new RecordsCache();
+
   /** 当前的读数刷新定时器 / the current readout timer. */
   private liveTimer: number | null = null;
 
@@ -548,7 +574,10 @@ export class ActivitySidebarView extends ItemView {
       //  happens to trigger a re-render.
       settings.countUnfocusedAsReading,
       settings.countPluginViewsAsReading,
-      String(this.deps.history.getEvents().length),
+      //  版本号而不是长度：SQLite 的 getEvents() 会把整张表读出来解析一遍，每秒一次太贵
+      //  A revision rather than a length: SQLite getEvents() reads and parses the whole table, which
+      //  is too expensive once a second.
+      String(this.deps.history.getRevision()),
       state.activeFilePath ?? '-',
       state.isWindowFocused,
       state.files.get(state.activeFilePath ?? '')?.splitReading,
@@ -564,6 +593,7 @@ export class ActivitySidebarView extends ItemView {
       //  Expanding the manual list changes how many rows it has, so it belongs here
       String(this.manualExpanded),
       String(this.countdownExpanded),
+      String(this.awayExpanded),
       String(this.overviewExpanded),
       String(this.manualFocus),
 
@@ -752,7 +782,7 @@ export class ActivitySidebarView extends ItemView {
     //  The records are derived once: the stat grid, the heatmap and the list all read the same
     //  result, so computing twice is both slower and open to disagreeing mid-render.
     const records = buildFileRecords(
-      this.deps.history.getEvents(),
+      this.cachedEvents(),
       this.deps.clock.now(),
       todayStr(),
       { countUnfocused: countsUnfocusedAsReading(settings), countPluginViews: countsPluginViewsAsReading(settings) },
@@ -800,16 +830,25 @@ export class ActivitySidebarView extends ItemView {
     const file = filePath ? state.files.get(filePath) : undefined;
     const policy = attributionPolicy(settings);
 
+    const nowMs = this.deps.clock.now();
+
+    //  records 只随事件版本变；把推导结果缓存起来，否则每秒都要把整段历史重算一遍
+    //  Records change only with the event revision; caching them keeps the whole log from being
+    //  re-derived every second.
+    const records = this.recordsCache.get(this.deps.history.getRevision(), () =>
+      buildFileRecords(this.cachedEvents(), nowMs, day, {}),
+    );
+
     return {
-      events: this.deps.history.getEvents(),
       manual: this.deps.history.getManualSessions(),
       countdown: this.deps.history.getCountdownSessions(),
       day,
-      nowMs: this.deps.clock.now(),
+      nowMs,
       policy: { ...policy, pluginViews: countsPluginViewsAsReading(settings) },
       live: filePath && file && file.status !== STATUS.IDLE
         ? { filePath, state: selectLiveSessionState(state, file) }
         : null,
+      records,
     };
   }
 
@@ -872,7 +911,7 @@ export class ActivitySidebarView extends ItemView {
         icon: 'file-text',
         kind: 'document',
       }),
-      this.deps.history.getEvents(),
+      this.cachedEvents(),
       todayStr(),
       [
         { key: CHANNEL_CLASSES['in-window'], className: CHANNEL_CLASSES['in-window'], label: t('tabInWindow') },
@@ -972,7 +1011,7 @@ export class ActivitySidebarView extends ItemView {
       cls: 'rtt-live-round',
       text: t('statusRound').replace(
         '{n}',
-        String(getTodaySessionCount(this.deps.history.getEvents(), filePath)),
+        String(getTodaySessionCount(this.cachedEvents(), filePath)),
       ),
     });
     setTooltip(round, t('viewAllRecordsDesc'));
@@ -1367,20 +1406,31 @@ export class ActivitySidebarView extends ItemView {
       );
 
     const today = todayStr();
-    const intervals = listUnfocusedIntervals(this.deps.history.getEvents())
+    const intervals = listUnfocusedIntervals(this.cachedEvents())
       .filter((item) => item.from.slice(0, 10) === today)
       .slice()
       .reverse();
 
-    if (intervals.length === 0) {
+    const idleIntervals = listIdleIntervals(this.cachedEvents())
+      .filter((item) => item.from.slice(0, 10) === today)
+      .reverse();
+
+    if (intervals.length === 0 && idleIntervals.length === 0) {
       section.createDiv({ cls: 'rtt-list-empty', text: t('awayTodayEmpty') });
       return;
     }
 
-    for (const interval of intervals.slice(0, 10)) {
+    const shownAway = this.awayExpanded ? intervals : intervals.slice(0, 3);
+    for (const interval of shownAway) {
       const closed = interval.to !== null;
       const editable = closed && this.deps.service.canClassifyUnfocused(interval.filePath, interval.from);
       const name = interval.filePath.split('/').pop() ?? interval.filePath;
+
+      //  旧数据里每个 blur 都写着 'unfocused'（未归类），显示成当前口径才与实际记账一致；
+      //  选「不记录」写入的是新值 'ignored'，两者不能混为一谈
+      //  Older data wrote 'unfocused' on every blur (unclassified); showing the policy is what the
+      //  accounting actually does. Choosing "do not record" writes the new 'ignored' value.
+      const shownDisposition = interval.disposition === 'unfocused' ? policy.away : interval.disposition;
 
       const row = new Setting(section)
         .setName(
@@ -1392,13 +1442,13 @@ export class ActivitySidebarView extends ItemView {
         dropdown
           .addOption('reading', t('policyReading'))
           .addOption('paused', t('policyPaused'))
-          .addOption('unfocused', t('policyIgnored'))
-          .setValue(interval.disposition)
+          .addOption('ignored', t('policyIgnored'))
+          .setValue(shownDisposition)
           .setDisabled(!editable)
           .onChange((value) => {
             dropdown.setDisabled(true);
             void this.deps.service
-              .classifyUnfocused(interval.index, interval.from, value as 'reading' | 'paused' | 'unfocused')
+              .classifyUnfocused(interval.index, interval.from, value as 'reading' | 'paused' | 'ignored')
               .then(() => this.render())
               .catch((error: unknown) => {
                 this.deps.log.warn('[RTT] 失焦归类失败 / classification failed:', error);
@@ -1408,16 +1458,55 @@ export class ActivitySidebarView extends ItemView {
       );
     }
 
-    if (intervals.length > 10) {
-      section.createDiv({
-        cls: 'rtt-empty-hint',
-        text: t('awayMore').replace('{n}', String(intervals.length - 10)),
-      });
+
+
+    //  空闲时段并列在这张表里：同一种"没在读"，两种来源，分成两处看等于没统一
+    //  Idle stretches sit in the same list: two sources of the same "not reading", and splitting
+    //  them across two places would defeat the point of one entry.
+    if (idleIntervals.length > 0) {
+      section.createDiv({ cls: 'rtt-live-line is-muted', text: t('awayIdleHint') });
+
+      const shownIdle = this.awayExpanded ? idleIntervals : idleIntervals.slice(0, 3);
+      for (const idle of shownIdle) {
+        const name = idle.filePath.split('/').pop() ?? idle.filePath;
+        new Setting(section)
+          .setName(
+            `${t('awayKindIdle')} · ${idle.from.slice(11)} – ${idle.to ? idle.to.slice(11) : '…'}`,
+          )
+          .setDesc(`${name} · ${formatDurationWithSeconds(idle.seconds)}`);
+      }
     }
+
+    //  默认只摆三段：手机上一天能积十几段，全摊开会把热力图挤出屏幕
+    //  Three rows by default: a day can accumulate a dozen stretches, and on a phone the heatmap would
+    //  be pushed off the screen.
+    if (intervals.length + idleIntervals.length <= 3) return;
+
+    const more = section.createEl('button', { cls: 'rtt-view-all-btn' });
+    setIcon(
+      more.createSpan({ cls: 'rtt-view-all-icon' }),
+      this.awayExpanded ? 'chevron-up' : 'chevron-down',
+    );
+    more.createSpan({
+      cls: 'rtt-view-all-label',
+      text: this.awayExpanded ? t('manualShowLess') : t('manualShowMore'),
+    });
+    more.addEventListener('click', () => {
+      this.awayExpanded = !this.awayExpanded;
+      this.render();
+    });
   }
 
   /** 离开与空闲区块，卡片上的减号跳到它 / the away section; the card's deduction jumps here. */
   private awaySectionEl: HTMLElement | null = null;
+
+  /**
+   * 离开/空闲列表是否展开 / whether the away and idle lists are expanded.
+   * 手机上一天可能积下十几段，全部摊开会把热力图挤到屏幕之外。
+   * A day can accumulate a dozen stretches, and on a phone laying them all out pushes the heatmap off
+   * the screen.
+   */
+  private awayExpanded = false;
 
   /** manual timer controls. */
   private renderManualControls(root: HTMLElement): void {
@@ -1997,7 +2086,7 @@ export class ActivitySidebarView extends ItemView {
         icon: 'activity',
         kind: 'overview',
       }),
-      this.deps.history.getEvents(),
+      this.cachedEvents(),
       this.day,
       ovLegend,
     );
@@ -2007,7 +2096,7 @@ export class ActivitySidebarView extends ItemView {
     //  明细列表要的是按文件的记录，与账本同源但形状不同：账本按通道汇总，列表按文件罗列
     //  The detail list needs per-file records — same source as the account, different shape.
     const records = buildFileRecords(
-      this.deps.history.getEvents(),
+      this.cachedEvents(),
       this.deps.clock.now(),
       this.day,
       {
@@ -2277,7 +2366,7 @@ export class ActivitySidebarView extends ItemView {
         icon: 'timer',
         kind: 'manual',
       }),
-      this.deps.history.getEvents(),
+      this.cachedEvents(),
       this.day,
       [
         { key: 'rtt-hm-manual', className: 'rtt-hm-manual', label: t('panelManual') },
@@ -2558,7 +2647,7 @@ export class ActivitySidebarView extends ItemView {
    */
   private availableDays(): string[] {
     const days = new Set<string>();
-    for (const event of this.deps.history.getEvents()) {
+    for (const event of this.cachedEvents()) {
       const day = event.time.slice(0, 10);
       if (day) days.add(day);
     }
@@ -2678,7 +2767,7 @@ export class ActivitySidebarView extends ItemView {
           this.liveNodes.fileToday,
           filePath
             ? getTodaySeconds(
-                this.deps.history.getEvents(),
+                this.cachedEvents(),
                 file ?? null,
                 filePath,
                 undefined,

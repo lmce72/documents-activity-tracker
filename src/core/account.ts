@@ -27,6 +27,7 @@ import {
   documentIntervals,
   manualIntervals,
   mergeIntervals,
+  type OverviewChannel,
   type OverviewInterval,
   type OverviewSource,
 } from './overview';
@@ -54,7 +55,11 @@ export interface AccountPolicy {
 
 /** 一天的输入 / everything one window needs. */
 export interface AccountInput {
-  events: readonly TimelineEvent[];
+  /**
+   * 事件流；只在没有预建 records 时才需要。
+   * The event log; only needed when prebuilt records are not supplied.
+   */
+  events?: readonly TimelineEvent[];
   manual: readonly ManualSession[];
   countdown: readonly CountdownSession[];
   /** 锚点日期 "YYYY-MM-DD" / the anchor day */
@@ -69,6 +74,33 @@ export interface AccountInput {
    * event, and without this the minute being read would only appear at the next event.
    */
   live?: { filePath: string; state: SessionState } | null;
+  /**
+   * 已推导好的 records / prebuilt records.
+   *
+   * 账本只读 readTimeLine，而它的内容只随事件变化 —— 不必每秒把整段历史重新推导一遍。调用方
+   * 用 HistoryStore.getRevision() 做缓存键，把结果传进来。
+   * The account only reads readTimeLine, whose content changes only with the event log, so the whole
+   * history need not be re-derived every second. Callers cache it under getRevision() and pass it in.
+   */
+  records?: Record<string, FileRecord>;
+}
+
+/**
+ * 派生结果的单条缓存 / a one-entry cache for a derived result.
+ * 版本号变了才重建；其余时候原样返回。
+ * Rebuilds only when the revision moves; otherwise hands back the same object.
+ */
+export class RecordsCache {
+  private revision = -1;
+  private cached: Record<string, FileRecord> = {};
+
+  get(revision: number, build: () => Record<string, FileRecord>): Record<string, FileRecord> {
+    if (this.revision !== revision) {
+      this.cached = build();
+      this.revision = revision;
+    }
+    return this.cached;
+  }
 }
 
 /** 一份账 / one account. All values are seconds. */
@@ -130,10 +162,22 @@ export function accountIntervals(input: AccountInput): OverviewInterval[] {
 }
 
 /** 收集所有账本的区间 / collect every ledger's intervals. */
-function collectIntervals(input: AccountInput): OverviewInterval[] {
-  const records = buildRecords(input);
-  const entries = Object.entries(records);
+/**
+ * 文档区间的记忆化表 / memo table for the document intervals.
+ *
+ * 键是 records 对象本身：调用方按事件版本缓存 records，同一个对象在两次事件之间不会变，于是这张表
+ * 自然跟着失效。解析 2.8 万个时间串是每秒刷新里最贵的一步，省掉它比什么都有效。
+ * The key is the records object itself. Callers cache records by event revision, so the same object is
+ * handed back between events and the memo invalidates with it. Parsing 28k timestamps was the single
+ * most expensive step of the per-second refresh.
+ */
+const documentIntervalMemo = new WeakMap<Record<string, FileRecord>, OverviewInterval[]>();
 
+function documentIntervalsFor(records: Record<string, FileRecord>): OverviewInterval[] {
+  const cached = documentIntervalMemo.get(records);
+  if (cached) return cached;
+
+  const entries = Object.entries(records);
   const noteTimelines = entries
     .filter(([key]) => !isPluginViewKey(key))
     .map(([, record]) => record.readTimeLine);
@@ -141,17 +185,50 @@ function collectIntervals(input: AccountInput): OverviewInterval[] {
     .filter(([key]) => isPluginViewKey(key))
     .map(([, record]) => record.readTimeLine);
 
-  const out: OverviewInterval[] = [
+  const built = [
     ...documentIntervals(noteTimelines, { includePaused: true, includeUnfocused: true, includeIdle: true }),
     ...documentIntervals(viewTimelines, {
       includePaused: true,
       includeUnfocused: true,
       includeIdle: true,
-      source: 'view',
+      source: 'view' as const,
     }),
+  ];
+  documentIntervalMemo.set(records, built);
+  return built;
+}
+
+function collectIntervals(input: AccountInput): OverviewInterval[] {
+  const records = buildRecords(input);
+
+  const out: OverviewInterval[] = [
+    ...documentIntervalsFor(records),
     ...manualIntervals(input.manual),
     ...countdownIntervals(input.countdown),
   ];
+
+  //  正在跑的那一轮：区间到最后一个事件为止，剩下这段单独补上
+  //  The running session: its interval stops at the last event, so the remainder is appended here.
+  const live = input.live;
+  if (live) {
+    const record = records[live.filePath];
+    const lastMap = record?.readTimeLine[record.readTimeLine.length - 1];
+    const lastKey = lastMap ? Object.keys(lastMap).sort().pop() : undefined;
+    const startAbs = lastKey ? toAbsoluteMinutes(lastKey) : null;
+    const endAbs = toAbsoluteMinutes(formatLocalFull(new Date(input.nowMs)));
+    if (startAbs !== null && endAbs !== null && endAbs > startAbs) {
+      const channel: OverviewChannel = live.state === 'tracking' ? 'focus'
+        : live.state === 'inactive' ? 'away'
+          : live.state === 'idle' ? 'idle'
+            : 'paused';
+      out.push({
+        startAbs,
+        endAbs,
+        source: isPluginViewKey(live.filePath) ? 'view' : 'document',
+        channel,
+      });
+    }
+  }
 
   return out;
 }
@@ -164,17 +241,52 @@ function collectIntervals(input: AccountInput): OverviewInterval[] {
  * now falls outside the chart.
  */
 function buildRecords(input: AccountInput): Record<string, FileRecord> {
-  const records = buildFileRecords(input.events, input.nowMs, input.day, {});
-  const live = input.live;
-  if (!live) return records;
+  //  活尾巴不写进 records：它会让缓存对象每秒钟换一次身份，记忆化就全失效了。
+  //  它作为一条独立的区间补在 collectIntervals 里。
+  //  The live tail is not written into the records: it would change the object identity every second
+  //  and defeat the memo. It is appended as its own interval in collectIntervals instead.
+  return input.records ?? buildFileRecords(input.events ?? [], input.nowMs, input.day, {});
+}
 
-  const record = records[live.filePath];
-  const session = record?.readTimeLine[record.readTimeLine.length - 1];
-  if (!session) return records;
+/**
+ * 覆盖时长（秒）/ covered seconds.
+ *
+ * 一组区间去重后的总长度。用扫描线而不是两两合并：合并是 O(n²)，而这里只需要"盖了多久"，
+ * 不需要知道每一段被谁盖住 —— 有来源信息的是图表，不是这组数字。
+ *
+ * Total length covered by a set of intervals, counted once. A sweep rather than a pairwise merge:
+ * merging is O(n²), and only "how long" is needed here — who covered which stretch is the chart's
+ * question, not this figure's.
+ */
+function coverageSeconds(
+  intervals: readonly OverviewInterval[],
+  fromAbs: number,
+  toAbs: number,
+): number {
+  if (intervals.length === 0) return 0;
 
-  const nowKey = formatLocalFull(new Date(input.nowMs));
-  if (!(nowKey in session)) session[nowKey] = live.state;
-  return records;
+  const points: Array<[number, number]> = [];
+  for (const interval of intervals) {
+    const start = Math.max(interval.startAbs, fromAbs);
+    const end = Math.min(interval.endAbs, toAbs);
+    if (end <= start) continue;
+    points.push([start, 1], [end, -1]);
+  }
+  if (points.length === 0) return 0;
+
+  //  同一坐标上先收尾再开头：半开区间 [start, end)，相邻不算重叠
+  //  Close before opening at the same coordinate: half-open intervals, touching is not overlap
+  points.sort((a, b) => (a[0] - b[0]) || (a[1] - b[1]));
+
+  let depth = 0;
+  let previous: number | null = null;
+  let total = 0;
+  for (const [position, delta] of points) {
+    if (depth > 0 && previous !== null) total += position - previous;
+    depth += delta;
+    previous = position;
+  }
+  return total * 60;
 }
 
 /** 窗口内的秒数 / seconds of an interval inside the window. */
@@ -195,8 +307,13 @@ function computeAccount(input: AccountInput, anchor: string, days: number): Acco
   if (startAbs === null) return { ...EMPTY_ACCOUNT };
   const endAbs = startAbs + days * MINUTES_PER_DAY;
 
-  const intervals = collectIntervals(input);
   const policy = input.policy;
+
+  //  先按窗口裁掉，再做合并：全量历史合并是 O(n²)，在 1.4 万条事件上是几十毫秒起步
+  //  Window first, merge second: merging the whole history is O(n²) and starts at tens of milliseconds
+  //  on a 14k-event log.
+  const intervals = collectIntervals(input)
+    .filter((interval) => interval.endAbs > startAbs && interval.startAbs < endAbs);
 
   const included = intervals.filter((interval) => {
     if (interval.source === 'view' && !policy.pluginViews) return false;
@@ -232,25 +349,13 @@ function computeAccount(input: AccountInput, anchor: string, days: number): Acco
   //  Union: covered once. Overlap: per-ledger coverage minus the union.
   let covered = 0;
   for (const [source, list] of ledger) {
-    let own = 0;
-    for (const piece of mergeIntervals(list)) {
-      const start = Math.max(piece.startAbs, startAbs);
-      const end = Math.min(piece.endAbs, endAbs);
-      if (end > start) own += (end - start) * 60;
-    }
+    const own = coverageSeconds(list, startAbs, endAbs);
     covered += own;
     if (source === 'document') totals.document = own;
     else if (source === 'view') totals.view = own;
   }
 
-  const unionPieces = mergeIntervals(included);
-  let union = 0;
-  for (const piece of unionPieces) {
-    const start = Math.max(piece.startAbs, startAbs);
-    const end = Math.min(piece.endAbs, endAbs);
-    if (end > start) union += (end - start) * 60;
-  }
-
+  const union = coverageSeconds(included, startAbs, endAbs);
   totals.union = union;
   totals.overlap = Math.max(0, covered - union);
 

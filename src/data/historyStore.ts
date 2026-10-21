@@ -20,6 +20,18 @@ export interface HistoryStore {
   /** whether the store is ready */
   isReady(): boolean;
 
+  /**
+   * 内容版本号 / a revision counter for the stored content.
+   *
+   * 每次追加、替换或删除事件都加一。视图用它判断"这份派生结果还能不能用"，而不是每次都把全部
+   * 事件重新推导一遍 —— 真实库在 1.4 万条事件时，一次全量重建要几十毫秒，每秒做一次就是持续掉帧。
+   *
+   * Incremented on every append, replace or delete. Views use it to decide whether a derived result is
+   * still valid instead of re-deriving the whole log — at 14k events a full rebuild costs tens of
+   * milliseconds, and doing that every second is continuous frame loss.
+   */
+  getRevision(): number;
+
   // events ----
   getEvents(): TimelineEvent[];
   appendEvents(events: readonly TimelineEvent[]): void;

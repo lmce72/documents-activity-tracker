@@ -150,3 +150,61 @@ describe('weekAccount / 周与日同一口径', () => {
     expect(week.total).toBe(1500);
   });
 });
+
+describe('逐段「不记录」/ an explicitly ignored stretch', () => {
+  const ignoredEvents: TimelineEvent[] = [
+    { time: `${D} 10:00:00`, type: 'start', file: 'Notes/a.md', state: 'tracking' },
+    {
+      time: `${D} 10:05:00`,
+      type: 'blur',
+      file: 'Notes/a.md',
+      state: 'inactive',
+      unfocusedDisposition: 'ignored',
+    },
+    { time: `${D} 10:10:00`, type: 'focus', file: 'Notes/a.md', state: 'tracking' },
+    {
+      time: `${D} 10:15:00`,
+      type: 'save',
+      file: 'Notes/a.md',
+      state: 'saved',
+      duration: 900,
+      activeSeconds: 600,
+      unfocusedSeconds: 300,
+    },
+  ];
+
+  it('既不算离开，也不进合计与并集', () => {
+    const account = dayAccount({
+      events: ignoredEvents,
+      manual: [],
+      countdown: [],
+      day: D,
+      nowMs: P(11),
+      policy: { away: 'paused', idle: 'paused', pluginViews: true },
+      live: null,
+    });
+
+    expect(account.focus).toBe(600);
+    expect(account.away).toBe(0);
+    expect(account.total).toBe(600);
+    expect(account.union).toBe(600);
+  });
+
+  it('旧数据的 unfocused 仍按未归类处理，跟随口径', () => {
+    const legacy = ignoredEvents.map((event, index) =>
+      index === 1 ? { ...event, unfocusedDisposition: 'unfocused' as const } : event,
+    );
+    const account = dayAccount({
+      events: legacy,
+      manual: [],
+      countdown: [],
+      day: D,
+      nowMs: P(11),
+      policy: { away: 'paused', idle: 'paused', pluginViews: true },
+      live: null,
+    });
+
+    expect(account.away).toBe(300);
+    expect(account.total).toBe(900);
+  });
+});

@@ -179,6 +179,13 @@ export class SqliteStore implements HistoryStore {
     return this.db !== null;
   }
 
+  /** 内容版本号；见 HistoryStore.getRevision / see HistoryStore.getRevision. */
+  private revision = 0;
+
+  getRevision(): number {
+    return this.revision;
+  }
+
   /**
    * Initialise: load the wasm, then open the existing database or create an empty one.
    *
@@ -305,12 +312,14 @@ export class SqliteStore implements HistoryStore {
   appendEvents(events: readonly TimelineEvent[]): void {
     if (events.length === 0) return;
     this.insertEvents(events);
+    this.revision++;
     this.markDirty();
   }
 
   /** Replace the whole event log. */
   replaceEvents(events: readonly TimelineEvent[]): void {
     const db = this.requireDb();
+    this.revision++;
     db.run('BEGIN TRANSACTION');
     try {
       db.run('DELETE FROM events');
@@ -334,6 +343,7 @@ export class SqliteStore implements HistoryStore {
    * how many event rows were removed
    */
   deleteFileEvents(filePath: string): number {
+    this.revision++;
     const db = this.requireDb();
     const before = this.count('SELECT COUNT(*) AS n FROM events');
     db.run(
@@ -696,6 +706,7 @@ export class SqliteStore implements HistoryStore {
       }
 
       this.dirty = true;
+      this.revision++;
       if (added > 0) {
         this.log.info('[RTT][sqlite] 合并了另一份快照 / merged another snapshot:', added, '新增事件 / new events');
       }

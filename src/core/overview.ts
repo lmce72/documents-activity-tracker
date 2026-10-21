@@ -100,6 +100,9 @@ export function documentIntervals(
         //  Out-of-window stretches only join the union when the user counts them as reading
         if (options.includeUnfocused === false && state === 'inactive') continue;
         if (options.includeIdle === false && state === 'idle') continue;
+        //  标成「不记录」的段既不是阅读也不是离开，任何账本里都不该出现
+        //  A stretch marked "do not record" is neither reading nor away; it belongs in no ledger
+        if (state === 'ignored') continue;
         if (state !== 'tracking' && state !== 'inactive' && state !== 'pausing' && state !== 'idle') continue;
 
         const readAbs = (time: string): number | null => {

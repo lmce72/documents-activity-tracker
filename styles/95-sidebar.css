@@ -13,6 +13,9 @@
 /* 侧栏顶部的图标 + 文字切换按钮 / icon-plus-label panel buttons */
 .rtt-panel-tabs {
     display: flex;
+    /* 四个标签在手机宽度下放不进一行：允许折行，而不是把文字压出按钮之外
+       Four tabs do not fit one row at phone width: wrap instead of spilling the text out of the button */
+    flex-wrap: wrap;
     gap: 6px;
     margin-bottom: 12px;
     padding: 3px;
@@ -40,7 +43,10 @@
     align-items: center;
     justify-content: center;
     gap: 4px;
-    min-width: 0;
+    /* 不小于内容的最小宽：`min-width: 0` 允许按钮缩到比文字还窄，文字就溢出到按钮外
+       Never narrower than min-content: `min-width: 0` let the button shrink below its own text and the
+       label spilled outside it */
+    min-width: min-content;
     padding: 6px 6px;
     background: none;
     border: none;
@@ -1791,4 +1797,64 @@ button.rtt-hm-legend-item:focus-visible {
 .rtt-manual-process .rtt-vtl-node.is-pause .rtt-vtl-title {
     white-space: nowrap;
     overflow-x: auto;
+}
+
+
+/* ── 移动端触控目标 / mobile touch targets ───────────────────────────────
+ *
+ * 图标按钮默认是 16px 图标 + 4px 内边距 = 26px，桌面鼠标够用，手指不够。手机上抬到 40px：
+ * 侧栏很窄，再大就会让按钮行换行。
+ *
+ * Icon buttons come out at 16px + 4px padding = 26px, fine for a mouse and not for a finger. 40px on
+ * mobile: the sidebar is narrow, and anything larger makes the button row wrap.
+ */
+body.is-mobile button.clickable-icon.rtt-icon-btn {
+    min-width: 40px;
+    min-height: 40px;
+}
+
+body.is-mobile button.clickable-icon.rtt-icon-btn svg {
+    width: 18px;
+    height: 18px;
+}
+
+/* ── 移动端底部浮动工具栏留白 / clearance for the mobile floating toolbar ────────
+ *
+ * 手机上的导航条是浮在内容之上的（实测高 52px），而 view-content 只留了安全区那 34px，
+ * 内容最底下一截会被压在导航条下。只给本视图加，别去动全局的 .view-content。
+ *
+ * On a phone the navigation bar floats above the content (52px measured), while view-content only
+ * reserves the 34px safe area, so the last strip of content sits under the bar. Scoped to this view —
+ * the global .view-content must not be touched.
+ */
+body.is-mobile .workspace-leaf-content[data-type="documents-activity-tracker-sidebar"] .view-content {
+    padding-bottom: calc(var(--safe-area-inset-bottom, 0px) + var(--mobile-toolbar-height, 52px) + 8px);
+}
+
+/* ── 移动端设置行折行 / setting rows wrap on mobile ────────────────────────
+ *
+ * 窄屏下 Obsidian 的 <select> 独占 162px，把 setting-item-info 挤到 50px，文字变成一字一行。
+ * 手机上让说明占满一行、控件落到下一行右对齐：标签完整、下拉也够点。
+ *
+ * On a narrow screen Obsidian's <select> takes 162px and squeezes setting-item-info to 50px, so the
+ * label breaks one character per line. On mobile the text takes a full row and the control drops to
+ * the next one, right-aligned: the label stays readable and the control stays tappable.
+ */
+body.is-mobile .workspace-leaf-content[data-type="documents-activity-tracker-sidebar"] .setting-item {
+    flex-wrap: wrap;
+    gap: 4px 8px;
+}
+
+body.is-mobile .workspace-leaf-content[data-type="documents-activity-tracker-sidebar"] .setting-item-info {
+    flex: 1 1 100%;
+    min-width: 0;
+}
+
+body.is-mobile .workspace-leaf-content[data-type="documents-activity-tracker-sidebar"] .setting-item-control {
+    flex: 1 1 100%;
+    justify-content: flex-end;
+}
+
+body.is-mobile .workspace-leaf-content[data-type="documents-activity-tracker-sidebar"] .setting-item-control select {
+    max-width: 100%;
 }

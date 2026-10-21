@@ -26,9 +26,14 @@ export class VolatileHistoryStore implements HistoryStore {
   protected records = new Map<string, RecordEntry>();
   protected manual: ManualSession[] = [];
   protected countdown: CountdownSession[] = [];
+  protected revision = 0;
 
   isReady(): boolean {
     return true;
+  }
+
+  getRevision(): number {
+    return this.revision;
   }
 
   getEvents(): TimelineEvent[] {
@@ -36,11 +41,14 @@ export class VolatileHistoryStore implements HistoryStore {
   }
 
   appendEvents(events: readonly TimelineEvent[]): void {
+    if (events.length === 0) return;
     this.events.push(...events);
+    this.revision++;
   }
 
   replaceEvents(events: readonly TimelineEvent[]): void {
     this.events = [...events];
+    this.revision++;
   }
 
   /**
@@ -53,6 +61,7 @@ export class VolatileHistoryStore implements HistoryStore {
     const before = this.events.length;
     this.events = removeFileEventsPure(this.events, filePath);
     this.records.delete(filePath);
+    this.revision++;
     return before - this.events.length;
   }
 

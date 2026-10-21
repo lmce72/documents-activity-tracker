@@ -168,7 +168,7 @@ export class TimerService {
     if (!state.isWindowFocused) return;
 
     if (!settings.idleTimeoutEnabled) {
-      if (state.isIdle) await this.settleIdle(false);
+      if (state.isIdle || this.idleOpen) await this.settleIdle(false);
       return;
     }
 
@@ -176,11 +176,15 @@ export class TimerService {
     const idleMs = this.deps.clock.now() - state.lastActivityTime;
 
     if (idleMs > timeoutMs) {
-      if (!state.isIdle) await this.settleIdle(true);
+      //  标志已经是 true 但边界没开（例如上一轮留下的空闲状态）：补写开头，否则这一段会被并进
+      //  前一个区间算成专注
+      //  The flag is already true but no boundary was opened (say, left over from the previous round):
+      //  write the opening anyway, or the stretch folds into the previous interval as active time.
+      if (!state.isIdle || !this.idleOpen) await this.settleIdle(true);
       return;
     }
 
-    if (state.isIdle) await this.settleIdle(false);
+    if (state.isIdle || this.idleOpen) await this.settleIdle(false);
   }
 
   /**
@@ -197,32 +201,54 @@ export class TimerService {
   private async settleIdle(entering: boolean): Promise<void> {
     try {
       await this.flushPendingWrites();
-
-      //  只有进行中的会话才有边界可写 / only a session in progress has a boundary worth writing
-      const state = this.deps.store.getState();
-      const filePath = state.activeFilePath;
-      const file = filePath ? state.files.get(filePath) : undefined;
-      const hasSession = !!filePath && !!file && file.status === STATUS.TRACKING;
-
-      if (hasSession) {
-        this.appendEvent({
-          time: this.deps.clock.nowFull(),
-          type: entering ? 'idle' : 'idle-end',
-          file: filePath,
-          state: entering ? 'idle' : 'tracking',
-          reason: entering ? 'idle-timeout' : 'idle-resume',
-
-        });
-      }
+      this.writeIdleBoundary(entering);
 
       this.deps.store.dispatch({
         type: entering ? ActionTypes.SET_IDLE : ActionTypes.CLEAR_IDLE,
       });
 
-      if (hasSession) await this.flushPendingWrites();
+      await this.flushPendingWrites();
     } catch (error) {
       this.deps.log.warn('[RTT][service] 空闲结算失败 / idle settle failed:', error);
     }
+  }
+
+  /**
+   * 这一段空闲是否已经用 `idle` 事件开头 / whether an idle stretch has an open `idle` boundary.
+   *
+   * 只写开头不写结尾是不行的，而"离开空闲"有两条完全不同的路：定时器发现（applyIdleState）与
+   * 用户输入（markUserActivity）。后者先把状态树里的 isIdle 抹掉，等定时器下一次醒来时已经看不出
+   * 刚才空闲过 —— 实测中 idle-end 因此一条都没写出来，空闲区间一路延伸到下一次保存，把用户回来
+   * 之后的阅读也吞成了空闲。用一个显式标志把两条路都收口。
+   *
+   * An opening without a closing will not do, and "leaving idle" has two very different paths: the
+   * heartbeat noticing, and the user producing input. The latter clears isIdle from the state tree
+   * first, so by the time the heartbeat wakes up there is nothing to notice — measured, not a single
+   * idle-end was written, the idle interval ran on to the next save, and everything read after coming
+   * back was swallowed as idle. One explicit flag closes both paths.
+   */
+  private idleOpen = false;
+
+  /** 写一条空闲边界；重复调用不会写出第二条同向边界 / write one idle boundary, never twice in a row. */
+  private writeIdleBoundary(entering: boolean, reason?: string): void {
+    if (entering === this.idleOpen) return;
+
+    const state = this.deps.store.getState();
+    const filePath = state.activeFilePath;
+    const file = filePath ? state.files.get(filePath) : undefined;
+
+    //  只有进行中的会话才有边界可写 / only a session in progress has a boundary worth writing
+    if (filePath && file && file.status === STATUS.TRACKING) {
+      this.appendEvent({
+        time: this.deps.clock.nowFull(),
+        type: entering ? 'idle' : 'idle-end',
+        file: filePath,
+        state: entering ? 'idle' : 'tracking',
+        reason: reason ?? (entering ? 'idle-timeout' : 'idle-resume'),
+      });
+    }
+
+    this.idleOpen = entering;
   }
 
   /** day rollover, made idempotent by the reducer. */
@@ -239,6 +265,9 @@ export class TimerService {
    * the subscribers.
    */
   markUserActivity(): void {
+    //  输入是"离开空闲"的另一条路：先收尾，再让 USER_ACTIVITY 把标志抹掉
+    //  Input is the other way out of idle: close the boundary first, then let USER_ACTIVITY clear the flag.
+    if (this.idleOpen) this.writeIdleBoundary(false, 'user-activity');
     this.deps.store.dispatch({ type: ActionTypes.USER_ACTIVITY });
   }
 
@@ -369,16 +398,35 @@ export class TimerService {
 
         //  Only a session in progress has a boundary worth recording
         if (file && (file.status === STATUS.TRACKING || file.status === STATUS.PAUSED)) {
+          /**
+           * 回到窗口时可能仍然空闲 / regaining focus does not mean the user is back.
+           *
+           * 失焦期间空闲判定被跳过（输入事件也一起停了），所以回来那一刻 `isIdle` 往往还是 true。
+           * 这时若照常写一条 `focus` 事件，事件流会把"回来了但还没动"的那段算成专注 —— 实时计数
+           * 记的是空闲，落盘后的账却是阅读，两边从此对不上。写 `idle` 事件，让推导也知道这一段是空闲。
+           *
+           * Idle detection is skipped while the window is unfocused (input events stop with it), so
+           * `isIdle` is usually still true the moment focus returns. Writing a `focus` event there
+           * would have the event stream count "back, but not yet moving" as active — the live counters
+           * say idle, the settled record says reading, and the two stop agreeing. An `idle` event
+           * keeps the derivation honest.
+           */
+          const stillIdle = focused
+            && this.deps.store.getState().isIdle
+            && file.status === STATUS.TRACKING;
+
           this.appendEvent({
             time: this.deps.clock.nowFull(),
-            type: focused ? 'focus' : 'blur',
+            type: focused ? (stillIdle ? 'idle' : 'focus') : 'blur',
             file: filePath,
             state: focused
               ? file.status === STATUS.TRACKING
-                ? 'tracking'
+                ? stillIdle ? 'idle' : 'tracking'
                 : 'pausing'
               : 'inactive',
-            reason: focused ? 'window-focus' : 'window-blur',
+            reason: focused
+              ? stillIdle ? 'window-focus-idle' : 'window-focus'
+              : 'window-blur',
             ...(!focused ? { unfocusedDisposition: awayDisposition(file) } : {}),
           });
         }
@@ -415,7 +463,7 @@ export class TimerService {
   }
 
   /** 已结束的失焦段可重新归类，原始事件不丢弃 / reclassify closed blur intervals. */
-  async classifyUnfocused(index: number, expectedTime: string, disposition: 'reading' | 'paused' | 'unfocused'): Promise<void> {
+  async classifyUnfocused(index: number, expectedTime: string, disposition: 'reading' | 'paused' | 'unfocused' | 'ignored'): Promise<void> {
     await this.flushPendingWrites();
     const events = this.deps.history.getEvents();
     const interval = listUnfocusedIntervals(events).find((item) => item.index === index && item.from === expectedTime);
@@ -427,8 +475,8 @@ export class TimerService {
     const file = state.files.get(interval.filePath);
     if (state.activeFilePath === interval.filePath && file?.sessionStartTime && interval.from >= file.sessionStartTime && file.status !== STATUS.IDLE) {
       const sessionObject = { ...file.sessionObject };
-      sessionObject[interval.from] = disposition === 'reading' ? 'tracking' : disposition === 'paused' ? 'pausing' : 'inactive';
-      for (const time of Object.keys(sessionObject)) if (time >= interval.from && time < interval.to) sessionObject[time] = disposition === 'reading' ? 'tracking' : disposition === 'paused' ? 'pausing' : 'inactive';
+      sessionObject[interval.from] = disposition === 'reading' ? 'tracking' : disposition === 'paused' ? 'pausing' : disposition === 'ignored' ? 'ignored' : 'inactive';
+      for (const time of Object.keys(sessionObject)) if (time >= interval.from && time < interval.to) sessionObject[time] = disposition === 'reading' ? 'tracking' : disposition === 'paused' ? 'pausing' : disposition === 'ignored' ? 'ignored' : 'inactive';
       this.deps.store.dispatch({ type: ActionTypes.RESTORE_FILE, payload: { filePath: interval.filePath, fileState: { ...file, sessionObject,
         activeSeconds: Math.max(0, file.activeSeconds + result.delta.activeSeconds),
         unfocusedSeconds: Math.max(0, file.unfocusedSeconds + result.delta.unfocusedSeconds),
@@ -459,6 +507,15 @@ export class TimerService {
    * a dead end confirmed by running the plugin.
    */
   async startCurrent(): Promise<void> {
+    //  新的一轮以 start 事件开头，之前那条空闲边界随之作废；按下开始本身就是一次用户动作，
+    //  残留的空闲标志一并清掉，否则新一轮的第一秒会被记成空闲
+    //  A new round opens with a start event, which retires any idle boundary still lying open. Pressing
+    //  start is itself user activity, so the leftover idle flag is cleared too — otherwise the first
+    //  second of the new round is filed as idle.
+    this.idleOpen = false;
+    if (this.deps.store.getState().isIdle) {
+      this.deps.store.dispatch({ type: ActionTypes.CLEAR_IDLE });
+    }
     try {
       const settings = this.deps.settings();
       if (!isDocumentRecordingEnabled(settings)) return;
@@ -501,6 +558,7 @@ export class TimerService {
 
   /** Discard the current session. */
   async discardCurrent(): Promise<void> {
+    this.idleOpen = false;
     try {
       const filePath = this.deps.store.getState().activeFilePath;
       if (!filePath) return;
@@ -611,6 +669,10 @@ export class TimerService {
 
   /** Dispatch one session save. */
   private dispatchSave(filePath: string, kind: SaveKind): void {
+    //  保存/丢弃事件本身就是空闲段的终点，标志跟着落下，免得下一次空闲写出重复的开头
+    //  A save or discard is itself the end of the stretch; drop the flag so the next idle opens cleanly.
+    this.idleOpen = false;
+
 
     //  只结算**正在进行**的会话。保存的语义是"把眼下这一轮落盘"，而闲置的文件没有可落盘的东西 ——
     //  对它保存只会写一条空 session，顺带把 clearedFile 里的 discardedByUser 冲成 false（用户刚

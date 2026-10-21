@@ -237,7 +237,7 @@ export interface PluginSettings {
  * of the active total, since `calculateSessionDuration` only counts `tracking` — which
  * fixes the original's bug of counting blur stretches as active time.
  */
-export type SessionState = 'tracking' | 'pausing' | 'saved' | 'inactive' | 'idle';
+export type SessionState = 'tracking' | 'pausing' | 'saved' | 'inactive' | 'idle' | 'ignored';
 
 /**
  * Session timeline object.
@@ -804,7 +804,15 @@ export interface FileTimelineEvent {
   /** focused-but-idle seconds on save events / 保存事件上的空闲秒数 */
   idleSeconds?: number;
   /** 保留失焦来源，仅修改归属 / preserve blur provenance while changing attribution. */
-  unfocusedDisposition?: 'reading' | 'paused' | 'unfocused';
+  /**
+   * 这段被逐段归类成了什么 / how this stretch was classified by hand.
+   *
+   * 'unfocused' 是**旧数据的默认值**（老版本每个 blur 都写它），现在按"未归类"处理，交给口径；
+   * 'ignored' 才是明确的「不记录」，任何合计里都不出现。
+   * 'unfocused' is what older builds wrote on every blur; it is now read as "unclassified" and left to
+   * the policy. 'ignored' is the explicit "do not record" and appears in no total at all.
+   */
+  unfocusedDisposition?: 'reading' | 'paused' | 'unfocused' | 'ignored';
 }
 
 /** A discarded session (no `state` field in real data). */

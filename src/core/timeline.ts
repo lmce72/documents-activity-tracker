@@ -144,6 +144,8 @@ export function computeSessionDurations(
         //  not out-of-window.
         if (current.unfocusedDisposition === 'reading') activeSeconds += gap;
         else if (current.unfocusedDisposition === 'paused') pausedSeconds += gap;
+        //  明确的「不记录」：哪条通道都不进 / an explicit "do not record" enters no channel
+        else if (current.unfocusedDisposition === 'ignored') { /* nowhere */ }
         else if (current.type === 'idle' || state === 'idle') idleSeconds += gap;
         else unfocusedSeconds += gap;
       }
@@ -282,7 +284,12 @@ export function buildFileRecords(
       for (const event of session.events) {
         if ('activityTitle' in event && event.activityTitle) activityTitle = event.activityTitle;
         const disposition = 'unfocusedDisposition' in event ? event.unfocusedDisposition : undefined;
-        const state = disposition ? disposition === 'reading' ? 'tracking' : disposition === 'paused' ? 'pausing' : 'inactive' : event.type === 'blur' ? 'inactive' : (event as { state?: string }).state;
+        const state = disposition
+          ? disposition === 'reading' ? 'tracking'
+            : disposition === 'paused' ? 'pausing'
+              : disposition === 'ignored' ? 'ignored'
+                : 'inactive'
+          : event.type === 'blur' ? 'inactive' : (event as { state?: string }).state;
         if (state) {
           sessionObj[event.time] = state as SessionStateMap[string];
         } else if (event.type === 'save' || event.type === 'auto-save') {
