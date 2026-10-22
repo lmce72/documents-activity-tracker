@@ -1858,3 +1858,290 @@ body.is-mobile .workspace-leaf-content[data-type="documents-activity-tracker-sid
 body.is-mobile .workspace-leaf-content[data-type="documents-activity-tracker-sidebar"] .setting-item-control select {
     max-width: 100%;
 }
+
+
+/* ── 圆环内的状态行 / the state line inside the ring ─────────────────────
+ *
+ * 运行中转圈、暂停闪烁：两种状态各自带一个动作感，读数字之前就知道秒表在不在走。
+ * 暂停用 0.5 秒一次的闪烁，足够醒目不刺眼；图标只在状态变化时重建，动画不会被每秒刷新打断。
+ *
+ * Running spins, paused flashes: each state carries its own motion, so whether the clock is moving is
+ * visible before reading a number. The pause flash has a 0.5s period — noticeable without being loud —
+ * and the icon is rebuilt only on a state change, so the animation is never restarted mid-run.
+ */
+.rtt-stopwatch-state {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+}
+
+.rtt-state-icon {
+    display: none;
+    line-height: 0;
+}
+
+.rtt-stopwatch-state.is-running .rtt-state-icon,
+.rtt-stopwatch-state.is-paused .rtt-state-icon {
+    display: inline-flex;
+}
+
+.rtt-state-icon svg {
+    width: 13px;
+    height: 13px;
+}
+
+.rtt-stopwatch-state.is-running .rtt-state-icon {
+    color: var(--text-muted);
+}
+
+.rtt-stopwatch-state.is-running .rtt-state-icon svg {
+    /* 1 秒转半圈：2s 一圈，匀速 / half a turn per second: one lap every 2s, linear */
+    animation: rtt-spin 2s linear infinite;
+}
+
+.rtt-stopwatch-state.is-paused .rtt-state-icon {
+    color: var(--color-orange);
+}
+
+/* 暂停时整行（图标 + 「已暂停」文字）一起闪，而不是只有图标闪
+   While paused the whole line — icon and the "Paused" text — flashes together, not just the icon. */
+.rtt-stopwatch-state.is-paused {
+    animation: rtt-flash 0.5s ease-in-out infinite alternate;
+}
+
+@keyframes rtt-spin {
+    to { transform: rotate(360deg); }
+}
+
+@keyframes rtt-flash {
+    from { opacity: 1; }
+    to { opacity: 0.2; }
+}
+
+/* 偏好减少动态效果时不要动画 / honour reduced motion */
+@media (prefers-reduced-motion: reduce) {
+    .rtt-stopwatch-state.is-running .rtt-state-icon svg,
+    .rtt-stopwatch-state.is-paused {
+        animation: none;
+    }
+}
+
+/* ── 统计格 / the stat grid ───────────────────────────────────────────────
+ *
+ * 数字等宽：相邻两格里一个 9 一个 1 时，数字不会左右跳。
+ * Tabular digits keep neighbouring cells from jittering when a 9 meets a 1.
+ */
+.rtt-stats-value {
+    font-variant-numeric: tabular-nums;
+}
+
+/* 主数字：淡淡的强调底色，一眼落到"总"上 / the headline figure gets an accent wash */
+.rtt-stats-card.is-primary {
+    background: color-mix(in srgb, var(--interactive-accent) 9%, var(--background-secondary));
+}
+
+.rtt-stats-card.is-primary .rtt-stats-value {
+    color: var(--text-accent);
+}
+
+.rtt-stats-card.is-primary .rtt-stats-label {
+    color: var(--text-normal);
+}
+
+/* 奇数张时最后一张横跨两列：七格不再留一个孤零零的尾巴
+   With an odd count the last cell spans both columns, so seven cards leave no lonely tail. */
+.rtt-stats-bar.is-dense > .rtt-stats-card:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+    border-right: none;
+}
+
+/* 标签最多两行，多出来的格子不会因为标签长短不一把数字顶到不同高度
+   Labels stop at two lines so a long label cannot push its figure out of line with the others. */
+.rtt-stats-label {
+    min-height: 2.4em;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+}
+
+/* ── 面板标签：窄侧栏 2×2、宽侧栏一行 / panel tabs: 2×2 when narrow, one row when wide ──
+ *
+ * 四个标签在 330px 的侧栏里放不进一行，原先折行后最后一个会独占整行（301px 的大按钮），
+ * 看起来像另一个按钮。改成网格：窄时 2×2，宽时一行四个，任何一格都不会被拉成整行。
+ *
+ * Four tabs do not fit one row at a 330px sidebar, and plain wrapping stretched the last one across
+ * the whole row (a 301px lone button). A grid keeps them even: 2×2 when narrow, one row of four when
+ * wide, and no cell ever stretches into a full-width bar.
+ */
+.rtt-panel-tabs {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.view-content.is-wide .rtt-panel-tabs {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+
+/* ── 热力图的选中标记 / heatmap selection markers ─────────────────────────
+ *
+ * 一条 2px 细线穿过热力条中线，端点各一枚「竖线 + 箭头」图标：|→ 起点，→| 终点。标记挂在行上而不是
+ * 条内 —— 端点图标比 10px 的热力条高，条自身的 overflow 会把它裁掉。行因此需要 relative。
+ *
+ * A 2px line through the middle of the track, with a "vertical bar + arrow" cap at each end: |→ starts,
+ * →| ends. The markers hang off the row rather than the bar — the caps are taller than the 10px track and
+ * the track clips its overflow — so the row becomes their positioning context.
+ */
+.rtt-hm-row {
+    position: relative;
+}
+
+.rtt-hm-sel-line {
+    position: absolute;
+    height: 2px;
+    border-radius: 1px;
+    background: var(--text-normal);
+    opacity: 0.7;
+    pointer-events: none;
+    z-index: 3;
+}
+
+/**
+ * 端点 = 竖线 + chevron / a cap is a drawn bar plus a chevron.
+ *
+ * 竖线由自己画，才能精确落在起止点上、并且按条高给高度（比 10px 的条略高，上下各探出 1px，读起来
+ * 像一道边界）。chevron 只是方向提示，放在竖线的内侧。
+ *
+ * The bar is drawn by us so it lands exactly on the endpoint and can match the track's height (1px
+ * above and below the 10px track, so it reads as a boundary). The chevron only gives direction and sits
+ * just inside the bar.
+ */
+.rtt-hm-sel-cap {
+    position: absolute;
+    display: flex;
+    align-items: center;
+    color: var(--text-normal);
+    pointer-events: none;
+    z-index: 4;
+}
+
+.rtt-hm-sel-bar {
+    width: 2px;
+    height: 12px;
+    border-radius: 1px;
+    background: currentColor;
+}
+
+.rtt-hm-sel-chevron {
+    display: flex;
+    line-height: 0;
+    margin: 0 -1px;
+}
+
+.rtt-hm-sel-chevron svg {
+    width: 13px;
+    height: 13px;
+}
+
+/* 起点：竖线的外缘正好压在起点上，箭头在内侧，所以没有任何左边距。
+   终点镜像：竖线的外缘压在终点上，箭头在左侧内侧。
+   Start: the bar's outer edge sits exactly on the start and the chevron falls inside — no left margin.
+   The end mirrors it: bar's outer edge on the end, chevron inside on the left. */
+.rtt-hm-sel-cap.is-start {
+    transform: translateY(-50%);
+}
+
+.rtt-hm-sel-cap.is-end {
+    transform: translate(-100%, -50%);
+}
+
+
+/* ── 倒计时的两行状态 / the countdown's two-line state ─────────────────────
+ *
+ * 第一行相位名、第二行「第 n / 共 m 段」，比原来一行里塞一个间隔点更好读；第二行小一号、灰一档，
+ * 视线先落在"现在在做什么"上。
+ *
+ * Line 1 is the phase name, line 2 "phase n of m" — easier to read than one line with a dot; the second
+ * line is smaller and dimmer so the eye lands on "what am I doing now" first.
+ */
+/* 倒计时的状态列：第一行是「图标 + 相位」，第二行单独一行进度。
+   图标只在第一行，不会把第二行也一起往右推。
+   The countdown's state column: line 1 is "icon + phase", line 2 the progress on its own. The icon
+   belongs to line 1 only, so it cannot push the second line to the right with it. */
+.rtt-stopwatch-state.is-stacked {
+    flex-direction: column;
+    align-items: center;
+    gap: 1px;
+    line-height: 1.25;
+}
+
+.rtt-state-line {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.rtt-state-progress {
+    font-size: 0.85em;
+    color: var(--text-faint);
+}
+
+/* ── 区间选择 / range selection ──────────────────────────────────────────
+ *
+ * 开关在日期选择器上方；区间内的日子一条浅色带，两端实心。数据口径未定，所以这里只解决"看得见"。
+ * The switch sits above the date picker: a light band between the two ends, solid ends. How the range
+ * should affect the data is still undecided, so this only makes the selection visible.
+ */
+.rtt-range-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 0 0 4px;
+    color: var(--text-muted);
+    font-size: var(--font-ui-smaller);
+    cursor: pointer;
+}
+
+.rtt-range-toggle:hover {
+    color: var(--text-normal);
+}
+
+.rtt-range-toggle input[type="checkbox"] {
+    margin: 0;
+}
+
+/* 区间模式下的日期文字可能很长：单行省略，别把导航撑开 */
+/* The range label can be long: keep it on one line with an ellipsis instead of widening the nav. */
+.rtt-day-trigger-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+button.rtt-cal-cell.is-in-range {
+    background-color: color-mix(in srgb, var(--interactive-accent) 18%, transparent);
+    border-radius: 0;
+    box-shadow: none;
+}
+
+button.rtt-cal-cell.is-range-start,
+button.rtt-cal-cell.is-range-end {
+    background-color: var(--interactive-accent);
+    color: var(--text-on-accent);
+    box-shadow: none;
+}
+
+button.rtt-cal-cell.is-range-start {
+    border-radius: var(--radius-s) 0 0 var(--radius-s);
+}
+
+button.rtt-cal-cell.is-range-end {
+    border-radius: 0 var(--radius-s) var(--radius-s) 0;
+}
+
+button.rtt-cal-cell.is-range-start.is-range-end {
+    border-radius: var(--radius-s);
+}

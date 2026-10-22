@@ -69,7 +69,9 @@ import {
   renderHeatmap,
   renderHeatmapLegend,
   renderSegmentDetail,
-  selectSegment,
+  readingChannelName,
+  setProcessMarkers,
+  toggleProcessMarkers,
   type HeatmapBlock,
   type HeatmapRow,
   type HeatmapSegment,
@@ -165,10 +167,16 @@ interface LiveNodes {
   ring?: HTMLElement;
 
   manualLabel?: HTMLElement;
+  /** 圆环内的状态行（图标 + 文字）/ the state line inside the ring (icon plus text) */
+  manualState?: HTMLElement;
 
   /** 倒计时的读数是"还剩多久"，与正计时的方向相反，所以单独一组节点 */
   countdown?: HTMLElement;
-  countdownLabel?: HTMLElement;
+  /** 第一行：相位名（或 Paused / Not started）/ line 1: the phase name (or the state) */
+  countdownPhase?: HTMLElement;
+  /** 第二行：第几段 / line 2: which phase of how many */
+  countdownProgress?: HTMLElement;
+  countdownState?: HTMLElement;
   countdownRing?: HTMLElement;
   /** 上一轮方案里当前那一段的高亮 / the current phase chip in the plan list */
   countdownChips?: HTMLElement[];
@@ -235,6 +243,20 @@ export class ActivitySidebarView extends ItemView {
    * a click is a state. Stored separately so a re-render remembers the pin.
    */
   private manualFocusTablePinned = false;
+
+  /**
+   * 区间选择 / range selection.
+   *
+   * 只影响日历本身：先点起点、再点终点；点反了自动调换，保证 start ≤ end。数据侧的口径还没定，
+   * 所以这里只记住区间、在日历上标出来，不改变任何统计。
+   *
+   * The calendar only: click a start, then an end; if they are clicked the other way round the pair is
+   * swapped so start ≤ end. How the range should affect the data is still undecided, so this only keeps
+   * and draws the selection and changes no totals.
+   */
+  private rangeMode = false;
+  private rangeStart: string | null = null;
+  private rangeEnd: string | null = null;
 
   /** whether the hand-drawn calendar popover is open */
   private calendarOpen = false;
@@ -361,6 +383,24 @@ export class ActivitySidebarView extends ItemView {
   }
 
   /** 账本 records 的缓存 / cache for the account derived records. */
+  /**
+   * 当前选中的过程 / the process currently selected.
+   *
+   * 选中状态必须自己记着：事件流一变（一次自动保存、一次空闲边界）签名就变，整块重绘会把标记与详情
+   * 一起抹掉 —— 用户刚点了一下，一秒后高亮就没了。重绘后按这里复原。
+   *
+   * The selection has to be remembered: any event append (an auto-save, an idle boundary) changes the
+   * signature and re-renders the panel, which used to wipe both markers and detail one second after the
+   * click. It is reapplied after every render.
+   */
+  private selection: {
+    panel: Panel;
+    day: string;
+    spans: Array<{ start: number; end: number }>;
+    hour: number;
+  } | null = null;
+
+
   private readonly recordsCache = new RecordsCache();
 
   /** 当前的读数刷新定时器 / the current readout timer. */
@@ -469,7 +509,12 @@ export class ActivitySidebarView extends ItemView {
     legend?: readonly LegendEntry[],
     /** Extra layer drawn inside each row's track; see `renderHeatmap`. */
     overlay?: (bar: HTMLElement, hour: number) => void,
-    detail?: { groupOf: (segment: S) => string; render: (panel: HTMLElement, segment: S) => void },
+    detail?: {
+      groupOf: (segment: S) => string;
+      /** 一小时的详情 / the detail for a whole hour. */
+      renderHour?: (panel: HTMLElement, segments: S[]) => void;
+      render: (panel: HTMLElement, segment: S) => void;
+    },
   ): boolean {
     let panel: HTMLElement | null = null;
 
@@ -484,6 +529,57 @@ export class ActivitySidebarView extends ItemView {
 
     const runs = activityRuns(shown);
     const groupOf = detail?.groupOf ?? ((segment: S) => runs.get(segment)!.id);
+    /**
+     * 按当前选中重画详情 / render the detail for the current selection.
+     * 重绘会清空详情容器，所以它既在点击时调用，也在每次渲染后调用。
+     * A re-render empties the detail container, so this runs both on click and after every render.
+     */
+    const paintSelection = (): void => {
+      if (!panel) return;
+      panel.empty();
+
+      const selection = this.selection;
+      if (!selection || selection.panel !== this.panel || selection.day !== day) return;
+
+      const spans = selection.spans;
+      const members = shown
+        .flatMap((row) => row.segments)
+        .filter((segment) => {
+          const run = runs.get(segment);
+          return run !== undefined && spans.some((span) => run.start < span.end && run.end > span.start);
+        });
+
+      if (detail?.renderHour) { detail.renderHour(panel, members as S[]); return; }
+      if (detail) { detail.render(panel, members[0]!); return; }
+
+      const startAbs = Math.min(...spans.map((span) => span.start));
+      const endAbs = Math.max(...spans.map((span) => span.end));
+      const processBlock: HeatmapBlock<S> = {
+        startMinute: 0,
+        durationMinutes: endAbs - startAbs,
+        clipped: false,
+        members: members as S[],
+      };
+      const info = describe(processBlock, selection.hour);
+      renderSegmentDetail(panel, {
+        hour: selection.hour,
+        segment: processBlock,
+        what: info.what,
+        icon: info.icon,
+        kind: info.kind,
+        pieces: members.length,
+        events,
+        day,
+        //  起止按过程本身给，允许越过被点的那一小时
+        //  The range is the process's own, allowed to extend past the hour that was clicked
+        absStartMinute: startAbs,
+        absEndMinute: endAbs,
+        //  汇总行必须留着：它写的是整个过程的起止与合计
+        //  The summary stays: it carries the whole process's range and total
+        forceSummary: true,
+      });
+    };
+
     const drawn = renderHeatmap(
       parent,
       shown,
@@ -491,31 +587,43 @@ export class ActivitySidebarView extends ItemView {
       labelOf,
       (block, hour, element) => {
         if (!panel) return;
-        const isSelected = selectSegment(parent, element, groupOf(block.members[0]!));
-        panel.empty();
-        // Clicking the lit stretch again clears it, so the block can be dismissed in place.
-        if (!isSelected) return;
-        if (detail) { detail.render(panel, block.members[0]!); return; }
-        const run = runs.get(block.members[0]!)!;
-        const members = shown.flatMap(row => row.segments).filter(segment => runs.get(segment) === run);
-        const info = describe({ ...block, members }, hour);
-        renderSegmentDetail(panel, {
-          hour,
-          segment: { ...block, startMinute: run.start - hour * 60, durationMinutes: run.end - run.start },
-          what: info.what,
-          icon: info.icon,
-          kind: info.kind,
-          pieces: members.length,
-          events,
-          day,
-        });
+
+        //  点某小时里的一段 = 选中**覆盖这一小时的那些过程**：连续活动可能跨到前后两小时，
+        //  亮起的范围与详情描述的范围因此始终是同一件事。
+        //  Clicking a segment selects the **processes covering that hour**: a continuous run may reach
+        //  into the neighbouring hours, so what is lit and what the detail describes stay the same thing.
+        const hourSegments = (shown[hour]?.segments ?? []) as S[];
+        const runIds = new Set(hourSegments.map((segment) => runs.get(segment)!.id));
+        //  一小时里可能有多段彼此分离的过程：视觉上仍只给一条线、一对端点，从最早的起点到最晚的终点
+        //  An hour can hold several disjoint processes; the chart still shows one line and one pair of caps,
+        //  from the earliest start to the latest end.
+        const hourRuns = [...new Set(hourSegments.map((segment) => runs.get(segment)!))];
+        const processStart = Math.min(...hourRuns.map((run) => run.start));
+        const processEnd = Math.max(...hourRuns.map((run) => run.end));
+        const span = { start: processStart, end: processEnd };
+
+        const isSelected = toggleProcessMarkers(parent, [span]);
+        void element;
+        this.selection = isSelected
+          ? { panel: this.panel, day, spans: [span], hour }
+          : null;
+        paintSelection();
       },
       overlay,
       groupOf,
+      (segment: S) => runs.get(segment)!.id,
     );
 
     if (!drawn) return false;
     panel = parent.createDiv({ cls: 'rtt-hm-detail' });
+
+    //  重绘后复原选中：标记与详情一起回来
+    //  Restore the selection after a re-render: markers and detail come back together
+    const selection = this.selection;
+    if (selection && selection.panel === this.panel && selection.day === day) {
+      setProcessMarkers(parent, selection.spans);
+      paintSelection();
+    }
     return true;
   }
 
@@ -600,6 +708,9 @@ export class ActivitySidebarView extends ItemView {
       //  The calendar's open state shapes the DOM; without it turning pages would not redraw
       String(this.calendarOpen),
       this.calendarMonth,
+      String(this.rangeMode),
+      this.rangeStart ?? '',
+      this.rangeEnd ?? '',
       state.files.get(state.activeFilePath ?? '')?.status ?? '-',
 
       //  图例的开关决定图里有哪些段，属于结构；不进签名就点了没反应
@@ -626,6 +737,11 @@ export class ActivitySidebarView extends ItemView {
   private render(): void {
     try {
       const root = this.contentEl;
+
+      //  重绘会重建整棵 DOM，滚动位置随之归零 —— 选个日期就跳回首行正是这个原因。先记下来再放回去。
+      //  A re-render rebuilds the whole tree and resets the scroll — which is why picking a date jumped
+      //  back to the first row. It is remembered and put back.
+      const scrollTop = root.scrollTop;
 
       //  The previous calendar listeners must come off before the DOM is torn down, or every
       //  re-render adds another pair holding already-detached nodes. The name ticker goes the same
@@ -674,6 +790,7 @@ export class ActivitySidebarView extends ItemView {
       else this.renderOverviewPanel(left, right);
 
       this.updateLiveNumbers();
+      root.scrollTop = scrollTop;
     } catch (error) {
 
       //  A render failure must not leave a blank view: show an error instead
@@ -744,13 +861,22 @@ export class ActivitySidebarView extends ItemView {
       liveKey?: LiveKey;
       /** 点击整张卡片的动作 / what clicking the whole card does */
       onClick?: () => void;
+      /** 主数字：强调底色 / the headline figure: accent tint */
+      emphasis?: boolean;
     }>,
   ): void {
     const mode = this.deps.settings().timeDisplayMode;
-    const bar = parent.createDiv({ cls: 'rtt-stats-bar' });
+    //  六格以上收紧为"密集"版式：奇数张时最后一张横跨两列，不留一格孤零零的尾巴
+    //  Six cards or more use the dense layout: with an odd count the last one spans both columns
+    //  instead of leaving a lonely tail cell.
+    const bar = parent.createDiv({
+      cls: cards.length >= 6 ? 'rtt-stats-bar is-dense' : 'rtt-stats-bar',
+    });
 
     for (const card of cards) {
-      const el = bar.createDiv({ cls: 'rtt-stats-card' });
+      const el = bar.createDiv({
+        cls: card.emphasis ? 'rtt-stats-card is-primary' : 'rtt-stats-card',
+      });
       el.createDiv({ cls: 'rtt-stats-label', text: card.label });
 
       const value = el.createDiv({ cls: 'rtt-stats-value' });
@@ -907,7 +1033,9 @@ export class ActivitySidebarView extends ItemView {
       readingChannelClass,
       readingChannelLabel,
       (block) => ({
-        what: readingChannelLabel(block.members[0]!),
+        //  一小时的详情要把这一小时出现过的通道都点名，而不是只报第一段属于哪一类
+        //  The hour's detail names every channel it contains, not just the first segment's
+        what: [...new Set(block.members.map((member) => readingChannelName(member.channel)))].join(' + '),
         icon: 'file-text',
         kind: 'document',
       }),
@@ -1693,8 +1821,11 @@ export class ActivitySidebarView extends ItemView {
     this.liveNodes.ring = wrap.createDiv({ cls: 'rtt-stopwatch-ring' });
 
     const face = wrap.createDiv({ cls: 'rtt-stopwatch-face' });
-    this.liveNodes.manualLabel = face.createDiv({
-      cls: 'rtt-stopwatch-state',
+    const stateLine = face.createDiv({ cls: 'rtt-stopwatch-state' });
+    stateLine.createSpan({ cls: 'rtt-state-icon' });
+    this.liveNodes.manualState = stateLine;
+    this.liveNodes.manualLabel = stateLine.createSpan({
+      cls: 'rtt-state-text',
       text: t('manualIdle'),
     });
     this.liveNodes.manual = face.createDiv({
@@ -1805,10 +1936,18 @@ export class ActivitySidebarView extends ItemView {
     this.liveNodes.countdownRing = wrap.createDiv({ cls: 'rtt-stopwatch-ring' });
 
     const face = wrap.createDiv({ cls: 'rtt-stopwatch-face' });
-    this.liveNodes.countdownLabel = face.createDiv({
-      cls: 'rtt-stopwatch-state',
+    const stateLine = face.createDiv({ cls: 'rtt-stopwatch-state is-stacked' });
+    this.liveNodes.countdownState = stateLine;
+
+    //  图标只属于第一行：◌ Focus 一行，下面单独一行「第 n / 共 m 段」。
+    //  The icon belongs to the first line only: "◌ Focus" on one line, "phase n of m" on the next.
+    const firstLine = stateLine.createDiv({ cls: 'rtt-state-line' });
+    firstLine.createSpan({ cls: 'rtt-state-icon' });
+    this.liveNodes.countdownPhase = firstLine.createSpan({
+      cls: 'rtt-state-phase',
       text: t('countdownIdle'),
     });
+    this.liveNodes.countdownProgress = stateLine.createDiv({ cls: 'rtt-state-progress' });
     this.liveNodes.countdown = face.createDiv({
       cls: 'rtt-stopwatch-time',
       text: formatDurationWithSeconds(0),
@@ -2026,7 +2165,7 @@ export class ActivitySidebarView extends ItemView {
     //  Top: the totals; bottom: day nav, heatmap and detail — the nav has to travel with the chart it
     //  describes
     this.renderStatCards(ovLeft, [
-      { label: t('ovUnion'), seconds: today.union },
+      { label: t('ovUnion'), seconds: today.union, emphasis: true },
       { label: t('ovWeekTotal'), seconds: week.union },
       { label: t('ovDocument'), seconds: today.document },
       { label: t('ovView'), seconds: today.view },
@@ -2408,7 +2547,13 @@ export class ActivitySidebarView extends ItemView {
           }
         }
       },
-      { groupOf: (segment) => segment.session.id, render: (panel, segment) => renderManualSessionDetail(panel, segment.session) },
+      { groupOf: (segment) => segment.session.id, renderHour: (panel, segments) => {
+        //  一小时里可能有多次手动计时，逐条列出，而不是只显示第一段
+        //  An hour can hold several manual runs; list them all rather than only the first
+        const sessions = [...new Map(segments.map((segment) => [segment.session.id, segment.session])).values()]
+          .sort((a, b) => a.startTime.localeCompare(b.startTime));
+        for (const session of sessions) renderManualSessionDetail(panel, session);
+      }, render: (panel, segment) => renderManualSessionDetail(panel, segment.session) },
     );
 
     if (!drawn) {
@@ -2431,22 +2576,47 @@ export class ActivitySidebarView extends ItemView {
    * into the range, or a record-less today would leave the value outside min/max.
    */
   private renderDayNav(parent: HTMLElement): void {
+    //  开关摆在日期选择器**上面**：它决定下面那个日历点一下是选一天，还是选区间的一端
+    //  The switch sits above the date picker: it decides whether a click in the calendar below picks one
+    //  day or one end of a range.
+    const rangeRow = parent.createEl('label', { cls: 'rtt-range-toggle' });
+    const rangeBox = rangeRow.createEl('input', { type: 'checkbox' });
+    rangeBox.checked = this.rangeMode;
+    rangeBox.addEventListener('change', () => {
+      this.rangeMode = rangeBox.checked;
+      if (!this.rangeMode) {
+        this.rangeStart = null;
+        this.rangeEnd = null;
+      }
+      this.render();
+    });
+    rangeRow.createSpan({ cls: 'rtt-range-toggle-label', text: t('rangeSelect') });
+    setTooltip(rangeRow, t('rangeSelectDesc'));
+
     const nav = parent.createDiv({ cls: 'rtt-timeline-nav' });
 
-    this.iconButton(
-      nav,
-      'chevron-left',
-      t('prevDay'),
-      () => {
-        this.day = shiftDay(this.day, -1);
-        this.render();
-      },
-      { ghost: true },
-    );
+    //  区间模式下箭头没有意义（点日历两端即可），收起来免得和区间标签打架
+    //  Arrows are meaningless in range mode (the calendar picks both ends), so they fold away rather
+    //  than fight with the range label.
+    if (!this.rangeMode) {
+      this.iconButton(
+        nav,
+        'chevron-left',
+        t('prevDay'),
+        () => {
+          this.day = shiftDay(this.day, -1);
+          this.render();
+        },
+        { ghost: true },
+      );
+    }
 
     const trigger = nav.createEl('button', { cls: 'rtt-day-trigger' });
     setIcon(trigger.createSpan({ cls: 'rtt-day-trigger-icon' }), 'calendar');
-    trigger.createSpan({ cls: 'rtt-day-trigger-label', text: this.day });
+    trigger.createSpan({
+      cls: 'rtt-day-trigger-label',
+      text: this.dayLabelText(),
+    });
     trigger.setAttribute('aria-label', t('dayPicker'));
     trigger.setAttribute('aria-expanded', String(this.calendarOpen));
     setTooltip(trigger, t('dayPickerDesc'));
@@ -2458,19 +2628,33 @@ export class ActivitySidebarView extends ItemView {
       this.render();
     });
 
-    this.iconButton(
-      nav,
-      'chevron-right',
-      t('nextDay'),
-      () => {
-        this.day = shiftDay(this.day, 1);
-        this.calendarOpen = false;
-        this.render();
-      },
-      { ghost: true },
-    );
+    if (!this.rangeMode) {
+      this.iconButton(
+        nav,
+        'chevron-right',
+        t('nextDay'),
+        () => {
+          this.day = shiftDay(this.day, 1);
+          this.calendarOpen = false;
+          this.render();
+        },
+        { ghost: true },
+      );
+    }
 
     if (this.calendarOpen) this.renderCalendar(nav, trigger);
+  }
+
+  /**
+   * 日期触发器上的文字 / the text on the date trigger.
+   * 区间模式下显示「起点 – 终点」，只选了起点时显示「起点 – …」。
+   * In range mode it reads "start – end", or "start – …" while only the start is picked.
+   */
+  private dayLabelText(): string {
+    if (!this.rangeMode) return this.day;
+    if (this.rangeStart && this.rangeEnd) return `${this.rangeStart} – ${this.rangeEnd}`;
+    if (this.rangeStart) return `${this.rangeStart} – …`;
+    return t('rangePickStart');
   }
 
   /**
@@ -2557,6 +2741,13 @@ export class ActivitySidebarView extends ItemView {
       if (value === this.day) cell.addClass('is-selected');
       if (value === today) cell.addClass('is-today');
 
+      //  区间的两端与中间各自标出来：两端实心，中间一条浅带
+      //  Both ends and everything between are marked: solid ends, a light band between.
+      if (this.rangeStart && value === this.rangeStart) cell.addClass('is-range-start');
+      if (this.rangeEnd && value === this.rangeEnd) cell.addClass('is-range-end');
+      if (this.rangeStart && this.rangeEnd
+        && value > this.rangeStart && value < this.rangeEnd) cell.addClass('is-in-range');
+
       if (!hasRecords) {
 
         //  A record-less day is *disabled* rather than selectable-then-refused: that is the
@@ -2571,6 +2762,26 @@ export class ActivitySidebarView extends ItemView {
       cell.addClass('has-records');
       cell.setAttribute('aria-label', value);
       cell.addEventListener('click', () => {
+        if (this.rangeMode) {
+          //  先点起点、再点终点；点反了就调换，保证 start ≤ end
+          //  First click is the start, second the end; if they arrive the other way round the pair is
+          //  swapped so start ≤ end.
+          if (!this.rangeStart || this.rangeEnd) {
+            this.rangeStart = value;
+            this.rangeEnd = null;
+            this.day = value;
+            this.calendarOpen = true;
+          } else {
+            const start = this.rangeStart;
+            this.rangeStart = start < value ? start : value;
+            this.rangeEnd = start < value ? value : start;
+            this.day = this.rangeEnd;
+            this.calendarOpen = false;
+          }
+          this.render();
+          return;
+        }
+
         this.day = value;
         this.calendarOpen = false;
         this.render();
@@ -2796,6 +3007,13 @@ export class ActivitySidebarView extends ItemView {
         if (this.liveNodes.todayRead) setReadTime(this.liveNodes.todayRead, account.reading, mode);
       }
 
+      if (this.liveNodes.manualState) {
+        this.paintStateIcon(this.liveNodes.manualState, state.manual.status);
+      }
+      if (this.liveNodes.countdownState) {
+        this.paintStateIcon(this.liveNodes.countdownState, state.countdown.status);
+      }
+
       if (this.liveNodes.manual) {
         const nowMs = this.deps.clock.now();
         const elapsed = selectManualElapsedSeconds(state, nowMs);
@@ -2841,6 +3059,33 @@ export class ActivitySidebarView extends ItemView {
   }
 
   /**
+   * 圆环内的状态图标 / the state icon inside the ring.
+   *
+   * 运行中是一个转圈，暂停是闪烁的暂停键 —— 不必读文字就知道秒表在不在走。只在状态真的变了时重建
+   * SVG：每秒重建会把旋转动画打断，看起来像卡住。
+   *
+   * Running spins, paused flashes — whether the clock is moving is visible without reading. The SVG is
+   * rebuilt only when the state actually changes: rebuilding it every second restarts the animation,
+   * which reads as a stutter.
+   */
+  private paintStateIcon(
+    stateEl: HTMLElement,
+    status: 'idle' | 'running' | 'paused',
+  ): void {
+    stateEl.toggleClass('is-running', status === 'running');
+    stateEl.toggleClass('is-paused', status === 'paused');
+
+    const icon = stateEl.querySelector<HTMLElement>('.rtt-state-icon');
+    if (!icon) return;
+
+    const wanted = status === 'idle' ? '' : status === 'running' ? 'loader-circle' : 'pause';
+    if (icon.dataset.rttIcon === wanted) return;
+    icon.dataset.rttIcon = wanted;
+    icon.empty();
+    if (wanted) setIcon(icon, wanted);
+  }
+
+  /**
    * 倒计时的每秒刷新 / the countdown's once-a-second update.
    *
    * 空闲时预览方案总长（"这次要跑多久"），运行中显示本段剩余。环画的是**本段**进度而不是整轮：
@@ -2856,7 +3101,8 @@ export class ActivitySidebarView extends ItemView {
     const plan = idle ? this.countdownPreview : countdown.plan;
 
     if (!plan || plan.phases.length === 0) {
-      this.liveNodes.countdownLabel?.setText(t('countdownIdle'));
+      this.liveNodes.countdownPhase?.setText(t('countdownIdle'));
+      this.liveNodes.countdownProgress?.setText('');
       if (this.liveNodes.countdown) setClockTime(this.liveNodes.countdown, 0);
       this.liveNodes.countdownRing?.style.setProperty('--rtt-ring-pct', '0');
       return;
@@ -2879,11 +3125,20 @@ export class ActivitySidebarView extends ItemView {
       this.liveNodes.countdownRing.style.setProperty('--rtt-ring-pct', String(percent));
     }
 
-    if (this.liveNodes.countdownLabel) {
+    if (this.liveNodes.countdownPhase) {
+      const progress = t('countdownPhaseProgress')
+        .replace('{n}', String(phaseIndex + 1))
+        .replace('{total}', String(plan.phases.length));
+
       if (idle) {
-        this.liveNodes.countdownLabel.setText(t('countdownIdle'));
+        this.liveNodes.countdownPhase.setText(t('countdownIdle'));
+        this.liveNodes.countdownProgress?.setText('');
       } else if (countdown.status === 'paused') {
-        this.liveNodes.countdownLabel.setText(t('manualPaused'));
+        //  暂停时第一行说明状态，第二行仍报进度 —— 否则"停在哪一段"就丢了
+        //  While paused line 1 states the state and line 2 keeps the progress, so "which phase" is
+        //  not lost.
+        this.liveNodes.countdownPhase.setText(t('manualPaused'));
+        this.liveNodes.countdownProgress?.setText(progress);
       } else {
         const phase = plan.phases[phaseIndex];
         const name = phase
@@ -2891,10 +3146,8 @@ export class ActivitySidebarView extends ItemView {
             ? t('countdownSegmentN').replace('{n}', String(phaseIndex + 1))
             : t(phaseLabelKey(phase.kind))
           : '';
-        const progress = t('countdownPhaseProgress')
-          .replace('{n}', String(phaseIndex + 1))
-          .replace('{total}', String(plan.phases.length));
-        this.liveNodes.countdownLabel.setText(`${name} · ${progress}`);
+        this.liveNodes.countdownPhase.setText(name);
+        this.liveNodes.countdownProgress?.setText(progress);
       }
     }
 

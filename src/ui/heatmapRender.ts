@@ -13,7 +13,7 @@ import { buildVisits } from '../core/activityVisits';
  *
  */
 
-import { setTooltip } from 'obsidian';
+import { setIcon, setTooltip } from 'obsidian';
 
 import { isPluginViewKey, pluginViewLabel } from '../core/activePath';
 import { t } from '../core/i18n';
@@ -116,39 +116,154 @@ export function readingChannelClass(segment: { channel: RecordChannel }): string
   return CHANNEL_CLASSES[segment.channel];
 }
 
+/** 通道名，不带时长 / the channel's name, without the duration suffix. */
+export function readingChannelName(channel: RecordChannel): string {
+  return channel === 'out-of-window'
+    ? t('tabUnfocused')
+    : channel === 'paused'
+      ? t('recChannelPaused')
+      : t('tabInWindow');
+}
+
 /** the accessible label for a reading-record segment. */
 export function readingChannelLabel(segment: {
   channel: RecordChannel;
   durationMinutes: number;
   sessionStart: string;
 }): string {
-  const channel =
-    segment.channel === 'out-of-window'
-      ? t('tabUnfocused')
-      : segment.channel === 'paused'
-        ? t('recChannelPaused')
-        : t('tabInWindow');
+  const channel = readingChannelName(segment.channel);
   const duration = formatDurationWithSeconds(Math.round(segment.durationMinutes * 60));
   const at = segment.sessionStart.slice(11, 16);
   return `${channel} · ${duration} · ${at}`;
 }
 
+/** 一段被选中的过程，按当天分钟计 / a selected process, in minutes into the day. */
+export interface ProcessSpan {
+  start: number;
+  end: number;
+}
+
 /**
- * Highlight the clicked segment and clear the previous one.
+ * 过程标记 / the process markers.
  *
- * Clicking the same segment again clears the highlight, so the detail block can be dismissed
- * without hunting for a close button.
+ * 选中不再涂满色段（横向高亮会把"这一段的颜色"和"选中状态"混在一起），改成一条 2px 细线穿过热力条
+ * 中线，只在真正的起点与终点各放一枚「竖线 + 箭头」的端点图标：|→ 是开始，→| 是结束。过程跨小时时
+ * 细线在下一行接着画，但端图标全图只有一对。
+ *
+ * Selection no longer fills the segments (a horizontal wash mixes "this channel's colour" with "this is
+ * selected"). It draws a 2px line through the middle of the track, with one "vertical bar + arrow" cap at
+ * the true start and one at the true end: |→ begins, →| ends. A process crossing hours continues the line
+ * on the next row, while the whole chart still has exactly one pair of caps.
  */
-export function selectSegment(scope: HTMLElement, element: HTMLElement, group?: string): boolean {
-  const wasSelected = element.hasClass('is-selected');
-  for (const previous of Array.from(scope.querySelectorAll('.rtt-hm-seg.is-selected'))) {
-    previous.removeClass('is-selected');
+function clearProcessMarkers(scope: HTMLElement): void {
+  for (const marker of Array.from(scope.querySelectorAll('.rtt-hm-sel-line, .rtt-hm-sel-cap'))) {
+    marker.remove();
   }
-  if (wasSelected) return false;
-  if (group === undefined) element.addClass('is-selected');
-  else for (const candidate of Array.from(scope.querySelectorAll<HTMLElement>('.rtt-hm-seg'))) {
-    if (candidate.dataset.rttGroup === group) candidate.addClass('is-selected');
+}
+
+/** 选中过程的指纹 / the fingerprint of a selected process. */
+function spansKey(spans: readonly ProcessSpan[]): string {
+  return spans.map((span) => `${span.start.toFixed(3)}-${span.end.toFixed(3)}`).join(',');
+}
+
+/**
+ * 画出过程标记（先清旧的）/ draw the markers, clearing any previous ones.
+ *
+ * 同时把选中指纹写回 scope：重绘后复原标记走的是这里，若指纹不跟着写回去，下一次点击会被当成"还没
+ * 选中"，于是变成重新选中而不是取消。
+ *
+ * The fingerprint is written back too: restoring markers after a re-render goes through here, and without
+ * it the next click would read as "nothing selected" and re-select instead of clearing.
+ */
+export function setProcessMarkers(scope: HTMLElement, spans: readonly ProcessSpan[]): void {
+  clearProcessMarkers(scope);
+  if (spans.length === 0) {
+    delete scope.dataset.rttSelectedProcess;
+    return;
   }
+  drawProcessMarkers(scope, spans);
+  scope.dataset.rttSelectedProcess = spansKey(spans);
+}
+
+function drawProcessMarkers(scope: HTMLElement, spans: readonly ProcessSpan[]): void {
+  for (const row of Array.from(scope.querySelectorAll<HTMLElement>('.rtt-hm-row'))) {
+    const hour = Number(row.dataset.rttHour);
+    const bar = row.querySelector<HTMLElement>('.rtt-hm-bar');
+    if (!bar || !Number.isFinite(hour)) continue;
+
+    //  端点图标比热力条高，会被 bar 的 overflow 裁掉，所以标记挂在行上，按像素对齐到 bar
+    //  The caps are taller than the bar and would be clipped by its overflow, so markers hang off the
+    //  row and are aligned to the bar in pixels.
+    const left = bar.offsetLeft;
+    const width = bar.offsetWidth;
+    const middle = bar.offsetTop + bar.offsetHeight / 2;
+    const rowStart = hour * 60;
+
+    for (const span of spans) {
+      const from = Math.max(span.start, rowStart);
+      const to = Math.min(span.end, rowStart + 60);
+      if (to <= from) continue;
+
+      //  夹在轨道内：浮点换算偶尔会多出零点几像素，线一旦越过轨道两端就会"溢出"
+      //  Clamped to the track: the floating-point mapping occasionally lands a fraction of a pixel
+      //  outside, and a line past the track's ends reads as overflow.
+      const clamp = (value: number): number => Math.min(Math.max(value, left), left + width);
+      const x0 = clamp(left + ((from - rowStart) / 60) * width);
+      const x1 = clamp(left + ((to - rowStart) / 60) * width);
+
+      const line = row.createDiv({ cls: 'rtt-hm-sel-line' });
+      line.setCssProps({
+        left: `${x0}px`,
+        width: `${Math.max(1, x1 - x0)}px`,
+        top: `${middle - 1}px`,
+      });
+
+      const isStart = Math.abs(from - span.start) < 1e-6;
+      const isEnd = Math.abs(to - span.end) < 1e-6;
+
+      //  端点由"自己画的竖线 + 一枚普通 chevron"组成，而不是整枚图标：
+      //  图标里那条竖线只有字号的几分之一，既对不准端点，也盖不住 10px 的条高。
+      //  The cap is a drawn bar plus a plain chevron rather than a whole icon: an icon's built-in bar is
+      //  a fraction of its glyph box, so it neither lands on the endpoint nor covers the 10px track.
+      //  竖线压住端点，箭头在过程内侧：起点 |‹（竖线在左、箭头朝左），终点 ›|（箭头朝右、竖线在右）。
+      //  起点因此没有任何左边距 —— 竖线的外缘就是过程起点。
+      //  The bar sits on the endpoint and the chevron falls inside the process: start |‹ (bar then a
+      //  left-pointing chevron), end ›| (a right-pointing chevron then the bar). The start carries no left
+      //  margin at all — the bar's outer edge *is* the start.
+      if (isStart) {
+        const cap = row.createDiv({ cls: 'rtt-hm-sel-cap is-start' });
+        cap.createDiv({ cls: 'rtt-hm-sel-bar' });
+        setIcon(cap.createSpan({ cls: 'rtt-hm-sel-chevron' }), 'chevron-left');
+        cap.setCssProps({ left: `${x0}px`, top: `${middle}px` });
+      }
+      if (isEnd) {
+        const cap = row.createDiv({ cls: 'rtt-hm-sel-cap is-end' });
+        setIcon(cap.createSpan({ cls: 'rtt-hm-sel-chevron' }), 'chevron-right');
+        cap.createDiv({ cls: 'rtt-hm-sel-bar' });
+        cap.setCssProps({ left: `${x1}px`, top: `${middle}px` });
+      }
+    }
+  }
+}
+
+/**
+ * 切换过程标记 / toggle the process markers.
+ * 点同一个过程再点一次即取消，详情块随之收起。
+ * Clicking the same process again clears it, and the detail block goes with it.
+ */
+export function toggleProcessMarkers(scope: HTMLElement, spans: readonly ProcessSpan[]): boolean {
+  if (spans.length === 0) return false;
+
+  const already = scope.dataset.rttSelectedProcess === spansKey(spans)
+    && scope.querySelector('.rtt-hm-sel-line') !== null;
+
+  if (already) {
+    clearProcessMarkers(scope);
+    delete scope.dataset.rttSelectedProcess;
+    return false;
+  }
+
+  setProcessMarkers(scope, spans);
   return true;
 }
 
@@ -175,6 +290,24 @@ export interface SegmentDetail {
   events?: readonly TimelineEvent[];
   /** The day the chart was drawn for, as YYYY-MM-DD. */
   day: string;
+  /**
+   * 始终显示汇总行 / always print the summary line.
+   *
+   * 单次访问能自证时默认省掉汇总；但选中整整一小时时，那一次访问可能只覆盖其中一段，汇总行带着
+   * 「这一小时」的起止与合计，不能省。
+   * The summary is normally dropped when one visit speaks for itself; a whole-hour selection is not
+   * that case — the visit may cover only part of it, and the summary carries the hour's range and total.
+   */
+  forceSummary?: boolean;
+  /**
+   * 绝对起止（当天第几分钟）/ absolute span, in minutes into the day.
+   *
+   * 过程可能跨小时，段内偏移表达不了它；给了这两个值就按它们描述，起止可以落在选中那一小时之外。
+   * A process can cross hours, which an intra-hour offset cannot express; when these are given they are
+   * used as-is, and the span may extend beyond the hour that was clicked.
+   */
+  absStartMinute?: number;
+  absEndMinute?: number;
 }
 
 /**
@@ -185,7 +318,7 @@ export interface SegmentDetail {
  * percentage.
  */
 export function renderSegmentDetail(container: HTMLElement, options: SegmentDetail): void {
-  const { hour, segment, what, icon, kind, pieces, events, day } = options;
+  const { hour, segment, what, icon, kind, pieces, events, day, forceSummary } = options;
 
   const pad = (value: number): string => String(Math.floor(value)).padStart(2, '0');
   const clock = (minutes: number): string => {
@@ -193,12 +326,12 @@ export function renderSegmentDetail(container: HTMLElement, options: SegmentDeta
     return seconds === 86400 ? '24:00:00'
       : `${pad(seconds / 3600)}:${pad((seconds % 3600) / 60)}:${pad(seconds % 60)}`;
   };
-  const startMinute = hour * 60 + segment.startMinute;
-  const endMinute = startMinute + segment.durationMinutes;
+  const startMinute = options.absStartMinute ?? hour * 60 + segment.startMinute;
+  const endMinute = options.absEndMinute ?? startMinute + segment.durationMinutes;
 
   const summaryLines: Array<string | readonly DurationPart[]> = [
     `${t('heatmapDetailDuration')} ${formatDurationWithSeconds(
-      Math.round(segment.durationMinutes * 60),
+      Math.round((endMinute - startMinute) * 60),
     )}`,
     what,
   ];
@@ -230,7 +363,7 @@ export function renderSegmentDetail(container: HTMLElement, options: SegmentDeta
   // A single visit already says everything the summary would: its own node carries the range and
   // the duration, and the icon carries the source. Printing both put the same two values on two
   // consecutive lines.
-  const nodes = visits.length === 1 ? visits : [summary, ...visits];
+  const nodes = visits.length === 1 && !forceSummary ? visits : [summary, ...visits];
 
 
   // One timeline: the summary and every visit hang off the same line, so the run reads as a
@@ -401,6 +534,12 @@ export function renderHeatmap<S extends HeatmapSegment>(
    */
   overlay?: (bar: HTMLElement, hour: number) => void,
   groupOf?: (segment: S) => string,
+  /**
+   * 段属于哪个"过程" / which process the segment belongs to.
+   * 选中按它来，跨小时的连续活动因此能被一起点亮。
+   * Selection is keyed on it, which is what lets a run crossing hours light up as one thing.
+   */
+  runOf?: (segment: S) => string,
 ): boolean {
   const interesting = rows.filter((row) => row.segments.length > 0);
   if (interesting.length === 0) return false;
@@ -424,6 +563,7 @@ export function renderHeatmap<S extends HeatmapSegment>(
   for (let hour = firstHour; hour <= lastHour; hour++) {
     const row = rows[hour]!;
     const rowEl = wrap.createDiv({ cls: 'rtt-hm-row' });
+    rowEl.dataset.rttHour = String(hour);
     rowEl.createDiv({ cls: 'rtt-hm-hlabel', text: String(hour).padStart(2, '0') });
 
     const bar = rowEl.createDiv({ cls: 'rtt-hm-bar' });
@@ -435,6 +575,7 @@ export function renderHeatmap<S extends HeatmapSegment>(
       const representative = block.members[0]!;
       const seg = bar.createDiv({ cls: `rtt-hm-seg ${classOf(representative)}` });
       if (groupOf) seg.dataset.rttGroup = groupOf(representative);
+      if (runOf) seg.dataset.rttRun = runOf(representative);
 
       // Geometry is per-segment data, not a style variant, so it cannot live in a CSS class;
       // `setCssProps` is the sanctioned way to write it. Keys are kebab-case because the helper
