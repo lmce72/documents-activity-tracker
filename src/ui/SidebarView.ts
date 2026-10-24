@@ -3132,7 +3132,7 @@ export class ActivitySidebarView extends ItemView {
         if (this.liveNodes.ring) {
           const percent =
             state.manual.status === 'idle' ? 0 : ((elapsed % 60) / 60) * 100;
-          this.liveNodes.ring.style.setProperty('--rtt-ring-pct', String(percent));
+          this.liveNodes.ring.setCssProps({ '--rtt-ring-pct': String(percent) });
         }
       }
 
@@ -3194,7 +3194,7 @@ export class ActivitySidebarView extends ItemView {
       this.liveNodes.countdownPhase?.setText(t('countdownIdle'));
       this.liveNodes.countdownProgress?.setText('');
       if (this.liveNodes.countdown) setClockTime(this.liveNodes.countdown, 0);
-      this.liveNodes.countdownRing?.style.setProperty('--rtt-ring-pct', '0');
+      this.liveNodes.countdownRing?.setCssProps({ '--rtt-ring-pct': '0' });
       return;
     }
 
@@ -3212,7 +3212,7 @@ export class ActivitySidebarView extends ItemView {
       const percent = position && position.phaseSeconds > 0
         ? (position.phaseElapsed / position.phaseSeconds) * 100
         : 0;
-      this.liveNodes.countdownRing.style.setProperty('--rtt-ring-pct', String(percent));
+      this.liveNodes.countdownRing.setCssProps({ '--rtt-ring-pct': String(percent) });
     }
 
     if (this.liveNodes.countdownPhase) {
