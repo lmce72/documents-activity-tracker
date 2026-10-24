@@ -171,3 +171,81 @@ export function writeLiveSnapshot(
     console.warn('[RTT][snapshot] 写入失败 / write failed:', error);
   }
 }
+
+//  ============================================================================
+// 最后一次心跳 / the last heartbeat
+//  ============================================================================
+
+/**
+ * 心跳落点 / the last heartbeat.
+ *
+ * 进程被系统杀掉时不会有任何事件（文档也是这么说的），于是下次启动只能看到"一条 start"，
+ * 恢复逻辑若按"现在"收尾，整段后台时间就被算成专注。这里每隔几秒记一次「哪个文件、什么时刻还在跑」，
+ * 恢复时用它当会话的真实终点。
+ *
+ * A killed process emits nothing, so the next start only sees "a start with no ending". If recovery
+ * closes it at "now", the whole background stretch is credited as focus. This records "which file, at
+ * what time it was still running" every few seconds, and recovery uses it as the real end.
+ */
+export const LAST_SEEN_KEY = 'rtt_last_seen';
+
+/** 一条心跳 / one heartbeat. */
+export interface LastSeen {
+  filePath: string;
+  /** local full timestamp */
+  at: string;
+}
+
+/** 读心跳；坏数据当作没有 / read it; anything unreadable counts as absent. */
+export function readLastSeen(storage?: SnapshotStorage | null): LastSeen | null {
+  const store = storage ?? defaultStorage();
+  if (!store) return null;
+  try {
+    const raw = store.getItem(LAST_SEEN_KEY);
+    if (!raw) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isObject(parsed)) return null;
+    if (typeof parsed.filePath !== 'string' || typeof parsed.at !== 'string') return null;
+    return { filePath: parsed.filePath, at: parsed.at };
+  } catch (error) {
+    console.warn('[RTT][snapshot] 心跳读取失败 / last-seen read failed:', error);
+    return null;
+  }
+}
+
+/** 写心跳 / write it. */
+export function writeLastSeen(entry: LastSeen | null, storage?: SnapshotStorage | null): void {
+  const store = storage ?? defaultStorage();
+  if (!store) return;
+  try {
+    if (!entry) {
+      store.removeItem(LAST_SEEN_KEY);
+      return;
+    }
+    store.setItem(LAST_SEEN_KEY, JSON.stringify(entry));
+  } catch (error) {
+    console.warn('[RTT][snapshot] 心跳写入失败 / last-seen write failed:', error);
+  }
+}
+
+/**
+ * 恢复时该在什么时刻收尾 / where recovery should close the session.
+ *
+ * 只有心跳确实晚于最后一条事件、且指向同一个文件时才采用它；否则退回"现在"。
+ * 往回写早于最后一条事件会把真实记录截短，所以两条线取较晚的那个。
+ *
+ * The heartbeat is used only when it is later than the last event and names the same file; otherwise
+ * "now". Never earlier than the last event — that would truncate real recorded time — so the later of
+ * the two wins.
+ */
+export function recoveryEnd(
+  lastEventTime: string,
+  lastSeen: LastSeen | null,
+  filePath: string,
+  nowFull: string,
+): string {
+  if (!lastSeen || lastSeen.filePath !== filePath) return nowFull;
+  if (lastSeen.at <= lastEventTime) return nowFull;
+  if (lastSeen.at > nowFull) return nowFull;
+  return lastSeen.at;
+}

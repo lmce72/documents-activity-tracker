@@ -25,6 +25,7 @@ import { eventFileRefs } from '../core/migration';
 import { classifyUnfocusedInterval, listUnfocusedIntervals } from '../core/unfocused';
 import { buildFileRecords } from '../core/timeline';
 import { formatLocalFull, parseSessionStartTime } from '../core/time';
+import { readLastSeen, recoveryEnd, writeLastSeen } from '../data/liveTimerSnapshot';
 import type {
   PluginSettings,
   SessionWrite,
@@ -100,14 +101,26 @@ export class TimerService {
       if (!filePath) return;
 
       await this.deps.history.flushNow();
+
+      //  进程被杀时不会有任何事件，唯一的证据是最后一次心跳：按它收尾，否则整段后台时间会被算成专注
+      //  A killed process leaves no events; the last heartbeat is the only evidence. Closing at it keeps
+      //  the background stretch out of the session instead of crediting it as focus.
+      const endTime = recoveryEnd(
+        last.time,
+        readLastSeen(),
+        filePath,
+        this.deps.clock.nowFull(),
+      );
+
       this.deps.history.appendEvents([
         {
-          time: this.deps.clock.nowFull(),
+          time: endTime,
           type: 'auto-save',
           file: filePath,
           state: 'saved',
         },
       ]);
+      writeLastSeen(null);
       await this.deps.history.flushNow();
 
       this.deps.log.info(
@@ -133,12 +146,13 @@ export class TimerService {
 
     try {
       await this.applyIdleState();
+
+      //  断层排在跨日/关孤儿之前：否则跨夜冻结会被跨日收尾写成"整夜专注"
+      //  The gap goes before rollover and orphan closing: a freeze across midnight would otherwise be
+      //  turned into "focused all night" by the rollover's own auto-save.
+      await this.closeFrozenGap();
       this.applyDayRollover();
       await this.closeOrphanSessions();
-
-      //  时间断层必须先补边界，再让 TICK 记账
-      //  A time gap gets its boundary before TICK does any accounting
-      await this.closeFrozenGap();
 
       const filePath = this.deps.store.getState().activeFilePath;
       if (filePath) {
@@ -147,8 +161,39 @@ export class TimerService {
 
       await this.flushPendingWrites();
       this.syncActivityTitle();
+      this.writeHeartbeat();
     } catch (error) {
       this.deps.log.warn('[RTT][service] 心跳处理失败 / tick failed:', error);
+    }
+  }
+
+  /** 上次写心跳的时刻 / when the heartbeat was last written. */
+  private lastHeartbeatAt = 0;
+
+  /**
+   * 记一次"还在跑" / record that the session is still running.
+   *
+   * 五秒一次就够：被杀最多丢掉最后五秒的归属，而它决定了**其余整段**后台时间算不算专注。
+   * 一次性写 localStorage 很便宜，但没必要每秒都写。
+   *
+   * Once every five seconds is enough: a kill loses at most the last five seconds' attribution, while
+   * this is what decides whether **all the rest** of the background time counts as focus. One
+   * localStorage write is cheap, but there is no reason to do it every second.
+   */
+  private writeHeartbeat(): void {
+    try {
+      const state = this.deps.store.getState();
+      const filePath = state.activeFilePath;
+      const file = filePath ? state.files.get(filePath) : undefined;
+      if (!filePath || !file) return;
+      if (file.status !== STATUS.TRACKING && file.status !== STATUS.PAUSED) return;
+
+      const now = this.deps.clock.now();
+      if (now - this.lastHeartbeatAt < 5000) return;
+      this.lastHeartbeatAt = now;
+      writeLastSeen({ filePath, at: this.deps.clock.nowFull() });
+    } catch (error) {
+      this.deps.log.warn('[RTT][service] 心跳写入失败 / heartbeat write failed:', error);
     }
   }
 
@@ -599,6 +644,11 @@ export class TimerService {
       const target = this.deps.getActivePath();
       if (!target || !isTrackableTarget(target, settings)) return;
 
+      //  立刻记一次：刚开跑就被杀时也有一条心跳可依
+      //  One right away, so a kill seconds after starting still has a heartbeat to rely on.
+      writeLastSeen({ filePath: target, at: this.deps.clock.nowFull() });
+      this.lastHeartbeatAt = this.deps.clock.now();
+
       const file = state.files.get(target);
       if (file?.status === STATUS.TRACKING) return;
 
@@ -630,6 +680,7 @@ export class TimerService {
   /** Discard the current session. */
   async discardCurrent(): Promise<void> {
     this.idleOpen = false;
+    writeLastSeen(null);
     try {
       const filePath = this.deps.store.getState().activeFilePath;
       if (!filePath) return;
@@ -743,6 +794,9 @@ export class TimerService {
     //  保存/丢弃事件本身就是空闲段的终点，标志跟着落下，免得下一次空闲写出重复的开头
     //  A save or discard is itself the end of the stretch; drop the flag so the next idle opens cleanly.
     this.idleOpen = false;
+    //  会话结束：心跳作废，否则下一轮恢复会把旧终点当成新会话的终点
+    //  The session is over: the heartbeat is retired, or a later recovery would use a stale end.
+    writeLastSeen(null);
 
 
     //  只结算**正在进行**的会话。保存的语义是"把眼下这一轮落盘"，而闲置的文件没有可落盘的东西 ——

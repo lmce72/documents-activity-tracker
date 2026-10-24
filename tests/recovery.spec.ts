@@ -18,6 +18,7 @@ import {
   LIVE_SNAPSHOT_KEY,
   LIVE_SNAPSHOT_VERSION,
   readLiveSnapshot,
+  recoveryEnd,
   writeLiveSnapshot,
   type SnapshotStorage,
 } from '../src/data/liveTimerSnapshot';
@@ -175,5 +176,39 @@ describe('restore / 恢复到快照那一刻', () => {
     });
 
     expect(store.getState().manual).toBe(before);
+  });
+});
+
+describe('心跳收尾 / closing at the last heartbeat', () => {
+  const filePath = 'Notes/a.md';
+  const lastEvent = '2026-10-24 10:00:00';
+  const now = '2026-10-25 08:00:00';
+
+  it('采用晚于最后事件、且同一文件的心跳时刻', () => {
+    expect(
+      recoveryEnd(lastEvent, { filePath, at: '2026-10-24 10:05:00' }, filePath, now),
+    ).toBe('2026-10-24 10:05:00');
+  });
+
+  it('心跳早于最后一条事件：退回现在（不能把真实记录截短）', () => {
+    expect(
+      recoveryEnd(lastEvent, { filePath, at: '2026-10-24 09:00:00' }, filePath, now),
+    ).toBe(now);
+  });
+
+  it('心跳指向别的文件：退回现在', () => {
+    expect(
+      recoveryEnd(lastEvent, { filePath: 'Notes/b.md', at: '2026-10-24 10:05:00' }, filePath, now),
+    ).toBe(now);
+  });
+
+  it('没有心跳：退回现在', () => {
+    expect(recoveryEnd(lastEvent, null, filePath, now)).toBe(now);
+  });
+
+  it('心跳在未来：退回现在', () => {
+    expect(
+      recoveryEnd(lastEvent, { filePath, at: '2026-10-26 00:00:00' }, filePath, now),
+    ).toBe(now);
   });
 });
