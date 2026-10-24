@@ -61,6 +61,9 @@ export const DEFAULT_SETTINGS: PluginSettings = {
   //  One shared set of settings by default, so the same data does not read two ways
   perDeviceSettings: false,
 
+  //  默认没有任何别名 / no aliases out of the box
+  recordAliases: {},
+
   //  倒计时默认开着，但停在最朴素的「倒计时 25 分钟」：番茄钟与不规则周期要用的人自己切。
   //  Countdown is on by default but idle at the plainest mode — a 25-minute countdown; pomodoro and
   //  irregular phases are there for whoever switches to them.

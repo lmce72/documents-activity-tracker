@@ -33,6 +33,7 @@ import {
   attributionPolicy,
   countsPluginViewsAsReading,
   countsUnfocusedAsReading,
+  recordName,
 } from '../core/settings';
 import type { Logger } from '../core/logger';
 import {
@@ -57,7 +58,7 @@ import {
   type AccountInput,
 } from '../core/account';
 import { listIdleIntervals, listUnfocusedIntervals } from '../core/unfocused';
-import type { AttributionPolicy } from '../core/types';
+import type { AttributionPolicy, ManualSession } from '../core/types';
 import { buildOverviewRows } from '../core/overview';
 import { buildDocumentDayRows } from '../core/recordsTimeline';
 import { isPluginViewKey } from '../core/activePath';
@@ -82,6 +83,8 @@ import { HScrollTicker } from './hScrollTicker';
 import { createSecondPie } from './secondPie';
 import { docState, stateIcon } from './StatusBar';
 import { renderManualFlagsTable, renderManualSessionDetail } from './manualSessionDetail';
+import { TextPromptModal } from './TextPromptModal';
+import { ConfirmModal } from './ConfirmModal';
 import { appendDurationParts, setClockTime, setClockTimeMs, setReadTime } from './durationText';
 import {
   buildFileRecords,
@@ -1106,7 +1109,9 @@ export class ActivitySidebarView extends ItemView {
 
     const file = state.files.get(filePath);
     const record = records[filePath];
-    const name = record?.fileName ?? filePath;
+    //  卡片上的名字也尊重别名：同一条记录在两处显示不同的名字才是真的乱
+    //  The card honours the alias too: one record showing two names would be the real confusion.
+    const name = recordName(this.deps.settings(), filePath, record?.fileName ?? filePath);
     const status = file?.status ?? STATUS.IDLE;
     const running = status === STATUS.TRACKING || status === STATUS.PAUSED;
 
@@ -1244,6 +1249,9 @@ export class ActivitySidebarView extends ItemView {
       onShowStretch?: () => void;
       /** The right-edge control that opens the underlying file. */
       onOpen?: () => void;
+      /** 改名 / rename: a display alias or a note, never the target itself. */
+      onEdit?: () => void;
+      editLabel?: string;
       onDelete?: () => void;
       deleteLabel?: string;
     },
@@ -1276,6 +1284,15 @@ export class ActivitySidebarView extends ItemView {
       //  The base rule gives every row a pointer cursor; a row that cannot be clicked has to
       //  correct that, or the cursor is lying.
       item.addClass('is-static');
+    }
+
+    //  改名放在最前：它改的是这一行怎么读，其它几个按钮都是动作
+    //  Rename comes first: it changes how the row reads, while the rest are actions.
+    if (options.onEdit) {
+      this.iconButton(item, 'pencil', options.editLabel ?? t('recordEditName'), options.onEdit, {
+        ghost: true,
+        stopPropagation: true,
+      });
     }
 
     // Opening the file is its own intention, so it gets one button at the right edge; the
@@ -1389,13 +1406,17 @@ export class ActivitySidebarView extends ItemView {
         if (record.lastReadAt) meta.push(`${t('lastRead')}${record.lastReadAt}`);
 
         this.renderRecordRow(list, {
-          name: record.fileName,
+          //  显示别名，但打开、删除、统计都仍用 filePath —— 改名只是备注
+          //  The alias is shown, while opening, deleting and totalling all still use filePath.
+          name: recordName(this.deps.settings(), filePath, record.fileName),
           stats,
           meta,
           onShowStretch: () => showStretch(this.entryStretchNodes(filePath, record, false, mode)),
+          onEdit: () => this.promptRecordAlias(filePath),
           onOpen: () => {
             void this.app.workspace.openLinkText(filePath, '', false);
           },
+          onDelete: () => this.confirmDeleteRecord(filePath, record),
         });
       }
     }
@@ -1405,6 +1426,73 @@ export class ActivitySidebarView extends ItemView {
     //  The entry stays even with nothing today: otherwise "nothing today" reads as "nothing
     //  at all".
     this.renderViewAllButton(root);
+  }
+
+  /**
+   * 改记录别名 / edit a record's display alias.
+   *
+   * 只写设置里的别名表：文件、事件、统计全都不动，所以改名永远不会断开指向。
+   * Only the alias map in settings is written — file, events and totals stay put, so a rename can never
+   * break what the row points at.
+   */
+  private promptRecordAlias(key: string): void {
+    const current = this.deps.settings().recordAliases?.[key] ?? '';
+    new TextPromptModal(this.app, {
+      title: t('recordEditName'),
+      description: t('recordEditNameDesc'),
+      placeholder: t('recordEditNamePlaceholder'),
+      initial: current,
+      onDone: (value) => {
+        if (value === null) return;
+        const aliases = { ...(this.deps.settings().recordAliases ?? {}) };
+        const trimmed = value.trim();
+        if (trimmed) aliases[key] = trimmed;
+        else delete aliases[key];
+        void this.deps.saveSetting({ recordAliases: aliases }).then(() => this.render());
+      },
+    }).open();
+  }
+
+  /** 改一轮手动计时的备注 / edit one manual round's note. */
+  private promptManualNote(session: ManualSession): void {
+    new TextPromptModal(this.app, {
+      title: t('recordEditNote'),
+      description: t('recordEditNoteDesc'),
+      initial: session.note,
+      onDone: (value) => {
+        if (value === null) return;
+        this.deps.history.updateManualSessionNote(session.id, value.trim());
+        void this.deps.history.flushNow();
+        this.render();
+      },
+    }).open();
+  }
+
+  /**
+   * 删除一篇文档的全部记录 / delete every record of one document.
+   * 与记录浏览器同一套语义：不可撤销，所以先确认；别名一并清掉。
+   * Same semantics as the records browser: irreversible, so it confirms first; the alias goes with it.
+   */
+  private confirmDeleteRecord(key: string, record: FileRecord): void {
+    new ConfirmModal(this.app, {
+      title: t('recDelete'),
+      message: t('recDeleteConfirm').replace(
+        '{name}',
+        recordName(this.deps.settings(), key, record.fileName),
+      ),
+      confirmText: t('deleteAction'),
+      cancelText: t('cancel'),
+      onConfirm: () => {
+        this.deps.history.deleteFileEvents(key);
+        const aliases = { ...(this.deps.settings().recordAliases ?? {}) };
+        if (aliases[key] !== undefined) {
+          delete aliases[key];
+          void this.deps.saveSetting({ recordAliases: aliases });
+        }
+        void this.deps.history.flushNow({ force: true });
+        this.render();
+      },
+    }).open();
   }
 
   /** The manual-timer panel. */
@@ -2906,6 +2994,8 @@ export class ActivitySidebarView extends ItemView {
           `${session.startTime.slice(11, 16)} – ${session.endTime.slice(11, 16)}`,
         ],
         meta: marks > 0 ? [`${t('manualFlagsTitle')} ${marks}`] : [],
+        onEdit: () => this.promptManualNote(session),
+        editLabel: t('recordEditNote'),
         onDelete: () => {
           this.deps.history.deleteManualSession(session.id);
           void this.deps.history.flushNow();

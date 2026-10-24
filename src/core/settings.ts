@@ -55,6 +55,14 @@ function coerce<K extends keyof PluginSettings>(
   if (Array.isArray(fallback)) {
     return (Array.isArray(raw) ? raw : fallback) as PluginSettings[K];
   }
+  //  以对象为默认值的设置（目前只有记录别名）也要有自己的分支，否则会落进字符串判断而被丢掉
+  //  Object-valued defaults (currently the record aliases) need their own branch, or they fall through
+  //  to the string check and are dropped on every load.
+  if (typeof fallback === 'object' && fallback !== null) {
+    return (typeof raw === 'object' && raw !== null && !Array.isArray(raw)
+      ? raw
+      : fallback) as PluginSettings[K];
+  }
   return (typeof raw === 'string' ? raw : fallback) as PluginSettings[K];
 }
 
@@ -159,4 +167,20 @@ export function attributionPolicy(settings: PluginSettings): {
 /** Plugin activity is reading by default; the raw ledger is always retained. */
 export function countsPluginViewsAsReading(settings: PluginSettings): boolean {
   return settings.countPluginViewsAsReading !== false;
+}
+
+/**
+ * 记录显示名 / a record's display name.
+ *
+ * 有别名用别名，否则用默认名。别名只影响显示，调用方仍用 key 去打开文件、删记录、算统计。
+ * The alias when one is set, the default name otherwise. It affects display only — callers keep using the
+ * key to open the file, delete the record and compute totals.
+ */
+export function recordName(
+  settings: PluginSettings,
+  key: string,
+  fallback: string,
+): string {
+  const alias = settings.recordAliases?.[key];
+  return typeof alias === 'string' && alias.trim().length > 0 ? alias.trim() : fallback;
 }

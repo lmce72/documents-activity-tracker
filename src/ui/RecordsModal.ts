@@ -32,9 +32,14 @@ import {
   formatReadTimeParts,
   todayStr,
 } from '../core/time';
-import { countsPluginViewsAsReading, countsUnfocusedAsReading } from '../core/settings';
+import {
+  countsPluginViewsAsReading,
+  countsUnfocusedAsReading,
+  recordName,
+} from '../core/settings';
 import { buildFileRecords } from '../core/timeline';
 import { appendDurationParts, setReadTime } from './durationText';
+import { TextPromptModal } from './TextPromptModal';
 import {
   CHANNEL_CLASSES,
   filterRowsByClass,
@@ -64,6 +69,8 @@ export interface RecordsModalDeps {
   service?: TimerService;
   clock: Clock;
   settings: () => PluginSettings;
+  /** 保存设置补丁（改别名用）/ persist a settings patch, used for aliases */
+  saveSetting?: (patch: Partial<PluginSettings>) => Promise<void>;
   log: Logger;
 
   onChanged?: () => void;
@@ -311,7 +318,12 @@ export class RecordsModal extends Modal {
       this.renderRowIcon(item, filePath);
 
       const text = item.createDiv({ cls: 'rtt-item-text' });
-      text.createDiv({ cls: 'rtt-item-name', text: record.fileName });
+      //  别名只影响显示；这一行打开、删除、统计都仍按 filePath
+      //  The alias affects display only; opening, deleting and totalling still use filePath.
+      text.createDiv({
+        cls: 'rtt-item-name',
+        text: recordName(this.deps.settings(), filePath, record.fileName),
+      });
 
       const stats = text.createDiv({ cls: 'rtt-item-stats' });
       const total = stats.createSpan({ cls: 'rtt-item-session-val rtt-dur' });
@@ -350,6 +362,27 @@ export class RecordsModal extends Modal {
         this.render();
 
         //  The file opens without dismissing the panel, so browsing keeps its place
+        void this.app.workspace.openLinkText(filePath, '', false);
+      });
+
+      //  改名 / rename (display alias only)
+      const edit = item.createEl('button', { cls: 'rtt-item-icon-btn' });
+      setIcon(edit, 'pencil');
+      edit.setAttribute('aria-label', t('recordEditName'));
+      edit.title = t('recordEditName');
+      edit.addEventListener('click', (event) => {
+        event.stopPropagation();
+        this.promptAlias(filePath, record);
+      });
+
+      //  明确的打开链接：点击行本身也会打开，但"这条指哪篇文档"要有一个可点的地方
+      //  An explicit link: the row click opens too, but "which document is this" needs something to click
+      const open = item.createEl('button', { cls: 'rtt-item-icon-btn' });
+      setIcon(open, 'external-link');
+      open.setAttribute('aria-label', t('listOpenFile'));
+      open.title = t('listOpenFile');
+      open.addEventListener('click', (event) => {
+        event.stopPropagation();
         void this.app.workspace.openLinkText(filePath, '', false);
       });
 
@@ -438,6 +471,11 @@ export class RecordsModal extends Modal {
 
       try {
         const removed = this.deps.history.deleteFileEvents(filePath);
+        const aliases = { ...(this.deps.settings().recordAliases ?? {}) };
+        if (aliases[filePath] !== undefined) {
+          delete aliases[filePath];
+          void this.deps.saveSetting?.({ recordAliases: aliases });
+        }
         void this.deps.history.flushNow();
         this.pendingDelete = null;
         if (this.selected === filePath) this.selected = null;
@@ -450,6 +488,34 @@ export class RecordsModal extends Modal {
         new Notice(String(error), 6000);
       }
     });
+  }
+
+  /**
+   * 改显示名 / edit the display alias.
+   *
+   * 写成设置里的别名，不动文件：改名是一个备注，指向的文档不变。
+   * Written into the settings alias map, never the file: a rename is a remark and the target stays.
+   */
+  private promptAlias(filePath: string, record: FileRecord): void {
+    const current = this.deps.settings().recordAliases?.[filePath] ?? '';
+    new TextPromptModal(this.app, {
+      title: t('recordEditName'),
+      description: t('recordEditNameDesc'),
+      placeholder: t('recordEditNamePlaceholder'),
+      initial: current,
+      onDone: (value) => {
+        if (value === null) return;
+        const aliases = { ...(this.deps.settings().recordAliases ?? {}) };
+        const trimmed = value.trim();
+        if (trimmed) aliases[filePath] = trimmed;
+        else delete aliases[filePath];
+        void this.deps.saveSetting?.({ recordAliases: aliases }).then(() => {
+          this.deps.onChanged?.();
+          this.render();
+        });
+        void record;
+      },
+    }).open();
   }
 
   /** the selected file's heatmap for one day. */

@@ -53,6 +53,12 @@ export interface HistoryStore {
   getManualSessionsInRange(start: string, end: string): ManualSession[];
   appendManualSession(session: ManualSession): void;
   deleteManualSession(id: string): void;
+  /**
+   * 改一轮的备注 / rewrite one session's note.
+   * 返回是否真的存在这一轮；备注是"这轮做了什么"的唯一可编辑字段。
+   * Whether such a session exists; the note is the only editable part of what a round was.
+   */
+  updateManualSessionNote(id: string, note: string): boolean;
 
   //  倒计时是另一本账 / the countdown is a separate ledger
   getCountdownSessions(): CountdownSession[];

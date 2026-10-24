@@ -449,6 +449,15 @@ export class SqliteStore implements HistoryStore {
     this.markDirty();
   }
 
+  /** 改备注 / rewrite a session's note. */
+  updateManualSessionNote(id: string, note: string): boolean {
+    const db = this.requireDb();
+    db.run('UPDATE manual_sessions SET note = ? WHERE id = ?', [note, id]);
+    const changed = db.getRowsModified() > 0;
+    if (changed) this.markDirty();
+    return changed;
+  }
+
   /** Delete a manual session. */
   deleteManualSession(id: string): void {
     this.requireDb().run('DELETE FROM manual_sessions WHERE id = ?', [id]);

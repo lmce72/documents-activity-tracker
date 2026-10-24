@@ -889,6 +889,7 @@ export default class ReadTimeTrackerPlugin extends Plugin {
         history: this.history,
         clock: systemClock,
         settings: () => this.settings,
+        saveSetting: (patch) => this.updateSettings(patch),
         log: this.log,
         onChanged: () => this.refreshSidebar(),
         onSaveRecords: () => this.confirmAndSave(),

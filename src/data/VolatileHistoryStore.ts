@@ -122,6 +122,13 @@ export class VolatileHistoryStore implements HistoryStore {
     this.manual = this.manual.filter((s) => s.id !== id);
   }
 
+  updateManualSessionNote(id: string, note: string): boolean {
+    const index = this.manual.findIndex((session) => session.id === id);
+    if (index < 0) return false;
+    this.manual[index] = { ...this.manual[index]!, note };
+    return true;
+  }
+
   getCountdownSessions(): CountdownSession[] {
     return [...this.countdown];
   }

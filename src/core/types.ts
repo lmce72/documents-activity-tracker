@@ -214,6 +214,18 @@ export interface PluginSettings {
   countdownPromptNote: boolean;
 
   /**
+   * 记录别名 / display aliases for records.
+   *
+   * 键是记录的身份（文件路径或 view: 视图键），值只用于显示。改名是给自己看的备注，不改变指向：
+   * 文件本身、链接与统计都仍按原来的键走。留空即恢复默认显示。
+   *
+   * Keyed by the record's identity (a file path or a view: key); the value is display-only. Renaming is
+   * a note to self and never changes the target — file, links and statistics all stay keyed by the path.
+   * An empty value restores the default name.
+   */
+  recordAliases: Record<string, string>;
+
+  /**
    * 设备独立设置 / settings kept per device.
    *
    * 关（默认）：设置写进数据旁边的共享文件，随 vault 同步，各设备用同一套口径。

@@ -2145,3 +2145,50 @@ button.rtt-cal-cell.is-range-end {
 button.rtt-cal-cell.is-range-start.is-range-end {
     border-radius: var(--radius-s);
 }
+
+/* ── 记录行的图标按钮 / record-row icon buttons ──────────────────────────
+ *
+ * 记录浏览器里每行新增了「改名」与「打开文档」两个按钮，与删除并排：都只占图标宽，不挤占文字列。
+ * The records browser gained "rename" and "open document" buttons beside delete: icon-width only, so the
+ * text column keeps its room.
+ */
+.rtt-item-icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    background: none;
+    background-color: transparent;
+    border: none;
+    border-radius: var(--radius-s);
+    box-shadow: none;
+    color: var(--text-muted);
+    cursor: pointer;
+}
+
+.rtt-item-icon-btn:hover {
+    color: var(--text-normal);
+    background-color: var(--background-modifier-hover);
+    box-shadow: none;
+}
+
+.rtt-item-icon-btn svg {
+    width: 14px;
+    height: 14px;
+}
+
+/* 手机上加到 32px：一行里挤三个 24px 图标，手指点不准 */
+/* 32px on mobile: three 24px icons in one row are not a reliable tap target */
+body.is-mobile .rtt-item-icon-btn {
+    width: 32px;
+    height: 32px;
+}
+
+/* 单行输入弹窗 / the one-line prompt's field */
+.rtt-text-prompt-input {
+    width: 100%;
+    margin-bottom: 10px;
+}
