@@ -1,3 +1,7 @@
+import { visibleSources, previewVisits, sourceClass } from '../core/processPreview';
+import { visitNodes } from './processList';
+import { AwayIdleModal } from './AwayIdleModal';
+import { renderHint } from './hintCallout';
 import { activityRuns } from '../core/activityRuns';
 /**
  * Sidebar view
@@ -22,6 +26,7 @@ import { ItemView, Setting, setIcon, setTooltip, type WorkspaceLeaf } from 'obsi
 import { STATUS } from '../core/constants';
 import {
   formatDurationParts,
+  formatLocalFull,
   formatDurationWithSeconds,
   formatReadTimeParts,
   parseSessionStartTime,
@@ -57,10 +62,10 @@ import {
   RecordsCache,
   type AccountInput,
 } from '../core/account';
-import { listIdleIntervals, listUnfocusedIntervals } from '../core/unfocused';
-import type { AttributionPolicy, ManualSession } from '../core/types';
-import { buildOverviewRows } from '../core/overview';
-import { buildDocumentDayRows } from '../core/recordsTimeline';
+import type { ManualSession } from '../core/types';
+import { buildOverviewTracks, type OverviewProcess, type OverviewTrack } from '../core/overviewTracks';
+import { overviewSourceName, renderOverviewTracks } from './overviewTracks';
+import { buildDocumentDayRows, toAbsoluteMinutes } from '../core/recordsTimeline';
 import { isPluginViewKey } from '../core/activePath';
 import {
   CHANNEL_CLASSES,
@@ -78,7 +83,7 @@ import {
   type HeatmapSegment,
   type LegendEntry,
 } from './heatmapRender';
-import { renderTimelineList, type TimelineNode } from './timelineList';
+import { renderTimelineList, type TimelineNode, type TimelineDisclosureState } from './timelineList';
 import { HScrollTicker } from './hScrollTicker';
 import { createSecondPie } from './secondPie';
 import { docState, stateIcon } from './StatusBar';
@@ -95,7 +100,6 @@ import { liveWallClockSeconds } from '../core/types';
 import type {
   FileRecord,
   PluginSettings,
-  TimerFileState,
   TimerState,
   TimelineEvent,
 } from '../core/types';
@@ -137,7 +141,9 @@ type LiveKey =
   | 'session'
   | 'unfocused'
   | 'fileToday'
-  | 'todayFocus'
+  | 'todayTotal'
+  | 'weekRead'
+  | 'weekTotal'
   | 'todayAway'
   | 'todayIdle'
   | 'todayPaused'
@@ -159,7 +165,9 @@ interface LiveNodes {
   pie?: HTMLElement;
 
   /** 统计格 / the stat grid */
-  todayFocus?: HTMLElement;
+  todayTotal?: HTMLElement;
+  weekRead?: HTMLElement;
+  weekTotal?: HTMLElement;
   todayAway?: HTMLElement;
   todayIdle?: HTMLElement;
   todayPaused?: HTMLElement;
@@ -227,7 +235,10 @@ export class ActivitySidebarView extends ItemView {
   private countdownExpanded = false;
 
   /** Whether the overview's day detail is expanded past its first few entries. */
-  private overviewExpanded = false;
+  private overviewSelection: { day: string; id: string } | null = null;
+  private readonly overviewSourcesExpanded = new Set<string>();
+  private readonly timelineExpanded = new Set<string>();
+  private readonly overviewPreviewExpanded = new Set<string>();
 
   /**
    * 手动计时的专注视图 / the manual timer's focus view.
@@ -552,11 +563,15 @@ export class ActivitySidebarView extends ItemView {
           return run !== undefined && spans.some((span) => run.start < span.end && run.end > span.start);
         });
 
+      if (!members.length) { this.selection = null; setProcessMarkers(parent, []); return; }
+      const visibleSpans = [...new Set(members.map(segment => runs.get(segment)!))].map(run => ({ start: run.start, end: run.end }));
+      selection.spans = visibleSpans;
+      setProcessMarkers(parent, visibleSpans);
       if (detail?.renderHour) { detail.renderHour(panel, members as S[]); return; }
       if (detail) { detail.render(panel, members[0]!); return; }
 
-      const startAbs = Math.min(...spans.map((span) => span.start));
-      const endAbs = Math.max(...spans.map((span) => span.end));
+      const startAbs = Math.min(...visibleSpans.map((span) => span.start));
+      const endAbs = Math.max(...visibleSpans.map((span) => span.end));
       const processBlock: HeatmapBlock<S> = {
         startMinute: 0,
         durationMinutes: endAbs - startAbs,
@@ -596,19 +611,13 @@ export class ActivitySidebarView extends ItemView {
         //  Clicking a segment selects the **processes covering that hour**: a continuous run may reach
         //  into the neighbouring hours, so what is lit and what the detail describes stay the same thing.
         const hourSegments = (shown[hour]?.segments ?? []) as S[];
-        const runIds = new Set(hourSegments.map((segment) => runs.get(segment)!.id));
-        //  一小时里可能有多段彼此分离的过程：视觉上仍只给一条线、一对端点，从最早的起点到最晚的终点
-        //  An hour can hold several disjoint processes; the chart still shows one line and one pair of caps,
-        //  from the earliest start to the latest end.
         const hourRuns = [...new Set(hourSegments.map((segment) => runs.get(segment)!))];
-        const processStart = Math.min(...hourRuns.map((run) => run.start));
-        const processEnd = Math.max(...hourRuns.map((run) => run.end));
-        const span = { start: processStart, end: processEnd };
+        const spans = hourRuns.map(run => ({ start: run.start, end: run.end }));
 
-        const isSelected = toggleProcessMarkers(parent, [span]);
+        const isSelected = toggleProcessMarkers(parent, spans);
         void element;
         this.selection = isSelected
-          ? { panel: this.panel, day, spans: [span], hour }
+          ? { panel: this.panel, day, spans, hour }
           : null;
         paintSelection();
       },
@@ -704,8 +713,6 @@ export class ActivitySidebarView extends ItemView {
       //  Expanding the manual list changes how many rows it has, so it belongs here
       String(this.manualExpanded),
       String(this.countdownExpanded),
-      String(this.awayExpanded),
-      String(this.overviewExpanded),
       String(this.manualFocus),
 
       //  The calendar's open state shapes the DOM; without it turning pages would not redraw
@@ -836,20 +843,6 @@ export class ActivitySidebarView extends ItemView {
       addTab('countdown', 'hourglass', t('panelCountdown'));
     }
     addTab('overview', 'gauge', t('panelOverview'));
-  }
-
-  /**
-   * whether to render the today-total cell.
-   *
-   * 统计卡现在是把「今日总时长」拆成阅读与非阅读的两格之和，所以这一格不该在按下开始的瞬间消失 ——
-   * 会闪的一格算不上宫格。设置里的 `never` 仍然可以把它去掉，另两个取值都显示。
-   *
-   * The grid now decomposes "today total" into reading plus non-reading, so this cell must not
-   * vanish the moment a session starts: a cell that blinks in and out is not a grid. `never`
-   * still removes it; the other two values show it.
-   */
-  private shouldShowTodayTotal(settings: PluginSettings): boolean {
-    return settings.todayTotalDisplay !== 'never';
   }
 
   /** The statistic cards. */
@@ -996,12 +989,13 @@ export class ActivitySidebarView extends ItemView {
     const week = weekAccount(this.accountInput(todayStr()));
 
     this.renderStatCards(root, [
-      { label: t('statsTodayFocus'), seconds: 0, liveKey: 'todayFocus' },
-      { label: t('statsTodayAway'), seconds: 0, liveKey: 'todayAway' },
-      { label: t('statsTodayIdle'), seconds: 0, liveKey: 'todayIdle' },
-      { label: t('statsTodayPaused'), seconds: 0, liveKey: 'todayPaused' },
       { label: t('statsTodayRead'), seconds: 0, liveKey: 'todayRead' },
-      { label: t('statsWeekRead'), seconds: week.reading },
+      { label: t('statsTodayTotal'), seconds: 0, liveKey: 'todayTotal' },
+      { label: t('statsTodayAway'), seconds: 0, liveKey: 'todayAway' },
+      { label: t('statsTodayPaused'), seconds: 0, liveKey: 'todayPaused' },
+      { label: t('statsTodayIdle'), seconds: 0, liveKey: 'todayIdle' },
+      { label: t('statsWeekRead'), seconds: week.reading, liveKey: 'weekRead' },
+      { label: t('statsWeekTotal'), seconds: week.total, liveKey: 'weekTotal' },
     ]);
   }
 
@@ -1161,10 +1155,9 @@ export class ActivitySidebarView extends ItemView {
       setTooltip(this.liveNodes.unfocused, t('unfocusedManage'));
 
       //  不再弹窗：同一面板里就是那一段的归属，跳过去比另开一层更近
-      //  No modal any more: the stretch's attribution lives on this very panel, so jumping to it is
-      //  closer than opening a layer on top of it.
+      // Open the same attribution editor as the away/idle button.
       this.liveNodes.unfocused.addEventListener('click', () => {
-        this.awaySectionEl?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        this.openAwayModal();
       });
     }
 
@@ -1246,7 +1239,7 @@ export class ActivitySidebarView extends ItemView {
       /** the muted meta line; omitted when empty */
       meta?: string[];
       /** Row click: reveal this entry's stretch rather than leaving the panel. */
-      onShowStretch?: () => void;
+      onShowStretch?: (container: HTMLElement) => void;
       /** The right-edge control that opens the underlying file. */
       onOpen?: () => void;
       /** 改名 / rename: a display alias or a note, never the target itself. */
@@ -1278,7 +1271,12 @@ export class ActivitySidebarView extends ItemView {
 
     if (options.onShowStretch) {
       item.addClass('is-clickable');
-      item.addEventListener('click', options.onShowStretch);
+      const detail = list.createDiv({ cls: 'rtt-record-inline rtt-hm-detail' });
+      detail.hidden = true;
+      item.addEventListener('click', () => {
+        detail.hidden = !detail.hidden;
+        if (!detail.hidden && !detail.hasChildNodes()) options.onShowStretch?.(detail);
+      });
     } else {
 
       //  The base rule gives every row a pointer cursor; a row that cannot be clicked has to
@@ -1378,15 +1376,6 @@ export class ActivitySidebarView extends ItemView {
 
     new Setting(root).setName(t('docListTop')).setHeading();
 
-    // Filled after the list, captured by the row callbacks — see renderOverviewList for why
-    // the order is safe.
-    let detail: HTMLElement | null = null;
-    const showStretch = (nodes: TimelineNode[]): void => {
-      if (!detail) return;
-      detail.empty();
-      renderTimelineList(detail, nodes);
-    };
-
     if (rows.length === 0) {
       root.createDiv({ cls: 'rtt-list-empty', text: t('docListEmpty') });
     } else {
@@ -1411,7 +1400,7 @@ export class ActivitySidebarView extends ItemView {
           name: recordName(this.deps.settings(), filePath, record.fileName),
           stats,
           meta,
-          onShowStretch: () => showStretch(this.entryStretchNodes(filePath, record, false, mode)),
+          onShowStretch: container => renderTimelineList(container, this.entryStretchNodes(filePath, record, false, mode)),
           onEdit: () => this.promptRecordAlias(filePath),
           onOpen: () => {
             void this.app.workspace.openLinkText(filePath, '', false);
@@ -1421,7 +1410,6 @@ export class ActivitySidebarView extends ItemView {
       }
     }
 
-    detail = root.createDiv({ cls: 'rtt-hm-detail' });
 
     //  The entry stays even with nothing today: otherwise "nothing today" reads as "nothing
     //  at all".
@@ -1544,7 +1532,7 @@ export class ActivitySidebarView extends ItemView {
         .replace('{time}', entry.startedAt.slice(0, 16))
         .replace('{duration}', elapsed),
     });
-    card.createDiv({ cls: 'rtt-live-line is-muted', text: t('recoveryDesc') });
+    renderHint(card, t('recoveryDesc'));
 
     const bar = card.createDiv({ cls: 'rtt-timeline-nav' });
     this.iconButton(
@@ -1580,149 +1568,14 @@ export class ActivitySidebarView extends ItemView {
    * together here: the policy for new stretches, today's stretches (each reclassifiable), and the idle
    * channel that used to be discarded outright.
    */
-  private renderAwaySection(root: HTMLElement): void {
-    const section = root.createDiv({ cls: 'rtt-heatmap-wrap' });
-    this.awaySectionEl = section;
-
-    new Setting(section).setName(t('awaySectionTitle')).setHeading();
-
-    const settings = this.deps.settings();
-    const policy = attributionPolicy(settings);
-
-    new Setting(section)
-      .setName(t('awayPolicyLabel'))
-      .setDesc(t('awayPolicyDesc'))
-      .addDropdown((dropdown) =>
-        dropdown
-          .addOption('reading', t('policyReading'))
-          .addOption('paused', t('policyPaused'))
-          .addOption('ignored', t('policyIgnored'))
-          .setValue(policy.away)
-          .onChange((value) => {
-            void this.deps
-              .saveSetting({ awayPolicy: value as AttributionPolicy })
-              .then(() => this.render());
-          }),
-      );
-
-    new Setting(section)
-      .setName(t('idlePolicyLabel'))
-      .setDesc(t('idlePolicyDesc'))
-      .addDropdown((dropdown) =>
-        dropdown
-          .addOption('reading', t('policyReading'))
-          .addOption('paused', t('policyPaused'))
-          .addOption('ignored', t('policyIgnored'))
-          .setValue(policy.idle)
-          .onChange((value) => {
-            void this.deps
-              .saveSetting({ idlePolicy: value as AttributionPolicy })
-              .then(() => this.render());
-          }),
-      );
-
-    const today = todayStr();
-    const intervals = listUnfocusedIntervals(this.cachedEvents())
-      .filter((item) => item.from.slice(0, 10) === today)
-      .slice()
-      .reverse();
-
-    const idleIntervals = listIdleIntervals(this.cachedEvents())
-      .filter((item) => item.from.slice(0, 10) === today)
-      .reverse();
-
-    if (intervals.length === 0 && idleIntervals.length === 0) {
-      section.createDiv({ cls: 'rtt-list-empty', text: t('awayTodayEmpty') });
-      return;
-    }
-
-    const shownAway = this.awayExpanded ? intervals : intervals.slice(0, 3);
-    for (const interval of shownAway) {
-      const closed = interval.to !== null;
-      const editable = closed && this.deps.service.canClassifyUnfocused(interval.filePath, interval.from);
-      const name = interval.filePath.split('/').pop() ?? interval.filePath;
-
-      //  旧数据里每个 blur 都写着 'unfocused'（未归类），显示成当前口径才与实际记账一致；
-      //  选「不记录」写入的是新值 'ignored'，两者不能混为一谈
-      //  Older data wrote 'unfocused' on every blur (unclassified); showing the policy is what the
-      //  accounting actually does. Choosing "do not record" writes the new 'ignored' value.
-      const shownDisposition = interval.disposition === 'unfocused' ? policy.away : interval.disposition;
-
-      const row = new Setting(section)
-        .setName(
-          `${interval.from.slice(11)} – ${closed ? interval.to!.slice(11) : '…'}`,
-        )
-        .setDesc(`${name} · ${formatDurationWithSeconds(interval.seconds)}`);
-
-      row.addDropdown((dropdown) =>
-        dropdown
-          .addOption('reading', t('policyReading'))
-          .addOption('paused', t('policyPaused'))
-          .addOption('ignored', t('policyIgnored'))
-          .setValue(shownDisposition)
-          .setDisabled(!editable)
-          .onChange((value) => {
-            dropdown.setDisabled(true);
-            void this.deps.service
-              .classifyUnfocused(interval.index, interval.from, value as 'reading' | 'paused' | 'ignored')
-              .then(() => this.render())
-              .catch((error: unknown) => {
-                this.deps.log.warn('[RTT] 失焦归类失败 / classification failed:', error);
-                this.render();
-              });
-          }),
-      );
-    }
-
-
-
-    //  空闲时段并列在这张表里：同一种"没在读"，两种来源，分成两处看等于没统一
-    //  Idle stretches sit in the same list: two sources of the same "not reading", and splitting
-    //  them across two places would defeat the point of one entry.
-    if (idleIntervals.length > 0) {
-      section.createDiv({ cls: 'rtt-live-line is-muted', text: t('awayIdleHint') });
-
-      const shownIdle = this.awayExpanded ? idleIntervals : idleIntervals.slice(0, 3);
-      for (const idle of shownIdle) {
-        const name = idle.filePath.split('/').pop() ?? idle.filePath;
-        new Setting(section)
-          .setName(
-            `${t('awayKindIdle')} · ${idle.from.slice(11)} – ${idle.to ? idle.to.slice(11) : '…'}`,
-          )
-          .setDesc(`${name} · ${formatDurationWithSeconds(idle.seconds)}`);
-      }
-    }
-
-    //  默认只摆三段：手机上一天能积十几段，全摊开会把热力图挤出屏幕
-    //  Three rows by default: a day can accumulate a dozen stretches, and on a phone the heatmap would
-    //  be pushed off the screen.
-    if (intervals.length + idleIntervals.length <= 3) return;
-
-    const more = section.createEl('button', { cls: 'rtt-view-all-btn' });
-    setIcon(
-      more.createSpan({ cls: 'rtt-view-all-icon' }),
-      this.awayExpanded ? 'chevron-up' : 'chevron-down',
-    );
-    more.createSpan({
-      cls: 'rtt-view-all-label',
-      text: this.awayExpanded ? t('manualShowLess') : t('manualShowMore'),
-    });
-    more.addEventListener('click', () => {
-      this.awayExpanded = !this.awayExpanded;
-      this.render();
-    });
+  private openAwayModal(): void {
+    new AwayIdleModal(this.app, { ...this.deps, onChanged: () => this.refresh() }, this.deps.clock.today()).open();
   }
 
-  /** 离开与空闲区块，卡片上的减号跳到它 / the away section; the card's deduction jumps here. */
-  private awaySectionEl: HTMLElement | null = null;
-
-  /**
-   * 离开/空闲列表是否展开 / whether the away and idle lists are expanded.
-   * 手机上一天可能积下十几段，全部摊开会把热力图挤到屏幕之外。
-   * A day can accumulate a dozen stretches, and on a phone laying them all out pushes the heatmap off
-   * the screen.
-   */
-  private awayExpanded = false;
+  private renderAwaySection(root: HTMLElement): void {
+    const button = root.createEl('button', { cls: 'rtt-view-all-btn', text: t('awaySectionTitle') });
+    button.addEventListener('click', () => this.openAwayModal());
+  }
 
   /** manual timer controls. */
   private renderManualControls(root: HTMLElement): void {
@@ -1920,7 +1773,7 @@ export class ActivitySidebarView extends ItemView {
       cls: 'rtt-stopwatch-time',
       text: formatDurationWithSeconds(0),
     });
-    void wrap.createDiv({ cls: 'rtt-stopwatch-hint', text: t('manualRingHint') });
+    renderHint(parent, t('manualRingHint'));
   }
 
   /** the marks placed during this run. */
@@ -2040,7 +1893,7 @@ export class ActivitySidebarView extends ItemView {
       cls: 'rtt-stopwatch-time',
       text: formatDurationWithSeconds(0),
     });
-    wrap.createDiv({ cls: 'rtt-stopwatch-hint', text: t('countdownRingHint') });
+    renderHint(parent, t('countdownRingHint'));
   }
 
   /** the countdown's button row. */
@@ -2141,7 +1994,7 @@ export class ActivitySidebarView extends ItemView {
 
     const total = planTotalSeconds(plan);
     root.createDiv({
-      cls: 'rtt-live-line',
+      cls: 'rtt-cd-plan-summary',
       text: `${t(modeLabelKey(plan.mode))} · ${t('countdownPlanSummary')
         .replace('{count}', String(plan.phases.length))
         .replace('{total}', formatDurationWithSeconds(total))}`,
@@ -2234,7 +2087,7 @@ export class ActivitySidebarView extends ItemView {
    */
   private renderOverviewPanel(ovLeft: HTMLElement, ovRight: HTMLElement): void {
     const settings = this.deps.settings();
-    if (!settings.documentTrackingEnabled && !settings.manualTimerEnabled) {
+    if (!settings.documentTrackingEnabled && !settings.manualTimerEnabled && settings.countdownTimerEnabled === false) {
       ovLeft.createDiv({ cls: 'rtt-empty-hint', text: t('ovEmpty') });
       return;
     }
@@ -2266,204 +2119,91 @@ export class ActivitySidebarView extends ItemView {
     const head = ovRight.createDiv({ cls: 'rtt-heatmap-wrap' });
     this.renderDayNav(head);
 
-    const rows = buildOverviewRows(weekIntervals, this.day);
-    const hasAny = rows.some((row) => row.segments.length > 0);
-
-    if (!hasAny) {
-      head.createDiv({ cls: 'rtt-list-empty', text: t('ovEmpty') });
-      return;
-    }
-
-    //  图例改由 renderClickableHeatmap 画在图上方，且可点（见 LegendEntry）；原来这里那条只读图例
-    //  就不再单独画了。
-    //  The legend is now drawn above the chart by renderClickableHeatmap, and is clickable (see
-    //  LegendEntry); the read-only one that used to live here is gone.
-    const ovLegend: LegendEntry[] = [
-      { key: 'rtt-ov-doc', className: 'rtt-ov-doc', label: t('ovDocument') },
-      { key: 'rtt-ov-view', className: 'rtt-ov-view', label: t('ovView') },
-      { key: 'rtt-ov-manual', className: 'rtt-ov-manual', label: t('ovManual') },
-      { key: 'rtt-ov-countdown', className: 'rtt-ov-countdown', label: t('ovCountdown') },
-      { key: 'rtt-ov-both', className: 'rtt-ov-both', label: t('ovLegendBoth') },
-    ];
-
-    // One thing, one colour: a stretch covered by a single ledger takes that ledger's
-    // colour, and anything covered twice gets the striped "both" fill.
-    const sourceClass = (source: string): string =>
-      source === 'manual' ? 'rtt-ov-manual'
-        : source === 'view' ? 'rtt-ov-view'
-          : source === 'countdown' ? 'rtt-ov-countdown'
-            : 'rtt-ov-doc';
-    const sourceLabel = (source: string): string =>
-      source === 'manual' ? t('ovManual')
-        : source === 'view' ? t('ovView')
-          : source === 'countdown' ? t('ovCountdown')
-            : t('ovDocument');
-
-    this.renderClickableHeatmap(
-      head,
-      rows,
-      (segment) =>
-        segment.sources.length > 1 ? 'rtt-ov-both' : sourceClass(segment.sources[0]!),
-      (segment) =>
-        `${formatDurationWithSeconds(Math.round(segment.durationMinutes * 60))} · ` +
-        segment.sources.map(sourceLabel).join(' + '),
-      (block) => ({
-        // Which ledgers covered this stretch *is* the process here, so the detail names them.
-        what: [...new Set(block.members.flatMap(segment => segment.sources))].map(sourceLabel).join(' + '),
-        icon: 'activity',
-        kind: 'overview',
-      }),
-      this.cachedEvents(),
-      this.day,
-      ovLegend,
-    );
-
-    ovRight.createDiv({ cls: 'rtt-records-meta', text: t('ovExplain') });
-
-    //  明细列表要的是按文件的记录，与账本同源但形状不同：账本按通道汇总，列表按文件罗列
-    //  The detail list needs per-file records — same source as the account, different shape.
-    const records = buildFileRecords(
-      this.cachedEvents(),
-      this.deps.clock.now(),
-      this.day,
-      {
-        countUnfocused: countsUnfocusedAsReading(settings),
-        countPluginViews: countsPluginViewsAsReading(settings),
-      },
-    );
-    this.renderOverviewList(ovRight, Object.entries(records));
-  }
-
-  /**
-   * The day's detail, as one node timeline / 当日明细：一条节点时间轴.
-   *
-   * Notes, plugin views and manual sessions share one line so the day reads in sequence,
-   * with the icon carrying the kind — telling "I read a note" from "I read the RSS pane" at a
-   * glance is the whole point of the icons.
-   *
-   * 三种来源共用一条轴线，图标负责区分种类 —— 这正是图标存在的意义。
-   */
-  private renderOverviewList(
-    root: HTMLElement,
-    records: Array<[string, FileRecord]>,
-  ): void {
-    const mode = this.deps.settings().timeDisplayMode;
-
-    // Declared before the nodes but filled after the timeline: the detail block has to sit
-    // below it, while `renderTimelineList` appends the list itself. Safe because the
-    // callbacks only run on click, long after the assignment.
+    const sources = visibleSources(this.hiddenHeatmap);
+    const tracks = buildOverviewTracks(weekIntervals, input.manual, input.countdown, this.day);
+    renderHeatmapLegend(head, tracks.map(track => ({ key: sourceClass[track.source], className: sourceClass[track.source], label: overviewSourceName(track.source) })), this.hiddenHeatmap, key => this.toggleHeatmapClass(key));
     let detail: HTMLElement | null = null;
-    const showStretch = (nodes2: TimelineNode[]): void => {
+    const paintSelection = (): void => {
       if (!detail) return;
       detail.empty();
-      renderTimelineList(detail, nodes2);
+      const selected = this.overviewSelection;
+      const process = selected?.day === this.day ? tracks.flatMap(track => track.processes).find(item => item.id === selected.id && sources.has(item.source)) : undefined;
+      for (const element of Array.from(head.querySelectorAll<HTMLElement>('.rtt-hm-seg'))) {
+        const active = element.dataset.rttGroup === process?.id;
+        element.toggleClass('is-selected', active);
+        element.setAttribute('aria-pressed', String(active));
+      }
+      if (process) this.renderOverviewProcess(detail, process);
     };
-
-    const nodes: TimelineNode[] = [];
-
-    // Every entry leads with the stretch and only then the total: the line is a record of
-    // *when*, and the duration qualifies it. Leading with the total reads as a scoreboard.
-    for (const [key, record] of records) {
-      if (record.readTimeToday <= 0) continue;
-      const isView = isPluginViewKey(key);
-      nodes.push({
-        icon: isView ? 'app-window' : 'file-text',
-        kind: isView ? 'view' : 'document',
-        title: record.fileName,
-        lines: [
-          this.todayRange(record),
-          formatReadTimeParts(record.readTimeToday, mode),
-        ].filter(Boolean),
-        // The row reveals the stretch; opening the note is a different intention, so it gets
-        // its own control instead of being what a stray click does.
-        onSelect: () => showStretch(this.entryStretchNodes(key, record, isView, mode)),
-        onOpen: isView
-          ? undefined
-          : () => {
-              void this.app.workspace.openLinkText(key, '', false);
-            },
-        openLabel: t('listOpenFile'),
-      });
-    }
-
-    for (const session of manualSessionsOfDay(this.deps.history.getManualSessions(), this.day)) {
-      nodes.push({
-        icon: 'timer',
-        kind: 'manual',
-        title: session.note || t('noteLabel'),
-        lines: [
-          `${session.startTime.slice(11, 16)} – ${session.endTime.slice(11, 16)}`,
-          formatDurationParts(session.durationSeconds),
-        ],
-        onSelect: () =>
-          showStretch([
-            {
-              icon: 'timer',
-              kind: 'manual',
-              title: `${session.startTime.slice(11, 16)} – ${session.endTime.slice(11, 16)}`,
-              lines: [
-                formatDurationParts(session.durationSeconds),
-                ...(session.flags.length > 0
-                  ? [
-                      `${t('manualFlagsTitle')} ${flagIntervals(session.flags)
-                        .map((seconds) => formatDurationWithSeconds(seconds))
-                        .join(' · ')}`,
-                    ]
-                  : []),
-              ],
-            },
-          ]),
-      });
-    }
-
-    new Setting(root).setName(t('ovListTitle')).setHeading();
-
-    if (nodes.length === 0) {
-      root.createDiv({ cls: 'rtt-list-empty', text: t('ovEmpty') });
-      return;
-    }
-
-    const visible = this.overviewExpanded ? nodes : nodes.slice(0, TOP_LIST_ITEMS);
-    renderTimelineList(root, visible);
-    detail = root.createDiv({ cls: 'rtt-hm-detail' });
-
-    if (nodes.length > TOP_LIST_ITEMS) {
-      const more = root.createEl('button', { cls: 'rtt-view-all-btn' });
-      setIcon(
-        more.createSpan({ cls: 'rtt-view-all-icon' }),
-        this.overviewExpanded ? 'chevron-up' : 'chevron-down',
-      );
-      more.createSpan({
-        cls: 'rtt-view-all-label',
-        text: this.overviewExpanded ? t('manualShowLess') : t('manualShowMore'),
-      });
-      more.addEventListener('click', () => {
-        this.overviewExpanded = !this.overviewExpanded;
-        this.render();
-      });
-    }
+    renderOverviewTracks(head, tracks, this.day, sources, this.overviewSelection?.day === this.day ? this.overviewSelection.id : null, process => {
+      this.overviewSelection = this.overviewSelection?.day === this.day && this.overviewSelection.id === process.id ? null : { day: this.day, id: process.id };
+      paintSelection();
+    });
+    detail = head.createDiv({ cls: 'rtt-hm-detail rtt-overview-detail' });
+    paintSelection();
+    renderHint(ovRight, t('ovExplain'));
+    this.renderOverviewList(ovRight, tracks);
   }
 
-  /**
-   * One entry's reading range today, as `HH:MM – HH:MM`.
-   *
-   * Taken from the session timestamps rather than stored on the record: the range is what the
-   * day-detail line leads with, and deriving it keeps `FileRecord` from carrying yet another
-   * pair of fields that can fall out of step.
-   */
-  private todayRange(record: FileRecord): string {
-    const day = todayStr();
-    const times: string[] = [];
+  private overviewTimestamp(absolute: number): string {
+    const base = toAbsoluteMinutes(this.day + ' 00:00:00')!;
+    const date = new Date(this.day + 'T00:00:00');
+    date.setSeconds(Math.round((absolute - base) * 60));
+    return formatLocalFull(date);
+  }
 
-    for (const session of record.readTimeLine) {
-      for (const time of Object.keys(session)) {
-        if (time.startsWith(day)) times.push(time);
+  private renderOverviewProcess(parent: HTMLElement, process: OverviewProcess, summary = true): void {
+    if (process.session) { renderManualSessionDetail(parent, process.session); return; }
+    const from = this.overviewTimestamp(process.startAbs);
+    const to = this.overviewTimestamp(process.endAbs);
+    const now = formatLocalFull(new Date(this.deps.clock.now()));
+    const until = to < now ? to : now;
+    const visits = previewVisits(this.cachedEvents(), from, until, accountIntervals(this.accountInput(this.day)), new Set([process.source]));
+    const state: TimelineDisclosureState = { expanded: this.timelineExpanded, scope: this.day + ':' + (summary ? 'selected:' : 'day:') + process.id };
+    const nodes = visitNodes(visits, true, state);
+    const key = state.scope;
+    const paint = (): void => {
+      parent.empty();
+      const shown = this.overviewPreviewExpanded.has(key) ? nodes : nodes.slice(0, 8);
+      const header: TimelineNode = { icon: process.source === 'view' ? 'app-window' : 'file-text', kind: process.source,
+        title: overviewSourceName(process.source), timeRange: from.slice(11, 19) + ' – ' + to.slice(11, 19),
+        lines: [formatDurationParts(Math.round((process.endAbs - process.startAbs) * 60))] };
+      renderTimelineList(parent, summary && nodes.length > 1 ? [header, ...shown] : shown, state);
+      if (nodes.length > 8) {
+        const more = parent.createEl('button', { cls: 'rtt-view-all-btn', text: this.overviewPreviewExpanded.has(key) ? t('manualShowLess') : t('processMore').replace('{n}', String(nodes.length - 8)) });
+        more.addEventListener('click', () => { if (this.overviewPreviewExpanded.has(key)) this.overviewPreviewExpanded.delete(key); else this.overviewPreviewExpanded.add(key); paint(); });
       }
-    }
-    if (times.length === 0) return '';
+    };
+    paint();
+  }
 
-    times.sort();
-    return `${times[0]!.slice(11, 16)} – ${times[times.length - 1]!.slice(11, 16)}`;
+  private renderOverviewList(root: HTMLElement, tracks: readonly OverviewTrack[]): void {
+    new Setting(root).setName(t('ovListTitle')).setHeading();
+    const sources = visibleSources(this.hiddenHeatmap);
+    for (const track of tracks) {
+      if (!sources.has(track.source) || !track.processes.length) continue;
+      const key = this.day + ':' + track.source;
+      const group = root.createEl('details', { cls: 'rtt-source-processes' });
+      group.open = this.overviewSourcesExpanded.has(key);
+      const summary = group.createEl('summary');
+      summary.createSpan({ cls: 'rtt-source-name', text: overviewSourceName(track.source) });
+      summary.createSpan({ cls: 'rtt-source-count', text: t('processCount').replace('{n}', String(track.processes.length)) });
+      const content = group.createDiv({ cls: 'rtt-source-content' });
+      const render = (): void => {
+        if (content.hasChildNodes()) return;
+        const state: TimelineDisclosureState = { expanded: this.timelineExpanded, scope: key };
+        const nodes: TimelineNode[] = track.processes.map(process => ({
+          key: process.id, icon: track.source === 'document' ? 'file-text' : track.source === 'view' ? 'app-window' : track.source === 'manual' ? 'timer' : 'hourglass', kind: track.source,
+          timeRange: this.overviewTimestamp(process.startAbs).slice(11, 19) + ' – ' + this.overviewTimestamp(process.endAbs).slice(11, 19),
+          title: process.session?.note || overviewSourceName(track.source),
+          lines: [formatDurationParts(process.session?.durationSeconds ?? Math.round((process.endAbs - process.startAbs) * 60))],
+          renderDetail: container => this.renderOverviewProcess(container, process, false),
+        }));
+        renderTimelineList(content, nodes, state);
+      };
+      if (group.open) render();
+      group.addEventListener('toggle', () => { if (group.open) { this.overviewSourcesExpanded.add(key); render(); } else this.overviewSourcesExpanded.delete(key); });
+    }
   }
 
   /** One entry's today stretches, as the nodes of a detail timeline. */
@@ -2521,7 +2261,7 @@ export class ActivitySidebarView extends ItemView {
     const nodes: TimelineNode[] = (kept.length > 0 ? kept : merged).map((span) => ({
       icon: isView ? 'app-window' : 'file-text',
       kind: isView ? 'view' : 'document',
-      title: `${span.from.slice(11, 16)} – ${span.to.slice(11, 16)}`,
+      title: `${span.from.slice(11, 19)} – ${span.to.slice(11, 19)}`,
       lines: [formatDurationParts(span.seconds)],
     }));
 
@@ -2667,20 +2407,6 @@ export class ActivitySidebarView extends ItemView {
     //  开关摆在日期选择器**上面**：它决定下面那个日历点一下是选一天，还是选区间的一端
     //  The switch sits above the date picker: it decides whether a click in the calendar below picks one
     //  day or one end of a range.
-    const rangeRow = parent.createEl('label', { cls: 'rtt-range-toggle' });
-    const rangeBox = rangeRow.createEl('input', { type: 'checkbox' });
-    rangeBox.checked = this.rangeMode;
-    rangeBox.addEventListener('change', () => {
-      this.rangeMode = rangeBox.checked;
-      if (!this.rangeMode) {
-        this.rangeStart = null;
-        this.rangeEnd = null;
-      }
-      this.render();
-    });
-    rangeRow.createSpan({ cls: 'rtt-range-toggle-label', text: t('rangeSelect') });
-    setTooltip(rangeRow, t('rangeSelectDesc'));
-
     const nav = parent.createDiv({ cls: 'rtt-timeline-nav' });
 
     //  区间模式下箭头没有意义（点日历两端即可），收起来免得和区间标签打架
@@ -3082,15 +2808,17 @@ export class ActivitySidebarView extends ItemView {
 
       //  统计格：一份账本，五条通道 / the grid: one account, five channels
       if (
-        this.liveNodes.todayFocus
-        || this.liveNodes.todayAway
+        this.liveNodes.todayAway
         || this.liveNodes.todayIdle
         || this.liveNodes.todayPaused
         || this.liveNodes.todayRead
       ) {
         const account = dayAccount(this.accountInput(this.deps.clock.today()));
 
-        if (this.liveNodes.todayFocus) setReadTime(this.liveNodes.todayFocus, account.focus, mode);
+        const week = weekAccount(this.accountInput(this.deps.clock.today()));
+        if (this.liveNodes.todayTotal) setReadTime(this.liveNodes.todayTotal, account.total, mode);
+        if (this.liveNodes.weekRead) setReadTime(this.liveNodes.weekRead, week.reading, mode);
+        if (this.liveNodes.weekTotal) setReadTime(this.liveNodes.weekTotal, week.total, mode);
         if (this.liveNodes.todayAway) setReadTime(this.liveNodes.todayAway, account.away, mode);
         if (this.liveNodes.todayIdle) setReadTime(this.liveNodes.todayIdle, account.idle, mode);
         if (this.liveNodes.todayPaused) setReadTime(this.liveNodes.todayPaused, account.paused, mode);

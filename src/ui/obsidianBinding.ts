@@ -9,9 +9,11 @@
  *
  */
 
-import { MarkdownView, type App, type EventRef, type Plugin } from 'obsidian';
+import { Platform, MarkdownView, type App, type EventRef, type Plugin } from 'obsidian';
 
 import { isPluginViewKey, resolveActiveTarget } from '../core/activePath';
+
+import { MobileActivity } from '../core/mobileActivity';
 
 import type { Logger } from '../core/logger';
 import type { TimerService } from '../services/TimerService';
@@ -27,6 +29,7 @@ const ACTIVITY_THROTTLE_MS = 2000;
 
 /** What the binding needs. */
 export interface BindingDeps {
+  mobileMultiWindow?: () => boolean;
   app: App;
   plugin: Plugin;
   service: TimerService;
@@ -61,6 +64,7 @@ export function installBindings(deps: BindingDeps): Binding {
 
   const registered: EventRef[] = [];
   let lastActivityAt = 0;
+  let destroyed = false;
 
   /**
    * the active markdown file, or null when nothing is being read.
@@ -162,8 +166,38 @@ export function installBindings(deps: BindingDeps): Binding {
    * would never run.
    */
   let suspended: boolean | null = null;
+  const mobile = new MobileActivity();
+  mobile.visible = document.visibilityState === 'visible';
+  mobile.focused = document.hasFocus();
+  let nativeRevision = 0;
 
   const setSuspended = (next: boolean, reason: string): void => {
+    if (destroyed) return;
+    if (Platform.isMobile) {
+      if (reason === 'window-focus' || reason === 'window-blur') mobile.focused = !next;
+      else if (reason.startsWith('visibility-') || reason === 'startup' || reason === 'poll') {
+        mobile.visible = document.visibilityState === 'visible';
+        mobile.focused = document.hasFocus();
+      } else if (reason === 'page-freeze' || reason === 'page-resume') mobile.frozen = next;
+      else if (reason === 'pagehide' || reason === 'pageshow') mobile.visible = !next;
+      else if (reason === 'capacitor-pause') { mobile.nativePaused = true; nativeRevision++; }
+      else if (reason === 'capacitor-resume') {
+        mobile.nativePaused = false; mobile.nativeActive = true; nativeRevision++;
+      } else if (reason === 'capacitor-app-state' || reason === 'capacitor-initial-state') {
+        mobile.nativeActive = !next;
+        if (!next) mobile.nativePaused = false;
+        nativeRevision++;
+      }
+      const background = mobile.background(deps.mobileMultiWindow?.() === true);
+      void service.onMobileBackgroundChange(background)
+        .then(async () => {
+          if (!destroyed && !mobile.background(deps.mobileMultiWindow?.() === true)) {
+            await service.onWindowFocusChange(mobile.focused);
+          }
+        })
+        .catch((error: unknown) => log.warn('[RTT] Mobile activity update failed:', error));
+      return;
+    }
     if (suspended === next) return;
     suspended = next;
     log.info('[RTT][binding] 活动状态 / activity state:', next ? 'suspended' : 'active', reason);
@@ -244,7 +278,23 @@ export function installBindings(deps: BindingDeps): Binding {
     }
   ).Capacitor?.Plugins?.App;
 
-  let capacitorListener: { remove?: () => Promise<void> } | null = null;
+  const capacitorListeners: Array<{ remove?: () => Promise<void> }> = [];
+  const removeNative = (handle: { remove?: () => Promise<void> }): void => {
+    void handle.remove?.().catch((error: unknown) => log.warn('[RTT] Native listener cleanup failed:', error));
+  };
+  let nativePollPending = false;
+  let lastNativePoll = 0;
+  const pollNative = (): void => {
+    if (!Platform.isMobile || !capacitorApp?.getState || nativePollPending) return;
+    const revision = nativeRevision;
+    nativePollPending = true;
+    void capacitorApp.getState().then(state => {
+      if (!destroyed && revision === nativeRevision && typeof state?.isActive === 'boolean') {
+        setSuspended(!state.isActive, 'capacitor-initial-state');
+      }
+    }).catch((error: unknown) => log.warn('[RTT] Native activity poll failed:', error))
+      .finally(() => { nativePollPending = false; });
+  };
 
   if (typeof capacitorApp?.addListener === 'function') {
     //  按官方文档，三个事件各有不同的原生触发点：
@@ -258,7 +308,7 @@ export function installBindings(deps: BindingDeps): Binding {
     //  onStop, which may never run when the process is reclaimed or the device enters Doze. Subscribe to
     //  both pause and resume as well; whichever arrives first wins (setSuspended dedupes).
     const subscriptions: Array<[string, (state?: { isActive?: boolean }) => void]> = [
-      ['appStateChange', (state) => setSuspended(state?.isActive === false, 'capacitor-app-state')],
+      ['appStateChange', (state) => { if (typeof state?.isActive === 'boolean') setSuspended(!state.isActive, 'capacitor-app-state'); }],
       ['pause', () => setSuspended(true, 'capacitor-pause')],
       ['resume', () => setSuspended(false, 'capacitor-resume')],
     ];
@@ -267,7 +317,8 @@ export function installBindings(deps: BindingDeps): Binding {
       capacitorApp
         .addListener(event, handler)
         .then((handle) => {
-          capacitorListener = handle;
+          if (destroyed) removeNative(handle);
+          else capacitorListeners.push(handle);
         })
         .catch((error: unknown) => {
           log.warn(`[RTT][binding] Capacitor 监听注册失败 / listener failed: ${event}:`, error);
@@ -276,14 +327,7 @@ export function installBindings(deps: BindingDeps): Binding {
 
     //  注册那一刻可能已经在后台（例如从通知栏冷启动后退回）
     //  It may already be in the background when we subscribe
-    capacitorApp
-      .getState?.()
-      .then((state) => {
-        if (state?.isActive === false) setSuspended(true, 'capacitor-initial-state');
-      })
-      .catch((error: unknown) => {
-        log.warn('[RTT][binding] Capacitor getState 失败 / getState failed:', error);
-      });
+    pollNative();
   } else {
     //  桌面端没有 Capacitor；手机端如果真的缺这个插件，日志里要能看见，而不是安静地降级
     //  Desktops have no Capacitor; if a phone genuinely lacks the plugin, that must be visible in the
@@ -298,6 +342,10 @@ export function installBindings(deps: BindingDeps): Binding {
 
   // heartbeat ──────────────────────────────────────────────────
   const timer = window.setInterval(() => {
+    if (Platform.isMobile) {
+      setSuspended(false, 'poll');
+      if (Date.now() - lastNativePoll >= 5000) { lastNativePoll = Date.now(); pollNative(); }
+    }
     void service.tick();
   }, TICK_INTERVAL_MS);
   plugin.registerInterval(timer);
@@ -313,7 +361,8 @@ export function installBindings(deps: BindingDeps): Binding {
    */
   const syncStartupState = (): void => {
     try {
-      void service.onWindowFocusChange(document.hasFocus());
+      if (Platform.isMobile) setSuspended(!document.hasFocus(), 'startup');
+      else void service.onWindowFocusChange(document.hasFocus());
     } catch (error) {
       log.warn('[RTT][binding] 初始焦点探测失败 / initial focus probe failed:', error);
     }
@@ -336,13 +385,14 @@ export function installBindings(deps: BindingDeps): Binding {
     getActiveTitle,
     getOpenPaths,
     destroy(): void {
+      destroyed = true;
       window.clearInterval(timer);
       for (const ref of registered) app.workspace.offref(ref);
       registered.length = 0;
       // A native listener is not covered by `registerDomEvent`; without this it survives the
       // plugin and keeps writing to a dead service.
-      void capacitorListener?.remove?.().catch(() => undefined);
-      capacitorListener = null;
+      for (const handle of capacitorListeners) removeNative(handle);
+      capacitorListeners.length = 0;
     },
   };
 }

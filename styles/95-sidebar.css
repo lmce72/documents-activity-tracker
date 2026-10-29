@@ -310,15 +310,16 @@
  * never a re-render.
  */
 .rtt-cd-plan {
-    display: flex;
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: 6px;
     margin: 6px 0 4px;
 }
 
 .rtt-cd-chip {
-    display: inline-flex;
-    align-items: baseline;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
     gap: 5px;
     padding: 3px 8px;
     border: 1px solid var(--background-modifier-border);
@@ -1430,18 +1431,13 @@ button.rtt-cal-today.is-disabled {
     background: var(--background-secondary);
 }
 
-/* 没有文档可跟随时：图标留在左边，**文案**在整个卡片里居中
-   With nothing to follow: the icon stays on the left and the *sentence* is centred on the card.
- *
- * 图标与文案一起居中的话，文案会被图标挤到中线右边（30px 图标 + 10px 间距的一半）。这里让正文占满整卡
- * 再居中，负外边距正好抵消图标与间距占掉的 40px，所以文案中心就是卡片中线。
- * Centring the icon and the sentence as one group pushes the sentence off the card's centre line by
- * half of the icon-plus-gap (40px). Here the body spans the whole card instead, with a negative
- * margin cancelling exactly that 40px, so the sentence's centre *is* the card's centre.
- */
+/* Empty cards stack their icon and text without overlap / 空卡片纵向排列，避免窄栏重叠。 */
+.rtt-live-card.is-empty {
+    flex-direction: column;
+    align-items: center;
+}
 .rtt-live-card.is-empty .rtt-live-body {
-    flex: 1 1 auto;
-    margin-left: -40px;
+    margin-left: 0;
     text-align: center;
 }
 
@@ -2192,3 +2188,50 @@ body.is-mobile .rtt-item-icon-btn {
     width: 100%;
     margin-bottom: 10px;
 }
+
+/* Inline process details mask the continuous connector / 就地详情遮住连续轴线。 */
+.rtt-vtl-range { color: var(--text-muted); font-size: var(--font-ui-smaller); font-variant-numeric: tabular-nums; }
+.rtt-vtl-inline { position: relative; z-index: 1; margin: var(--size-4-2) 0 var(--size-4-1) -22px; padding: var(--size-4-2); border: 1px solid var(--background-modifier-border); border-radius: var(--radius-s); background: var(--background-primary); overflow-wrap: anywhere; font-size: var(--font-ui-small); }
+.rtt-vtl-inline[hidden], .rtt-record-inline[hidden] { display: none; }
+.rtt-vtl-inline .rtt-vtl-node::before { display: none; }
+.rtt-process-toggle { margin-top: var(--size-2-1); }
+.rtt-hint-callout { margin: var(--size-4-2) 0; }
+.rtt-hint-callout > summary { cursor: pointer; list-style: none; }
+.rtt-hint-callout > summary::-webkit-details-marker { display: none; }
+.rtt-hint-callout .callout-content { font-size: var(--font-ui-small); }
+.rtt-cd-plan-summary { color: var(--text-muted); font-size: var(--font-ui-small); margin-bottom: var(--size-4-2); }
+.rtt-cd-chip-label { min-width: 0; overflow-wrap: anywhere; }
+.rtt-cd-chip-time { white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+.rtt-vtl-body { position: relative; }
+.rtt-vtl-body:has(> .rtt-process-toggle) > .rtt-vtl-range,
+.rtt-vtl-body:has(> .rtt-process-toggle) > .rtt-vtl-title { padding-right: var(--size-4-6); }
+.rtt-process-toggle { position: absolute; top: 0; right: 0; margin: 0; }
+.rtt-vtl-title:has(~ .rtt-process-toggle) { cursor: pointer; }
+.rtt-live-card.is-empty .rtt-live-title { font-size: var(--font-ui-small); }
+
+/* Four independent source tracks share each hour / 四种来源共用小时坐标。 */
+.rtt-overview-tracks .rtt-hm-xaxis .rtt-hm-tick-wrap { margin-left: var(--size-4-5); min-width: 0; }
+.rtt-overview-hour { align-items: flex-start; padding-block: var(--size-4-1); border-bottom: 1px solid var(--background-modifier-border); }
+.rtt-overview-hour > .rtt-hm-hlabel { padding-top: var(--size-4-1); }
+.rtt-ov-lanes { flex: 1; min-width: 0; display: grid; gap: var(--size-2-1); }
+.rtt-ov-lane { display: flex; align-items: center; gap: var(--size-4-1); min-width: 0; }
+.rtt-ov-lane-icon { display: flex; flex: 0 0 var(--size-4-4); color: var(--text-muted); }
+.rtt-ov-lane-icon svg { width: var(--icon-xs); height: var(--icon-xs); }
+.rtt-ov-lane .rtt-hm-bar { min-width: 0; height: var(--size-4-4); }
+.rtt-hm-seg.rtt-ov-countdown { background: var(--color-orange); }
+.rtt-overview-tracks .rtt-hm-seg.is-selected { outline: 1px solid var(--text-normal); outline-offset: -1px; opacity: 1; z-index: 2; }
+.rtt-overview-tracks .rtt-hm-pause-block { background: repeating-linear-gradient(135deg, var(--background-primary), var(--background-primary) 2px, transparent 2px, transparent 4px); opacity: 0.8; pointer-events: none; z-index: 3; }
+.rtt-overview-tracks .rtt-hm-flag { pointer-events: none; }
+.rtt-overview-detail:empty { display: none; }
+.rtt-source-processes { margin-block: var(--size-4-2); border: 1px solid var(--background-modifier-border); border-radius: var(--radius-s); }
+.rtt-source-processes > summary { cursor: pointer; padding: var(--size-4-2); font-size: var(--font-ui-small); }
+.rtt-source-count { color: var(--text-muted); font-size: var(--font-ui-smaller); margin-left: var(--size-4-2); }
+.rtt-source-content { padding: var(--size-4-2); }
+.rtt-source-processes:not([open]) > .rtt-source-content { display: none; }
+
+/* Durations wrap between complete number/unit pairs / 数字与单位成组换行。 */
+.rtt-dur-part { display: inline-block; white-space: nowrap; }
+.rtt-stats-bar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.rtt-stats-card, .rtt-panel-col { min-width: 0; }
+.rtt-stats-value.rtt-dur { max-width: 100%; white-space: normal; text-align: center; }

@@ -1,3 +1,5 @@
+import { onHeatmapActivate } from './heatmapActivation';
+import { visitNodes } from './processList';
 import { buildVisits } from '../core/activityVisits';
 /**
  * Heatmap rendering
@@ -15,11 +17,9 @@ import { buildVisits } from '../core/activityVisits';
 
 import { setIcon, setTooltip } from 'obsidian';
 
-import { isPluginViewKey, pluginViewLabel } from '../core/activePath';
 import { t } from '../core/i18n';
 import type { RecordChannel } from '../core/recordsTimeline';
 import {
-  formatDurationParts,
   formatDurationWithSeconds,
   formatLocalFull,
   type DurationPart,
@@ -383,55 +383,8 @@ function processNodes(
   to: string,
   clock: (minutes: number) => string,
 ): TimelineNode[] {
-  const nodes: TimelineNode[] = [];
-
-  for (const visit of buildVisits(events, from, to)) {
-    const isView = isPluginViewKey(visit.target);
-    const total = visit.activeSeconds + visit.unfocusedSeconds;
-
-    const lines: Array<string | readonly DurationPart[]> = [
-      `${visit.from.slice(11, 19)} – ${visit.to.slice(11, 19)}`,
-      formatDurationParts(Math.round(total)),
-    ];
-
-    // A visit that was interrupted explains itself: without the split the number looks low for
-    // the span it covers.
-    if (visit.unfocusedSeconds > 0 || visit.pausedSeconds > 0) {
-      const parts = [`${t('tabInWindow')} ${formatDurationWithSeconds(Math.round(visit.activeSeconds))}`];
-      if (visit.unfocusedSeconds > 0) {
-        parts.push(`${t('tabUnfocused')} ${formatDurationWithSeconds(Math.round(visit.unfocusedSeconds))}`);
-      }
-      if (visit.pausedSeconds > 0) {
-        parts.push(`${t('recChannelPaused')} ${formatDurationWithSeconds(Math.round(visit.pausedSeconds))}`);
-      }
-      lines.push(parts.join(' · '));
-    }
-
-    nodes.push({
-      icon: isView ? 'app-window' : 'file-text',
-      kind: isView ? 'view' : 'document',
-      title: isView
-        ? `${t('ovView')} · ${visit.title || pluginViewLabel(visit.target)}`
-        : `${t('ovKindDocument')} · ${visit.target.split('/').pop() ?? visit.target}`,
-      lines,
-    });
-
-    if (visit.nextTarget) {
-      const nextIsView = isPluginViewKey(visit.nextTarget);
-      nodes.push({
-        icon: 'arrow-right-left',
-        variant: 'connector',
-        title: `${t('evSwitchTo')} ${
-          nextIsView
-            ? `${t('ovView')} · ${pluginViewLabel(visit.nextTarget)}`
-            : (visit.nextTarget.split('/').pop() ?? visit.nextTarget)
-        }`,
-      });
-    }
-  }
-
   void clock;
-  return nodes;
+  return visitNodes(buildVisits(events, from, to));
 }
 
 /**
@@ -546,16 +499,7 @@ export function renderHeatmap<S extends HeatmapSegment>(
 
   const wrap = parent.createDiv({ cls: 'rtt-heatmap-wrap' });
 
-  // x-axis ticks every 15 minutes
-  const axis = wrap.createDiv({ cls: 'rtt-hm-xaxis' });
-  axis.createDiv({ cls: 'rtt-hm-hlabel', text: '' });
-  const tickWrap = axis.createDiv({ cls: 'rtt-hm-tick-wrap' });
-  for (const minute of TICKS) {
-    const tick = tickWrap.createDiv({ cls: 'rtt-hm-tick', text: `${minute}` });
-    // setCssProps, not `style.left = ...`: Obsidian's review rejects direct style assignment,
-    // and the helper writes through the same style object.
-    tick.setCssProps({ left: `${(minute / 60) * 100}%` });
-  }
+  renderHeatmapAxis(wrap);
 
   const firstHour = Math.max(0, interesting[0]!.hour - 1);
   const lastHour = Math.min(23, interesting[interesting.length - 1]!.hour + 1);
@@ -568,48 +512,65 @@ export function renderHeatmap<S extends HeatmapSegment>(
 
     const bar = rowEl.createDiv({ cls: 'rtt-hm-bar' });
 
-    // Touching same-class segments become one block: a run of activity is stored as many short
-    // pieces, and one-click-per-piece is both unreadable and unhittable.
-    const blocks = mergeSegments(row.segments, classOf, groupOf);
-    for (const block of blocks) {
-      const representative = block.members[0]!;
-      const seg = bar.createDiv({ cls: `rtt-hm-seg ${classOf(representative)}` });
-      if (groupOf) seg.dataset.rttGroup = groupOf(representative);
-      if (runOf) seg.dataset.rttRun = runOf(representative);
-
-      // Geometry is per-segment data, not a style variant, so it cannot live in a CSS class;
-      // `setCssProps` is the sanctioned way to write it. Keys are kebab-case because the helper
-      // writes through `style.setProperty`.
-      const props: Record<string, string> = {
-        left: `${(block.startMinute / 60) * 100}%`,
-        // A very short block gets a floor width, or it is invisible on screen
-        width: `${Math.max(0.4, (block.durationMinutes / 60) * 100)}%`,
-      };
-      // A clipped slice loses its rounding so the stretch still reads as one
-      const joined = blocks.some(other => other !== block && groupOf
-        && groupOf(other.members[0]!) === groupOf(representative)
-        && (Math.abs(other.startMinute + other.durationMinutes - block.startMinute) < TOUCH_EPSILON
-          || Math.abs(block.startMinute + block.durationMinutes - other.startMinute) < TOUCH_EPSILON));
-      if (block.clipped || joined) props['border-radius'] = '0';
-
-      seg.setCssProps(props);
-      seg.setAttribute('aria-label', labelOf(representative));
-
-      if (onSelect) {
-        seg.addClass('is-clickable');
-        seg.addEventListener('click', () => onSelect(block, hour, seg));
-        if (groupOf) {
-          seg.setAttribute('role', 'button');
-          seg.tabIndex = 0;
-          seg.addEventListener('keydown', (event) => {
-            if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onSelect(block, hour, seg); }
-          });
-        }
-      }
-    }
+    renderHeatmapTrack(bar, row, classOf, labelOf, onSelect, groupOf, runOf);
 
     overlay?.(bar, hour);
   }
 
   return true;
+}
+
+/** Shared axis and segment renderer for single-source and multi-track heatmaps. */
+export function renderHeatmapAxis(parent: HTMLElement): void {
+  const axis = parent.createDiv({ cls: 'rtt-hm-xaxis' });
+  axis.createDiv({ cls: 'rtt-hm-hlabel', text: '' });
+  const tickWrap = axis.createDiv({ cls: 'rtt-hm-tick-wrap' });
+  for (const minute of TICKS) {
+    const tick = tickWrap.createDiv({ cls: 'rtt-hm-tick', text: `${minute}` });
+    // setCssProps, not `style.left = ...`: Obsidian's review rejects direct style assignment,
+    // and the helper writes through the same style object.
+    tick.setCssProps({ left: `${(minute / 60) * 100}%` });
+  }
+}
+
+export function renderHeatmapTrack<S extends HeatmapSegment>(
+  bar: HTMLElement, row: HeatmapRow<S>,
+  classOf: (segment: S) => string, labelOf: (segment: S) => string,
+  onSelect?: (block: HeatmapBlock<S>, hour: number, element: HTMLElement) => void,
+  groupOf?: (segment: S) => string, runOf?: (segment: S) => string,
+): void {
+  const hour = row.hour;
+  // Touching same-class segments become one block: a run of activity is stored as many short
+  // pieces, and one-click-per-piece is both unreadable and unhittable.
+  const blocks = mergeSegments(row.segments, classOf, groupOf);
+  for (const block of blocks) {
+    const representative = block.members[0]!;
+    const seg = bar.createDiv({ cls: `rtt-hm-seg ${classOf(representative)}` });
+    if (groupOf) seg.dataset.rttGroup = groupOf(representative);
+    if (runOf) seg.dataset.rttRun = runOf(representative);
+
+    // Geometry is per-segment data, not a style variant, so it cannot live in a CSS class;
+    // `setCssProps` is the sanctioned way to write it. Keys are kebab-case because the helper
+    // writes through `style.setProperty`.
+    const props: Record<string, string> = {
+      left: `${(block.startMinute / 60) * 100}%`,
+      // A very short block gets a floor width, or it is invisible on screen
+      width: `${Math.max(0.4, (block.durationMinutes / 60) * 100)}%`,
+    };
+    // A clipped slice loses its rounding so the stretch still reads as one
+    const joined = blocks.some(other => other !== block && groupOf
+      && groupOf(other.members[0]!) === groupOf(representative)
+      && (Math.abs(other.startMinute + other.durationMinutes - block.startMinute) < TOUCH_EPSILON
+        || Math.abs(block.startMinute + block.durationMinutes - other.startMinute) < TOUCH_EPSILON));
+    if (block.clipped || joined) props['border-radius'] = '0';
+
+    seg.setCssProps(props);
+    seg.setAttribute('aria-label', labelOf(representative));
+
+    if (onSelect) {
+      seg.addClass('is-clickable');
+      onHeatmapActivate(seg, () => onSelect(block, hour, seg));
+    }
+  }
+
 }

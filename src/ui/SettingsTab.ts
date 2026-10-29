@@ -122,6 +122,13 @@ export class ReadTimeSettingTab extends PluginSettingTab {
     });
 
     new Setting(containerEl)
+      .setName(t('settingMobileMultiWindow'))
+      .setDesc(t('settingMobileMultiWindowDesc'))
+      .addToggle(toggle => toggle
+        .setValue(settings.mobileMultiWindow === true)
+        .onChange(value => { void this.deps.save({ mobileMultiWindow: value }); }));
+
+    new Setting(containerEl)
       .setName(t('settingCountPluginViews'))
       .setDesc(t('settingCountPluginViewsDesc'))
       .addToggle(toggle => toggle

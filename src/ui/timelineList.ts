@@ -26,6 +26,9 @@ export interface TimelineNode {
   kind?: string;
   /** The entry's headline. */
   title: string;
+  timeRange?: string;
+  key?: string;
+  renderDetail?: (container: HTMLElement) => void;
   /**
    * Secondary lines under the title. A duration is passed as parts rather than a string, so
    * the muted-unit treatment applies here too — the timeline is one of the places a duration
@@ -55,6 +58,8 @@ export interface TimelineNode {
   variant?: 'connector';
 }
 
+export interface TimelineDisclosureState { expanded: Set<string>; scope: string }
+
 /**
  * Render the timeline into `parent`.
  *
@@ -64,6 +69,7 @@ export interface TimelineNode {
 export function renderTimelineList(
   parent: HTMLElement,
   nodes: readonly TimelineNode[],
+  state?: TimelineDisclosureState,
 ): void {
   const list = parent.createDiv({ cls: 'rtt-vtl' });
 
@@ -83,6 +89,7 @@ export function renderTimelineList(
       continue;
     }
 
+    if (node.timeRange) body.createDiv({ cls: 'rtt-vtl-range', text: node.timeRange });
     body.createDiv({ cls: 'rtt-vtl-title', text: node.title });
 
     if (node.lines && node.lines.length > 0) {
@@ -111,6 +118,28 @@ export function renderTimelineList(
         event.stopPropagation();
         node.onOpen?.();
       });
+    }
+
+    if (node.renderDetail) {
+      const detail = body.createDiv({ cls: 'rtt-vtl-inline' });
+      const key = (state?.scope ?? '') + '|' + (node.key ?? [node.kind, node.timeRange, node.title].join('|'));
+      detail.hidden = !state?.expanded.has(key);
+      if (!detail.hidden) node.renderDetail(detail);
+      const toggle = body.createEl('button', { cls: 'rtt-process-toggle clickable-icon', attr: { 'aria-expanded': 'false', 'aria-label': node.title } });
+      toggle.setAttribute('aria-expanded', String(!detail.hidden));
+      setIcon(toggle, detail.hidden ? 'chevron-down' : 'chevron-up');
+      toggle.addEventListener('click', event => {
+        event.stopPropagation();
+        detail.hidden = !detail.hidden;
+        if (detail.hidden) state?.expanded.delete(key);
+        else state?.expanded.add(key);
+        if (!detail.hidden && !detail.hasChildNodes()) node.renderDetail?.(detail);
+        toggle.setAttribute('aria-expanded', String(!detail.hidden));
+        setIcon(toggle, detail.hidden ? 'chevron-down' : 'chevron-up');
+      });
+      body.insertBefore(toggle, detail);
+      const title = body.querySelector<HTMLElement>('.rtt-vtl-title');
+      title?.addEventListener('click', () => toggle.click());
     }
 
     if (node.onSelect) {

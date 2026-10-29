@@ -9,7 +9,7 @@
  * Key corrections over the old monolith:
  */
 
-import { Notice, Plugin, TFile, type WorkspaceLeaf } from 'obsidian';
+import { Platform, Notice, Plugin, TFile, type WorkspaceLeaf } from 'obsidian';
 
 import { consoleLogger, silentLogger, type Logger } from './core/logger';
 import { mergeSettings } from './core/settings';
@@ -176,6 +176,7 @@ export default class ReadTimeTrackerPlugin extends Plugin {
     this.history = history;
 
     this.timerService = new TimerService({
+      isMobile: Platform.isMobile,
       store: this.timerStore,
       history,
       clock: systemClock,
@@ -214,6 +215,7 @@ export default class ReadTimeTrackerPlugin extends Plugin {
     }
 
     this.binding = installBindings({
+      mobileMultiWindow: () => this.settings.mobileMultiWindow === true,
       app: this.app,
       plugin: this,
       service: this.timerService,

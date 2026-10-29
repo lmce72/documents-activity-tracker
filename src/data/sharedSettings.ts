@@ -33,7 +33,7 @@ export interface TextFileAdapter {
 }
 
 /** 只能来自本机的键 / the keys that only ever come from this device. */
-export const DEVICE_LOCAL_KEYS = ['dataFilePath', 'perDeviceSettings'] as const;
+export const DEVICE_LOCAL_KEYS = ['dataFilePath', 'perDeviceSettings', 'mobileMultiWindow'] as const;
 
 /**
  * 共享设置的固定路径 / the shared file at a fixed path.

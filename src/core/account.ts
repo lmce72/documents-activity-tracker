@@ -26,7 +26,7 @@ import {
   countdownIntervals,
   documentIntervals,
   manualIntervals,
-  mergeIntervals,
+  sourceOverlapMinutes,
   type OverviewChannel,
   type OverviewInterval,
   type OverviewSource,
@@ -42,7 +42,6 @@ import type {
   ManualSession,
   SessionState,
   TimelineEvent,
-  TimerFileState,
 } from './types';
 
 /** 口径 / the policy in force. */
@@ -345,19 +344,16 @@ function computeAccount(input: AccountInput, anchor: string, days: number): Acco
     ledger.set(interval.source, list);
   }
 
-  //  并集：去重后的覆盖；重叠：各账本自身覆盖之和减去并集
-  //  Union: covered once. Overlap: per-ledger coverage minus the union.
-  let covered = 0;
+  // Count a shared wall-clock interval once in both union and overlap.
   for (const [source, list] of ledger) {
     const own = coverageSeconds(list, startAbs, endAbs);
-    covered += own;
     if (source === 'document') totals.document = own;
     else if (source === 'view') totals.view = own;
   }
 
   const union = coverageSeconds(included, startAbs, endAbs);
   totals.union = union;
-  totals.overlap = Math.max(0, covered - union);
+  totals.overlap = sourceOverlapMinutes(included, startAbs, endAbs) * 60;
 
   //  阅读与合计按口径推导；「不记录」的通道既不进阅读也不进合计
   //  Reading and total follow the policy; an "ignored" channel enters neither.

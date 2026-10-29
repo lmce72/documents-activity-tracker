@@ -143,7 +143,7 @@ export const I18N = {
     statsWeek: '本周阅读',
 
     // 侧栏统计卡：今日总时长按渠道拆成阅读与非阅读 / the sidebar grid splits today's total
-    statsTodayRead: '今日阅读总时长',
+    statsTodayRead: '今日阅读时长',
     statsTodayUnread: '今日非阅读总时长',
     statsWeekRead: '本周阅读时长',
 
@@ -201,6 +201,11 @@ export const I18N = {
     manualRingHint: '外圈是本分钟的进度',
 
     // 离开与空闲 / away and idle
+    hintTitle: '提示',
+    rapidSwitchSummary: '{seconds}秒内连续切换{count}个文档/视图',
+    statsWeekTotal: '本周总时长',
+    processCount: '{n} 个过程',
+    processMore: '展开其余 {n} 个过程',
     statsTodayFocus: '今日专注',
     statsTodayAway: '今日离开',
     statsTodayIdle: '今日空闲',
@@ -293,7 +298,7 @@ export const I18N = {
     ovEmpty: '这一天没有任何记录',
     ovLegendBoth: '两者同时',
     ovExplain:
-      '文档计时与手动计时记的是同一段墙钟时间，因此这里取**并集**：两边同时覆盖的部分只算一次。合计栏仍按各账本自身列出，重叠量说明两手同时在记。',
+      '四条轨道使用同一时间轴，分别显示文档、插件视图、手动计时与倒计时。点击高亮只展开该轨道的一段过程或完整一轮。轮次条保留内部暂停，合计按实际计时时段取并集，重叠时间只算一次。',
 
     // panel list and heatmap copy ──────
     docHeatmapTitle: '当日文档热力图',
@@ -360,6 +365,8 @@ export const I18N = {
     unfocusedOpen: '当前时段尚未结束，恢复焦点后可处理',
     unfocusedPausePending: '当前暂停尚未结算，恢复或保存本轮后可处理',
     unfocusedEmpty: '没有可处理的失焦时段',
+    settingMobileMultiWindow: '移动端多窗口阅读（DeX）',
+    settingMobileMultiWindowDesc: '仅保存在本机，默认关闭。开启后，可见但失焦的窗口按桌面端规则计时，可配合分屏阅读；隐藏、锁屏或退出前台仍停止记录。',
     settingCountPluginViews: '插件视图计入阅读时长',
     settingCountPluginViewsDesc: '默认开启。关闭后仍记录插件视图的活动标题与时段，并保留在热力图中，但不计入阅读合计。',
     settingCountUnfocused: '失焦时间计入阅读时长',
@@ -544,6 +551,11 @@ export const I18N = {
     manualRingHint: 'The outer ring shows progress through the current minute',
 
     // away and idle
+    hintTitle: 'Note',
+    rapidSwitchSummary: '{count} documents/views switched within {seconds}s',
+    statsWeekTotal: 'Total this week',
+    processCount: '{n} processes',
+    processMore: 'Show {n} more processes',
     statsTodayFocus: 'Focus today',
     statsTodayAway: 'Away today',
     statsTodayIdle: 'Idle today',
@@ -637,7 +649,7 @@ export const I18N = {
     ovEmpty: 'Nothing recorded on this day',
     ovLegendBoth: 'Both at once',
     ovExplain:
-      'Document and manual timing cover the same wall clock, so this panel takes the **union**: time covered by both is counted once. The per-ledger totals are still listed, and the overlap shows where the two ran at the same time.',
+      'Four tracks share one time axis: documents, plugin views, manual timers and countdowns. Select a segment to inspect the process for that source or complete round. Round bars include internal pauses; the union total uses actual counting intervals and counts overlapping time once.',
 
     docHeatmapTitle: 'Document heatmap today',
     docListTop: 'Top 3 today',
@@ -702,6 +714,8 @@ export const I18N = {
     unfocusedOpen: 'This interval is ongoing. Refocus before changing it.',
     unfocusedPausePending: 'Resume or save this session before changing an unsettled pause.',
     unfocusedEmpty: 'No unfocused intervals to manage',
+    settingMobileMultiWindow: 'Mobile multi-window reading (DeX)',
+    settingMobileMultiWindowDesc: 'Local to this device and off by default. Visible, unfocused windows follow desktop timing rules and support split reading. Hidden, locked or backgrounded apps still stop recording.',
     settingCountPluginViews: 'Count plugin views as reading',
     settingCountPluginViewsDesc: 'Enabled by default. Turning this off keeps activity titles and intervals in the history and heatmap, but excludes them from reading totals.',
     settingCountUnfocused: 'Count out-of-window time as reading',

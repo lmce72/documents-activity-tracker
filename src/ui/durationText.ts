@@ -51,12 +51,13 @@ export function appendDurationParts(
     // Gaps are their own nodes rather than part of the text, so a wrap cannot leave a trailing
     // space stranded at the end of a line.
     if (spaced && index > 0) parent.createSpan({ cls: 'rtt-dur-gap', text: ' ' });
-    parent.createSpan({ cls: 'rtt-dur-num', text: part.value });
+    const group = parent.createSpan({ cls: 'rtt-dur-part' });
+    group.createSpan({ cls: 'rtt-dur-num', text: part.value });
     // 数字与它自己的单位之间也留空 —— 读作 `10 分 25 秒`，而不是 `10分 25秒`。
     // A gap between a number and *its* unit too: the duration reads `10 分 25 秒`, not
     // `10分 25秒`.
-    if (spaced) parent.createSpan({ cls: 'rtt-dur-gap', text: ' ' });
-    parent.createSpan({ cls: 'rtt-dur-unit', text: part.unit });
+    if (spaced) group.createSpan({ cls: 'rtt-dur-gap', text: ' ' });
+    group.createSpan({ cls: 'rtt-dur-unit', text: part.unit });
   });
 }
 

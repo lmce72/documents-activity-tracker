@@ -14,6 +14,7 @@
 
 import { MINUTES_PER_DAY, toAbsoluteMinutes, weekStart } from './recordsTimeline';
 import type { ManualSession } from './types';
+import { sessionActiveSpans, type TimedSession } from './timedSession';
 
 /** which ledger an interval came from. */
 export type OverviewSource = 'document' | 'manual' | 'view' | 'countdown';
@@ -124,38 +125,13 @@ export function documentIntervals(
   return out;
 }
 
-/** collect manual sessions into absolute intervals. */
+/** Actual counting positions, with pauses excluded from overlap and union arithmetic. */
 export function manualIntervals(sessions: readonly ManualSession[]): OverviewInterval[] {
-  const out: OverviewInterval[] = [];
-
-  for (const session of sessions) {
-    const startAbs = toAbsoluteMinutes(session.startTime);
-    if (startAbs === null) continue;
-
-    //  Sessions carry a net duration, but occupy one continuous stretch. The net duration is
-    //  laid out from the start so that it overlaps document intervals correctly.
-    const endAbs = startAbs + session.durationSeconds / 60;
-    if (endAbs <= startAbs) continue;
-
-    out.push({ startAbs, endAbs, source: 'manual', channel: 'session' });
-  }
-
-  return out;
+  return sessions.flatMap(session => sessionActiveSpans(session).map(span => ({ ...span, source: 'manual' as const, channel: 'session' as const })));
 }
 
-/** 倒计时的区间，与手动同构 / countdown sessions, laid out like manual ones. */
-export function countdownIntervals(
-  sessions: readonly { startTime: string; durationSeconds: number }[],
-): OverviewInterval[] {
-  const out: OverviewInterval[] = [];
-  for (const session of sessions) {
-    const startAbs = toAbsoluteMinutes(session.startTime);
-    if (startAbs === null) continue;
-    const endAbs = startAbs + session.durationSeconds / 60;
-    if (endAbs <= startAbs) continue;
-    out.push({ startAbs, endAbs, source: 'countdown', channel: 'session' });
-  }
-  return out;
+export function countdownIntervals(sessions: readonly TimedSession[]): OverviewInterval[] {
+  return sessions.flatMap(session => sessionActiveSpans(session).map(span => ({ ...span, source: 'countdown' as const, channel: 'session' as const })));
 }
 
 /**
@@ -272,13 +248,7 @@ function totalsInWindow(
     manualMinutes,
     viewMinutes,
 
-    //  Overlap = every ledger's own total minus the union. The union never exceeds the sum,
-    //  so this cannot go negative; max(0, …) absorbs floating-point noise. With three
-    //  ledgers this reads as "minutes counted more than once", which is the useful figure.
-    overlapMinutes: Math.max(
-      0,
-      documentMinutes + manualMinutes + viewMinutes - unionMinutes,
-    ),
+    overlapMinutes: merged.filter(interval => interval.sources.length > 1).reduce((sum, interval) => sum + interval.endAbs - interval.startAbs, 0),
   };
 }
 
@@ -346,4 +316,23 @@ function clipToDay(interval: OverviewInterval, dayMinutes: number): OverviewInte
     endAbs: Math.min(interval.endAbs, dayMinutes + MINUTES_PER_DAY),
     source: interval.source,
   };
+}
+
+/** Time covered by at least two distinct sources, counted once even with four concurrent timers. */
+export function sourceOverlapMinutes(intervals: readonly OverviewInterval[], from: number, to: number): number {
+  const edges = intervals.flatMap(interval => {
+    const start = Math.max(from, interval.startAbs);
+    const end = Math.min(to, interval.endAbs);
+    return end > start ? [{ at: start, source: interval.source, delta: 1 }, { at: end, source: interval.source, delta: -1 }] : [];
+  }).sort((a, b) => a.at - b.at);
+  const active = new Map<OverviewSource, number>();
+  let previous = from;
+  let minutes = 0;
+  for (const edge of edges) {
+    if (active.size > 1) minutes += edge.at - previous;
+    const count = (active.get(edge.source) ?? 0) + edge.delta;
+    if (count > 0) active.set(edge.source, count); else active.delete(edge.source);
+    previous = edge.at;
+  }
+  return minutes;
 }

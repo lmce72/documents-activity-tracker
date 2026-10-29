@@ -44,6 +44,7 @@ export const DEFAULT_SETTINGS: PluginSettings = {
   awayPolicy: 'paused',
   idlePolicy: 'paused',
   countPluginViewsAsReading: true,
+  mobileMultiWindow: false,
   // Two of four slots filled: enough to be useful out of the box, without crowding the
   // status bar before the user has asked for anything.
   statusBarMetrics: ['session', 'todayTotal', '', ''],

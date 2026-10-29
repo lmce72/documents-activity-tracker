@@ -132,6 +132,8 @@ export interface PluginSettings {
   idlePolicy: AttributionPolicy;
   /** Keep recording plugin activity even when excluded from reading totals. */
   countPluginViewsAsReading: boolean;
+  /** Local opt-in for visible but unfocused mobile windows (DeX / multi-window). */
+  mobileMultiWindow: boolean;
 
   /**
    * Which durations the status bar pins, as exactly {@link MAX_STATUS_METRICS} slots.

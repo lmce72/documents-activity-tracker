@@ -38,6 +38,7 @@ import type { HistoryStore } from '../data/historyStore';
 
 /** Environment queries the service needs. */
 export interface TimerServiceDeps {
+  isMobile?: boolean;
   store: TimerStore;
   history: HistoryStore;
   clock: Clock;
@@ -76,6 +77,43 @@ function awayDisposition(
 }
 
 export class TimerService {
+  private mobileBackground = false;
+  private foregroundResumePath: string | null = null;
+
+  /** Close the reading round before the WebView can freeze; background has no live tail. */
+  async onMobileBackgroundChange(background: boolean): Promise<void> {
+    if (!this.deps.isMobile || background === this.mobileBackground) return;
+    this.mobileBackground = background;
+    try {
+      if (background) {
+        const state = this.deps.store.getState();
+        const path = state.activeFilePath;
+        const file = path ? state.files.get(path) : undefined;
+        this.foregroundResumePath = file?.status === STATUS.TRACKING ? path : null;
+        // No await before closing and appending: native pause may freeze JS immediately.
+        if (path && file) {
+          const last = file.lastTickTimestamp;
+          const limit = state.isWindowFocused ? TICK_GAP_LIMIT_MS : UNFOCUSED_GAP_LIMIT_MS;
+          if (file.status === STATUS.TRACKING && last !== null && this.deps.clock.now() - last > limit) {
+            this.appendEvent({ time: formatLocalFull(new Date(last + 1000)), type: 'blur',
+              file: path, state: 'inactive', reason: 'mobile-background-gap', unfocusedDisposition: 'ignored' });
+          }
+          this.dispatchSave(path, 'auto-save', 0);
+        }
+        this.deps.store.dispatch({ type: ActionTypes.SET_WINDOW_FOCUS, payload: { focused: false } });
+        await this.flushPendingWrites();
+      } else {
+        const resumePath = this.foregroundResumePath;
+        this.foregroundResumePath = null;
+        this.deps.store.dispatch({ type: ActionTypes.SET_WINDOW_FOCUS, payload: { focused: true } });
+        await this.onActivePathChange();
+        if (!this.mobileBackground && resumePath && resumePath === this.deps.getActivePath()) await this.startCurrent();
+      }
+    } catch (error) {
+      this.deps.log.warn('[RTT][service] Mobile lifecycle transition failed:', error);
+    }
+  }
+
   private readonly activityTitles = new Map<string, string>();
   constructor(private readonly deps: TimerServiceDeps) {}
 
@@ -105,13 +143,16 @@ export class TimerService {
       //  进程被杀时不会有任何事件，唯一的证据是最后一次心跳：按它收尾，否则整段后台时间会被算成专注
       //  A killed process leaves no events; the last heartbeat is the only evidence. Closing at it keeps
       //  the background stretch out of the session instead of crediting it as focus.
-      const endTime = recoveryEnd(
+      const recoveredEnd = recoveryEnd(
         last.time,
         readLastSeen(),
         filePath,
         this.deps.clock.nowFull(),
       );
 
+      // Without local heartbeat evidence, mobile recovery must not invent time until launch.
+      const endTime = this.deps.isMobile && recoveredEnd === this.deps.clock.nowFull()
+        ? last.time : recoveredEnd;
       this.deps.history.appendEvents([
         {
           time: endTime,
@@ -142,6 +183,7 @@ export class TimerService {
    * and only then count a tick.
    */
   async tick(): Promise<void> {
+    if (this.mobileBackground) return;
     if (!isDocumentRecordingEnabled(this.deps.settings())) return;
 
     try {
@@ -151,8 +193,10 @@ export class TimerService {
       //  The gap goes before rollover and orphan closing: a freeze across midnight would otherwise be
       //  turned into "focused all night" by the rollover's own auto-save.
       await this.closeFrozenGap();
+      if (this.mobileBackground) return;
       this.applyDayRollover();
       await this.closeOrphanSessions();
+      if (this.mobileBackground) return;
 
       const filePath = this.deps.store.getState().activeFilePath;
       if (filePath) {
@@ -243,7 +287,8 @@ export class TimerService {
         file: filePath,
         state: 'inactive',
         reason: 'frozen-gap',
-        ...(awayDisposition(file) ? { unfocusedDisposition: awayDisposition(file) } : {}),
+        ...(this.deps.isMobile ? { unfocusedDisposition: 'ignored' as const }
+          : awayDisposition(file) ? { unfocusedDisposition: awayDisposition(file) } : {}),
       });
       this.appendEvent({
         time: this.deps.clock.nowFull(),
@@ -414,6 +459,7 @@ export class TimerService {
 
   /** The body of {@link onActivePathChange}; see there for why it is serialised. */
   private async applyActivePathChange(): Promise<void> {
+    if (this.mobileBackground) return;
     if (!isDocumentRecordingEnabled(this.deps.settings())) return;
 
     try {
@@ -426,6 +472,7 @@ export class TimerService {
       if (fromPath === toPath) return;
 
       await this.flushPendingWrites();
+      if (this.mobileBackground) return;
 
       if (fromPath) {
         this.dispatchSave(fromPath, 'auto-save');
@@ -437,6 +484,7 @@ export class TimerService {
         if (toPath) this.appendEvent(this.buildSwitchEvent(fromPath, toPath));
       }
 
+      if (this.mobileBackground) return;
       if (toPath) {
         this.deps.store.dispatch({
           type: ActionTypes.SWITCH_FILE,
@@ -623,6 +671,7 @@ export class TimerService {
    * a dead end confirmed by running the plugin.
    */
   async startCurrent(): Promise<void> {
+    if (this.mobileBackground) return;
     //  新的一轮以 start 事件开头，之前那条空闲边界随之作废；按下开始本身就是一次用户动作，
     //  残留的空闲标志一并清掉，否则新一轮的第一秒会被记成空闲
     //  A new round opens with a start event, which retires any idle boundary still lying open. Pressing
@@ -639,6 +688,7 @@ export class TimerService {
       // 先处理排队中的视图切换，防止开始按钮使用上一个对象。
       // Resolve queued view changes before starting the current target.
       await this.onActivePathChange();
+      if (this.mobileBackground) return;
 
       const state = this.deps.store.getState();
       const target = this.deps.getActivePath();
@@ -653,6 +703,7 @@ export class TimerService {
       if (file?.status === STATUS.TRACKING) return;
 
       await this.flushPendingWrites();
+      if (this.mobileBackground) return;
       this.deps.store.dispatch({
         type: ActionTypes.SWITCH_FILE,
         payload: { fromPath: state.activeFilePath, toPath: target, autoStart: true },
@@ -790,7 +841,7 @@ export class TimerService {
   //  ==========================================================================
 
   /** Dispatch one session save. */
-  private dispatchSave(filePath: string, kind: SaveKind): void {
+  private dispatchSave(filePath: string, kind: SaveKind, minReadSeconds?: number): void {
     //  保存/丢弃事件本身就是空闲段的终点，标志跟着落下，免得下一次空闲写出重复的开头
     //  A save or discard is itself the end of the stretch; drop the flag so the next idle opens cleanly.
     this.idleOpen = false;
@@ -814,7 +865,7 @@ export class TimerService {
       type: ActionTypes.SAVE_SESSION,
       payload: {
         filePath,
-        minReadSeconds: settings.minReadSeconds ?? 0,
+        minReadSeconds: minReadSeconds ?? settings.minReadSeconds ?? 0,
         eventType: kind,
       },
     });
