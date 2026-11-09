@@ -1,7 +1,15 @@
+import { chooseFileInterval } from './recordEditActions';
+import { draftForSession, draftForVisit, editsOf, type RecordEditDraft } from '../core/recordEditing';
+import { buildVisits, type TargetVisit } from '../core/activityVisits';
+import { RecordEditingService } from '../services/RecordEditingService';
+import { RecordEditModal } from './RecordEditModal';
 import { visibleSources, previewVisits, sourceClass } from '../core/processPreview';
+import type { OverviewSource } from '../core/overview';
 import { visitNodes } from './processList';
 import { AwayIdleModal } from './AwayIdleModal';
 import { renderHint } from './hintCallout';
+import { renderSectionHeading } from './sectionHeading';
+import { loadPele, type PeleMounted } from './pele';
 import { activityRuns } from '../core/activityRuns';
 /**
  * Sidebar view
@@ -21,7 +29,7 @@ import { activityRuns } from '../core/activityRuns';
  * All styling reuses existing classes; no new CSS.
  */
 
-import { ItemView, Setting, setIcon, setTooltip, type WorkspaceLeaf } from 'obsidian';
+import { DropdownComponent, ItemView, Setting, setIcon, setTooltip, type WorkspaceLeaf } from 'obsidian';
 
 import { STATUS } from '../core/constants';
 import {
@@ -64,9 +72,9 @@ import {
 } from '../core/account';
 import type { ManualSession } from '../core/types';
 import { buildOverviewTracks, type OverviewProcess, type OverviewTrack } from '../core/overviewTracks';
-import { overviewSourceName, renderOverviewTracks } from './overviewTracks';
+import { overviewSourceIcon, overviewSourceName, renderOverviewTracks } from './overviewTracks';
 import { buildDocumentDayRows, toAbsoluteMinutes } from '../core/recordsTimeline';
-import { isPluginViewKey } from '../core/activePath';
+import { isPluginViewKey, pluginViewLabel } from '../core/activePath';
 import {
   CHANNEL_CLASSES,
   filterRowsByClass,
@@ -88,7 +96,6 @@ import { HScrollTicker } from './hScrollTicker';
 import { createSecondPie } from './secondPie';
 import { docState, stateIcon } from './StatusBar';
 import { renderManualFlagsTable, renderManualSessionDetail } from './manualSessionDetail';
-import { TextPromptModal } from './TextPromptModal';
 import { ConfirmModal } from './ConfirmModal';
 import { appendDurationParts, setClockTime, setClockTimeMs, setReadTime } from './durationText';
 import {
@@ -189,8 +196,6 @@ interface LiveNodes {
   countdownProgress?: HTMLElement;
   countdownState?: HTMLElement;
   countdownRing?: HTMLElement;
-  /** 上一轮方案里当前那一段的高亮 / the current phase chip in the plan list */
-  countdownChips?: HTMLElement[];
 }
 
 /** View dependencies. */
@@ -235,7 +240,7 @@ export class ActivitySidebarView extends ItemView {
   private countdownExpanded = false;
 
   /** Whether the overview's day detail is expanded past its first few entries. */
-  private overviewSelection: { day: string; id: string } | null = null;
+  private overviewSelection: { day: string; id: string; hour: number; hourOnly?: boolean } | null = null;
   private readonly overviewSourcesExpanded = new Set<string>();
   private readonly timelineExpanded = new Set<string>();
   private readonly overviewPreviewExpanded = new Set<string>();
@@ -303,9 +308,10 @@ export class ActivitySidebarView extends ItemView {
    * for a two-column layout.
    */
   private widthObserver: ResizeObserver | null = null;
+  private placeOverviewDetail: (() => void) | null = null;
 
   /** 折成两列所需的宽度 / the width at which the fold makes sense. */
-  private static readonly WIDE_PX = 600;
+  private static readonly WIDE_PX = 760;
 
   /**
    * 被图例关掉的那几类 / the kinds the legend has switched off.
@@ -370,6 +376,7 @@ export class ActivitySidebarView extends ItemView {
     this.widthObserver = new ResizeObserver((entries) => {
       const width = entries[0]?.contentRect.width ?? 0;
       this.contentEl.toggleClass('is-wide', width >= ActivitySidebarView.WIDE_PX);
+      this.placeOverviewDetail?.();
     });
     this.widthObserver.observe(this.contentEl);
   }
@@ -412,6 +419,7 @@ export class ActivitySidebarView extends ItemView {
     day: string;
     spans: Array<{ start: number; end: number }>;
     hour: number;
+    group?: string;
   } | null = null;
 
 
@@ -495,16 +503,7 @@ export class ActivitySidebarView extends ItemView {
     this.render();
   }
 
-  /**
-   * Draw a heatmap whose stretches open a "what happened" block when clicked.
-   *
-   * The detail container is created *after* the chart because it has to sit below it, while
-   * `renderHeatmap` appends the chart itself. That ordering is safe because the click
-   * callback can only run once the user interacts — long after the assignment below.
-   *
-   * 详情块必须在图**下方**，而图由 renderHeatmap 自行追加，所以它是先声明、后创建；回调只会在
-   * 用户点击时触发，那时赋值早已完成。
-   */
+  /** 所选过程紧跟轨道，宽栏移到右侧 / selected processes sit under their track or alongside it. */
   private renderClickableHeatmap<S extends HeatmapSegment>(
     parent: HTMLElement,
     rows: readonly HeatmapRow<S>[],
@@ -525,8 +524,6 @@ export class ActivitySidebarView extends ItemView {
     overlay?: (bar: HTMLElement, hour: number) => void,
     detail?: {
       groupOf: (segment: S) => string;
-      /** 一小时的详情 / the detail for a whole hour. */
-      renderHour?: (panel: HTMLElement, segments: S[]) => void;
       render: (panel: HTMLElement, segment: S) => void;
     },
   ): boolean {
@@ -541,6 +538,10 @@ export class ActivitySidebarView extends ItemView {
 
     const shown = filterRowsByClass(rows, classOf, this.hiddenHeatmap);
 
+    const layout = parent.createDiv({ cls: 'rtt-overview-layout' });
+    const chart = layout.createDiv({ cls: 'rtt-overview-chart' });
+    const aside = layout.createDiv({ cls: 'rtt-overview-aside' });
+
     const runs = activityRuns(shown);
     const groupOf = detail?.groupOf ?? ((segment: S) => runs.get(segment)!.id);
     /**
@@ -551,6 +552,7 @@ export class ActivitySidebarView extends ItemView {
     const paintSelection = (): void => {
       if (!panel) return;
       panel.empty();
+      this.placeOverviewDetail?.();
 
       const selection = this.selection;
       if (!selection || selection.panel !== this.panel || selection.day !== day) return;
@@ -559,16 +561,19 @@ export class ActivitySidebarView extends ItemView {
       const members = shown
         .flatMap((row) => row.segments)
         .filter((segment) => {
+          if (detail && selection.group !== undefined) return groupOf(segment) === selection.group;
           const run = runs.get(segment);
           return run !== undefined && spans.some((span) => run.start < span.end && run.end > span.start);
         });
 
       if (!members.length) { this.selection = null; setProcessMarkers(parent, []); return; }
-      const visibleSpans = [...new Set(members.map(segment => runs.get(segment)!))].map(run => ({ start: run.start, end: run.end }));
+      const visibleSpans = detail ? shown.flatMap(row => row.segments.filter(segment => members.includes(segment))
+        .map(segment => ({ start: row.hour * 60 + segment.startMinute, end: row.hour * 60 + segment.startMinute + segment.durationMinutes })))
+        : [...new Set(members.map(segment => runs.get(segment)!))].map(run => ({ start: run.start, end: run.end }));
       selection.spans = visibleSpans;
       setProcessMarkers(parent, visibleSpans);
-      if (detail?.renderHour) { detail.renderHour(panel, members as S[]); return; }
-      if (detail) { detail.render(panel, members[0]!); return; }
+      this.placeOverviewDetail?.();
+      if (detail) { detail.render(panel, members[0]!); this.placeOverviewDetail?.(); return; }
 
       const startAbs = Math.min(...visibleSpans.map((span) => span.start));
       const endAbs = Math.max(...visibleSpans.map((span) => span.end));
@@ -596,28 +601,30 @@ export class ActivitySidebarView extends ItemView {
         //  The summary stays: it carries the whole process's range and total
         forceSummary: true,
       });
+      this.placeOverviewDetail?.();
     };
 
     const drawn = renderHeatmap(
-      parent,
+      chart,
       shown,
       classOf,
       labelOf,
       (block, hour, element) => {
         if (!panel) return;
 
-        //  点某小时里的一段 = 选中**覆盖这一小时的那些过程**：连续活动可能跨到前后两小时，
-        //  亮起的范围与详情描述的范围因此始终是同一件事。
-        //  Clicking a segment selects the **processes covering that hour**: a continuous run may reach
-        //  into the neighbouring hours, so what is lit and what the detail describes stay the same thing.
-        const hourSegments = (shown[hour]?.segments ?? []) as S[];
-        const hourRuns = [...new Set(hourSegments.map((segment) => runs.get(segment)!))];
-        const spans = hourRuns.map(run => ({ start: run.start, end: run.end }));
+        //  自动活动按连续过程、手动按同一轮选择 / automatic runs and explicit rounds keep their identities.
+        const group = groupOf(block.members[0]!);
+        const selected = shown.flatMap(row => row.segments.map(segment => ({ segment, hour: row.hour })))
+          .filter(item => groupOf(item.segment) === group);
+        const spans = detail
+          ? selected.map(({ segment, hour }) => ({ start: hour * 60 + segment.startMinute, end: hour * 60 + segment.startMinute + segment.durationMinutes }))
+          : [...new Set(block.members.map(segment => runs.get(segment)!))].map(run => ({ start: run.start, end: run.end }));
 
-        const isSelected = toggleProcessMarkers(parent, spans);
+        const isSelected = this.selection?.hour === hour ? toggleProcessMarkers(parent, spans) : true;
+        if (this.selection?.hour !== hour) setProcessMarkers(parent, spans);
         void element;
         this.selection = isSelected
-          ? { panel: this.panel, day, spans, hour }
+          ? { panel: this.panel, day, spans, hour, group }
           : null;
         paintSelection();
       },
@@ -627,7 +634,18 @@ export class ActivitySidebarView extends ItemView {
     );
 
     if (!drawn) return false;
-    panel = parent.createDiv({ cls: 'rtt-hm-detail' });
+    panel = aside.createDiv({ cls: 'rtt-hm-detail rtt-overview-detail' });
+    this.placeOverviewDetail = () => {
+      if (!panel) return;
+      layout.toggleClass('has-selection', panel.hasChildNodes());
+      const selected = this.selection;
+      const wide = layout.clientWidth >= ActivitySidebarView.WIDE_PX && !this.contentEl.ownerDocument.body.hasClass('is-mobile');
+      layout.toggleClass('is-wide', wide);
+      const row = !wide && selected?.day === day && selected.panel === this.panel && panel.hasChildNodes()
+        ? Array.from(chart.querySelectorAll<HTMLElement>('.rtt-hm-row')).find(row => Number(row.dataset.rttHour) === selected.hour) : undefined;
+      if (row) { if (row.nextElementSibling !== panel) row.after(panel); }
+      else if (panel.parentElement !== aside) aside.appendChild(panel);
+    };
 
     //  重绘后复原选中：标记与详情一起回来
     //  Restore the selection after a re-render: markers and detail come back together
@@ -759,7 +777,14 @@ export class ActivitySidebarView extends ItemView {
       this.calendarDismiss?.();
       this.nameTicker?.destroy();
       this.nameTicker = null;
+      this.placeOverviewDetail = null;
+      //  离开倒计时面板时释放流程图的尺寸监听 / release the flow diagram when leaving its panel
+      if (this.panel !== 'countdown') {
+        this.countdownFlow?.mounted?.destroy();
+        this.countdownFlow = null;
+      }
       root.empty();
+      root.toggleClass('is-overview', this.panel === 'overview');
       this.liveNodes = {};
       this.signature = this.computeSignature();
 
@@ -819,6 +844,11 @@ export class ActivitySidebarView extends ItemView {
    * action row collapses into an overflow menu.
    */
   private renderPanelTabs(root: HTMLElement): void {
+    const picker = root.createDiv({ cls: 'rtt-mobile-panel-picker' });
+    const choices: Record<string, string> = { document: t('panelDocument'), manual: t('panelManual'), countdown: t('panelCountdown'), overview: t('panelOverview') };
+    new DropdownComponent(picker).addOptions(choices).setValue(this.panel).onChange(value => {
+      if (value === 'document' || value === 'manual' || value === 'countdown' || value === 'overview') this.setPanel(value);
+    }).selectEl.setAttribute('aria-label', t('viewSelect'));
     const bar = root.createDiv({ cls: 'rtt-panel-tabs' });
     bar.setAttribute('role', 'tablist');
 
@@ -1022,7 +1052,7 @@ export class ActivitySidebarView extends ItemView {
       todayStr(),
     );
 
-    new Setting(root).setName(t('docHeatmapTitle')).setHeading();
+    renderSectionHeading(root, 'flame', t('docHeatmapTitle'));
 
     const drawn = this.renderClickableHeatmap(
       root,
@@ -1339,11 +1369,12 @@ export class ActivitySidebarView extends ItemView {
     icon: string,
     label: string,
     onClick: () => void,
-    options: { ghost?: boolean; stopPropagation?: boolean; danger?: boolean } = {},
+    options: { ghost?: boolean; stopPropagation?: boolean; danger?: boolean; primary?: boolean } = {},
   ): HTMLButtonElement {
     const cls = ['clickable-icon', 'rtt-icon-btn'];
     if (options.ghost) cls.push('is-ghost');
     if (options.danger) cls.push('is-danger');
+    if (options.primary) cls.push('is-primary');
 
     const btn = parent.createEl('button', { cls: cls.join(' ') });
     setIcon(btn, icon);
@@ -1374,7 +1405,7 @@ export class ActivitySidebarView extends ItemView {
       .sort((a, b) => b[1].readTimeToday - a[1].readTimeToday)
       .slice(0, TOP_LIST_ITEMS);
 
-    new Setting(root).setName(t('docListTop')).setHeading();
+    renderSectionHeading(root, 'trophy', t('docListTop'));
 
     if (rows.length === 0) {
       root.createDiv({ cls: 'rtt-list-empty', text: t('docListEmpty') });
@@ -1402,6 +1433,7 @@ export class ActivitySidebarView extends ItemView {
           meta,
           onShowStretch: container => renderTimelineList(container, this.entryStretchNodes(filePath, record, false, mode)),
           onEdit: () => this.promptRecordAlias(filePath),
+          editLabel: t('editRecord'),
           onOpen: () => {
             void this.app.workspace.openLinkText(filePath, '', false);
           },
@@ -1416,51 +1448,16 @@ export class ActivitySidebarView extends ItemView {
     this.renderViewAllButton(root);
   }
 
-  /**
-   * 改记录别名 / edit a record's display alias.
-   *
-   * 只写设置里的别名表：文件、事件、统计全都不动，所以改名永远不会断开指向。
-   * Only the alias map in settings is written — file, events and totals stay put, so a rename can never
-   * break what the row points at.
-   */
+  /** 选择文档或视图的实际记录时段 / choose the recorded interval for a document or view. */
   private promptRecordAlias(key: string): void {
-    const current = this.deps.settings().recordAliases?.[key] ?? '';
-    new TextPromptModal(this.app, {
-      title: t('recordEditName'),
-      description: t('recordEditNameDesc'),
-      placeholder: t('recordEditNamePlaceholder'),
-      initial: current,
-      onDone: (value) => {
-        if (value === null) return;
-        const aliases = { ...(this.deps.settings().recordAliases ?? {}) };
-        const trimmed = value.trim();
-        if (trimmed) aliases[key] = trimmed;
-        else delete aliases[key];
-        void this.deps.saveSetting({ recordAliases: aliases }).then(() => this.render());
-      },
-    }).open();
+    chooseFileInterval(this.app, this.deps.history, key, this.deps.clock.today(), this.deps.clock.now(), () => this.refresh());
   }
 
-  /** 改一轮手动计时的备注 / edit one manual round's note. */
+  /** 完整编辑一轮手动计时 / edit an entire saved manual round. */
   private promptManualNote(session: ManualSession): void {
-    new TextPromptModal(this.app, {
-      title: t('recordEditNote'),
-      description: t('recordEditNoteDesc'),
-      initial: session.note,
-      onDone: (value) => {
-        if (value === null) return;
-        this.deps.history.updateManualSessionNote(session.id, value.trim());
-        void this.deps.history.flushNow();
-        this.render();
-      },
-    }).open();
+    this.editRecord(draftForSession('manual', session, this.deps.history.getRevision()));
   }
 
-  /**
-   * 删除一篇文档的全部记录 / delete every record of one document.
-   * 与记录浏览器同一套语义：不可撤销，所以先确认；别名一并清掉。
-   * Same semantics as the records browser: irreversible, so it confirms first; the alias goes with it.
-   */
   private confirmDeleteRecord(key: string, record: FileRecord): void {
     new ConfirmModal(this.app, {
       title: t('recDelete'),
@@ -1568,6 +1565,14 @@ export class ActivitySidebarView extends ItemView {
    * together here: the policy for new stretches, today's stretches (each reclassifiable), and the idle
    * channel that used to be discarded outright.
    */
+  private editVisit(visit: TargetVisit): void {
+    this.editRecord(draftForVisit(visit, this.deps.history.getRevision()));
+  }
+
+  private editRecord(draft: RecordEditDraft): void {
+    new RecordEditModal(this.app, { draft, save: value => new RecordEditingService(this.deps.history).save(value), onSaved: () => this.refresh() }).open();
+  }
+
   private openAwayModal(): void {
     new AwayIdleModal(this.app, { ...this.deps, onChanged: () => this.refresh() }, this.deps.clock.today()).open();
   }
@@ -1579,8 +1584,9 @@ export class ActivitySidebarView extends ItemView {
 
   /** manual timer controls. */
   private renderManualControls(root: HTMLElement): void {
+    //  面板名已经写在顶部标签上，这里不再重复一遍
+    //  The active tab already names the panel; a second heading only costs vertical space.
     const section = root.createDiv({ cls: 'rtt-heatmap-wrap' });
-    new Setting(section).setName(t('panelManual')).setHeading();
 
     this.renderStopwatch(section);
 
@@ -1639,10 +1645,12 @@ export class ActivitySidebarView extends ItemView {
         { danger: true },
       );
     } else {
+      //  空闲时的开始是这一屏唯一的主动作，给成强调色圆形按钮
+      //  Idle's start is the only primary action on screen: give it the accent circle.
       this.iconButton(bar, 'play', t('manualStart'), () => {
         this.deps.manual.start();
         this.render();
-      });
+      }, { primary: true });
     }
 
     //  专注切换放最右，任何状态都在：它切的是"看什么"，不是计时动作。
@@ -1722,7 +1730,7 @@ export class ActivitySidebarView extends ItemView {
   private renderManualFlagTable(root: HTMLElement): void {
     const flags = this.deps.store.getState().manual.flags;
 
-    new Setting(root).setName(t('manualFlagsTitle')).setHeading();
+    renderSectionHeading(root, 'flag', t('manualFlagsTitle'));
 
     if (flags.length === 0) {
       root.createDiv({ cls: 'rtt-list-empty', text: t('manualNoFlags') });
@@ -1783,7 +1791,7 @@ export class ActivitySidebarView extends ItemView {
 
     if (state.manual.status === 'idle' && flags.length === 0) return;
 
-    new Setting(root).setName(t('manualFlagsTitle')).setHeading();
+    renderSectionHeading(root, 'flag', t('manualFlagsTitle'));
 
     renderManualFlagsTable(root, flags);
   }
@@ -1859,10 +1867,13 @@ export class ActivitySidebarView extends ItemView {
   /** 空转时用来预览的方案 / the plan previewed while idle. */
   private countdownPreview: CountdownPlan | null = null;
 
+  /** 方案流程图 / the plan's flow diagram. */
+  private countdownFlow: { container: HTMLElement; mounted: PeleMounted | null; source: string; phase: number | null } | null = null;
+
   /** countdown controls: the ring and its buttons. */
   private renderCountdownControls(root: HTMLElement): void {
+    //  与手动计时一致：面板名由顶部标签承担 / the tab names the panel, as on the manual side
     const section = root.createDiv({ cls: 'rtt-heatmap-wrap' });
-    new Setting(section).setName(t('panelCountdown')).setHeading();
 
     this.renderCountdownRing(section);
 
@@ -1901,10 +1912,11 @@ export class ActivitySidebarView extends ItemView {
     const status = this.deps.store.getState().countdown.status;
 
     if (status === 'idle') {
+      //  与手动计时同一套主动作样式 / same primary-action treatment as the manual timer
       this.iconButton(bar, 'play', t('countdownStart'), () => {
         this.startCountdown();
         this.render();
-      });
+      }, { primary: true });
       return;
     }
 
@@ -1922,6 +1934,11 @@ export class ActivitySidebarView extends ItemView {
 
     this.iconButton(bar, 'flag', t('manualFlag'), () => {
       if (this.deps.countdown.flag()) this.render();
+    });
+
+    //  跳段只取消本段剩下的等待，已跑的时长照常计入 / skipping cuts the wait, not the elapsed time
+    this.iconButton(bar, 'skip-forward', t('countdownSkip'), () => {
+      if (this.deps.countdown.skipPhase()) this.render();
     });
 
     //  手动停止走备注框，与正计时一致；自动跑完那一次由设置决定，见 main.ts
@@ -1985,7 +2002,7 @@ export class ActivitySidebarView extends ItemView {
     const state = this.deps.store.getState();
     const plan = state.countdown.plan ?? this.countdownPreview;
 
-    new Setting(root).setName(t('countdownPlanTitle')).setHeading();
+    renderSectionHeading(root, 'list-checks', t('countdownPlanTitle'));
 
     if (!plan || plan.phases.length === 0) {
       root.createDiv({ cls: 'rtt-list-empty', text: t('countdownPlanEmpty') });
@@ -1993,28 +2010,66 @@ export class ActivitySidebarView extends ItemView {
     }
 
     const total = planTotalSeconds(plan);
-    root.createDiv({
-      cls: 'rtt-cd-plan-summary',
-      text: `${t(modeLabelKey(plan.mode))} · ${t('countdownPlanSummary')
-        .replace('{count}', String(plan.phases.length))
-        .replace('{total}', formatDurationWithSeconds(total))}`,
-    });
+    //  时长与统计卡、记录行使用同一种「数字 + 小号单位」排版，不再混用紧凑字符串
+    //  Durations use the same figure-plus-muted-unit treatment as the stat cards and lists.
+    const summary = root.createDiv({ cls: 'rtt-cd-plan-summary' });
+    const template = t('countdownPlanSummary').replace('{count}', String(plan.phases.length));
+    const [before = '', after = ''] = template.split('{total}');
+    summary.createSpan({ text: `${t(modeLabelKey(plan.mode))} · ${before}` });
+    appendDurationParts(summary, formatDurationParts(total));
+    if (after) summary.createSpan({ text: after });
 
-    const chips = root.createDiv({ cls: 'rtt-cd-plan' });
-    this.liveNodes.countdownChips = plan.phases.map((phase, index) => {
-      const chip = chips.createDiv({ cls: 'rtt-cd-chip' });
-      chip.dataset.phaseIndex = String(index);
-      setIcon(chip.createSpan({ cls: 'rtt-cd-chip-icon' }), phase.kind === 'break' ? 'coffee' : 'timer');
+    //  方案画成流程图：分段之间的先后关系比一排胶囊更直观
+    //  The plan becomes a flow diagram: the order between phases reads better than a row of chips.
+    this.countdownFlow?.mounted?.destroy();
+    const position = state.countdown.status === 'idle'
+      ? null
+      : locatePhase(plan, selectCountdownElapsedSeconds(state, this.deps.clock.now()) + (state.countdown.skippedSeconds ?? 0));
+    const flow = root.createDiv({ cls: 'rtt-cd-flow' });
+    const source = this.countdownFlowSource(plan, position);
+    this.countdownFlow = { container: flow, mounted: null, source, phase: position && !position.completed ? position.index : null };
+    void this.mountCountdownFlow(flow, source);
+  }
+
+  /** 把方案转成 Mermaid flowchart 源码 / turn the plan into Mermaid flowchart source. */
+  private countdownFlowSource(plan: CountdownPlan, position: CountdownPosition | null): string {
+    const lines = ['flowchart LR'];
+    plan.phases.forEach((phase, index) => {
       const label = phase.kind === 'segment'
         ? t('countdownSegmentN').replace('{n}', String(index + 1))
         : t(phaseLabelKey(phase.kind));
-      chip.createSpan({ cls: 'rtt-cd-chip-label', text: label });
-      chip.createSpan({
-        cls: 'rtt-cd-chip-time',
-        text: formatDurationWithSeconds(phase.seconds),
-      });
-      return chip;
+      //  当前段用 ▶、已跑过的段用 ✓：流程图本身不必再区分颜色
+      //  ▶ marks the current phase and ✓ the finished ones, so colour is not the only cue.
+      const mark = position && !position.completed
+        ? index < position.index ? '✓ ' : index === position.index ? '▶ ' : ''
+        : '';
+      lines.push(`  n${index}["${mark}${label} · ${formatDurationWithSeconds(phase.seconds)}"]`);
+      if (index > 0) lines.push(`  n${index - 1} --> n${index}`);
     });
+    return lines.join('\n');
+  }
+
+  /** 挂载/更新流程图 / mount the flow chart, then let phase changes update it in place. */
+  private async mountCountdownFlow(container: HTMLElement, source: string): Promise<void> {
+    const pele = await loadPele();
+    const flow = this.countdownFlow;
+    if (!pele || !flow || flow.container !== container || !container.isConnected) return;
+    try {
+      flow.mounted = pele.mount(container, flow.source || source, { zoom: false });
+    } catch (error) {
+      this.deps.log.warn('[RTT][sidebar] 方案流程图渲染失败 / plan flow render failed:', error);
+    }
+  }
+
+  /** 段切换时重画流程图 / redraw when the active phase changes. */
+  private syncCountdownFlow(plan: CountdownPlan, position: CountdownPosition | null): void {
+    const flow = this.countdownFlow;
+    if (!flow) return;
+    const phase = position && !position.completed ? position.index : null;
+    if (flow.phase === phase) return;
+    flow.phase = phase;
+    flow.source = this.countdownFlowSource(plan, position);
+    flow.mounted?.update(flow.source);
   }
 
   /** 这一天的倒计时记录 / that day's countdown runs. */
@@ -2023,7 +2078,7 @@ export class ActivitySidebarView extends ItemView {
       .slice()
       .reverse();
 
-    new Setting(root).setName(t('countdownRecent')).setHeading();
+    renderSectionHeading(root, 'history', t('countdownRecent'));
 
     if (all.length === 0) {
       root.createDiv({ cls: 'rtt-list-empty', text: t('countdownNoRecords') });
@@ -2036,9 +2091,11 @@ export class ActivitySidebarView extends ItemView {
     for (const session of visible as CountdownSession[]) {
       this.renderRecordRow(list, {
         name: session.note || t(modeLabelKey(session.mode)),
+        onEdit: () => this.editRecord(draftForSession('countdown', session, this.deps.history.getRevision())),
+        editLabel: t('editRecord'),
         stats: [
-          formatDurationWithSeconds(session.durationSeconds),
-          `${session.startTime.slice(11, 16)} – ${session.endTime.slice(11, 16)}`,
+          formatDurationParts(session.durationSeconds),
+          `${session.startTime.slice(11, 19)} – ${session.endTime.slice(11, 19)}`,
         ],
         meta: [
           session.completed ? t('countdownCompleted') : t('countdownStoppedEarly'),
@@ -2074,7 +2131,7 @@ export class ActivitySidebarView extends ItemView {
   private renderCountdownFlags(root: HTMLElement): void {
     const state = this.deps.store.getState();
     if (state.countdown.status === 'idle' && state.countdown.flags.length === 0) return;
-    new Setting(root).setName(t('manualFlagsTitle')).setHeading();
+    renderSectionHeading(root, 'flag', t('manualFlagsTitle'));
     renderManualFlagsTable(root, state.countdown.flags);
   }
 
@@ -2116,30 +2173,93 @@ export class ActivitySidebarView extends ItemView {
     ]);
 
     // day navigation
-    const head = ovRight.createDiv({ cls: 'rtt-heatmap-wrap' });
+    const layout = ovRight.createDiv({ cls: 'rtt-overview-layout' });
+    const head = layout.createDiv({ cls: 'rtt-heatmap-wrap rtt-overview-chart' });
+    const aside = layout.createDiv({ cls: 'rtt-overview-aside' });
     this.renderDayNav(head);
 
     const sources = visibleSources(this.hiddenHeatmap);
     const tracks = buildOverviewTracks(weekIntervals, input.manual, input.countdown, this.day);
     renderHeatmapLegend(head, tracks.map(track => ({ key: sourceClass[track.source], className: sourceClass[track.source], label: overviewSourceName(track.source) })), this.hiddenHeatmap, key => this.toggleHeatmapClass(key));
+    const sourcePicker = head.createDiv({ cls: 'rtt-mobile-source-picker' });
+    const sourceOptions: Record<string, string> = { all: t('ovAllSources') };
+    for (const track of tracks) sourceOptions[track.source] = overviewSourceName(track.source);
+    const selectedSources = [...sources];
+    const selectionValue = selectedSources.length === 4 ? 'all' : selectedSources.length === 1 ? selectedSources[0] : 'custom';
+    if (selectionValue === 'custom') sourceOptions.custom = selectedSources.map(overviewSourceName).join(' + ') || t('ovEmpty');
+    new DropdownComponent(sourcePicker).addOptions(sourceOptions).setValue(selectionValue).onChange(value => {
+      if (value === 'custom') return;
+      for (const track of tracks) {
+        if (value === 'all' || value === track.source) this.hiddenHeatmap.delete(sourceClass[track.source]);
+        else this.hiddenHeatmap.add(sourceClass[track.source]);
+      }
+      this.render();
+    }).selectEl.setAttribute('aria-label', t('ovSources'));
+
     let detail: HTMLElement | null = null;
+    const dayBase = toAbsoluteMinutes(this.day + ' 00:00:00')!;
     const paintSelection = (): void => {
       if (!detail) return;
       detail.empty();
       const selected = this.overviewSelection;
-      const process = selected?.day === this.day ? tracks.flatMap(track => track.processes).find(item => item.id === selected.id && sources.has(item.source)) : undefined;
+      const hourOnly = selected?.day === this.day && selected.hourOnly === true;
+      const process = selected && !hourOnly && selected.day === this.day
+        ? tracks.flatMap(track => track.processes).find(item => item.id === selected.id && sources.has(item.source))
+        : undefined;
+      // 点到的过程跨出本小时，就按整个过程展开；完整落在这小时里的过程则退回整小时合看。
+      // 与是否筛选无关：筛选只决定"看哪些来源"，不改变"这一段属于哪个小时"。
+      // A clicked process reaching outside the hour opens as a whole process; one confined to the hour
+      // falls back to the hourly view — the same rule with or without a source filter.
+      const hourStart = selected ? dayBase + selected.hour * 60 : dayBase;
+      const whole = process !== undefined
+        && (process.startAbs < hourStart - 1e-6 || process.endAbs > hourStart + 60 + 1e-6);
+      const sameHour = (element: HTMLElement): boolean =>
+        Number(element.closest<HTMLElement>('.rtt-overview-hour')?.dataset.rttHour) === selected?.hour;
       for (const element of Array.from(head.querySelectorAll<HTMLElement>('.rtt-hm-seg'))) {
-        const active = element.dataset.rttGroup === process?.id;
+        const active = selected?.day === this.day && (hourOnly
+          ? sameHour(element)
+          : process !== undefined && (whole ? element.dataset.rttGroup === process.id : sameHour(element)));
         element.toggleClass('is-selected', active);
         element.setAttribute('aria-pressed', String(active));
       }
-      if (process) this.renderOverviewProcess(detail, process);
+      if (selected?.day === this.day) {
+        if (hourOnly) this.renderOverviewHour(detail, tracks, selected.hour, sources);
+        else if (process) {
+          if (whole) this.renderOverviewProcess(detail, process);
+          else this.renderOverviewHour(detail, tracks, selected.hour, sources);
+        }
+      }
+      this.placeOverviewDetail?.();
     };
-    renderOverviewTracks(head, tracks, this.day, sources, this.overviewSelection?.day === this.day ? this.overviewSelection.id : null, process => {
-      this.overviewSelection = this.overviewSelection?.day === this.day && this.overviewSelection.id === process.id ? null : { day: this.day, id: process.id };
-      paintSelection();
-    });
-    detail = head.createDiv({ cls: 'rtt-hm-detail rtt-overview-detail' });
+    const chart = renderOverviewTracks(head, tracks, this.day, sources,
+      this.overviewSelection?.day === this.day && !this.overviewSelection.hourOnly ? this.overviewSelection.id : null,
+      (process, hour) => {
+        this.overviewSelection = this.overviewSelection?.day === this.day && !this.overviewSelection.hourOnly
+          && this.overviewSelection.id === process.id && this.overviewSelection.hour === hour
+          ? null : { day: this.day, id: process.id, hour };
+        paintSelection();
+      },
+      hour => {
+        this.overviewSelection = this.overviewSelection?.day === this.day && this.overviewSelection.hourOnly === true
+          && this.overviewSelection.hour === hour ? null : { day: this.day, id: '', hour, hourOnly: true };
+        paintSelection();
+      },
+      sources.size === 4);
+    detail = aside.createDiv({ cls: 'rtt-hm-detail rtt-overview-detail' });
+    this.placeOverviewDetail = () => {
+      if (!detail) return;
+      const selected = this.overviewSelection;
+      const wide = layout.clientWidth >= ActivitySidebarView.WIDE_PX && !this.contentEl.ownerDocument.body.hasClass('is-mobile');
+      layout.toggleClass('is-wide', wide);
+      layout.toggleClass('has-selection', detail.hasChildNodes());
+      if (wide || !selected || selected.day !== this.day || !detail.hasChildNodes()) { if (detail.parentElement !== aside) aside.appendChild(detail); }
+      else {
+        const placed = selected.hourOnly
+          ? chart.placeHourDetail(detail, selected.hour)
+          : chart.placeDetail(detail, selected.id, selected.hour);
+        if (!placed && detail.parentElement !== aside) aside.appendChild(detail);
+      }
+    };
     paintSelection();
     renderHint(ovRight, t('ovExplain'));
     this.renderOverviewList(ovRight, tracks);
@@ -2153,20 +2273,22 @@ export class ActivitySidebarView extends ItemView {
   }
 
   private renderOverviewProcess(parent: HTMLElement, process: OverviewProcess, summary = true): void {
-    if (process.session) { renderManualSessionDetail(parent, process.session); return; }
+    if (process.session) {
+      this.renderEditableSession(parent, process.session, process.source === 'countdown' ? 'countdown' : 'manual'); return;
+    }
     const from = this.overviewTimestamp(process.startAbs);
     const to = this.overviewTimestamp(process.endAbs);
     const now = formatLocalFull(new Date(this.deps.clock.now()));
     const until = to < now ? to : now;
     const visits = previewVisits(this.cachedEvents(), from, until, accountIntervals(this.accountInput(this.day)), new Set([process.source]));
     const state: TimelineDisclosureState = { expanded: this.timelineExpanded, scope: this.day + ':' + (summary ? 'selected:' : 'day:') + process.id };
-    const nodes = visitNodes(visits, true, state);
+    const nodes = visitNodes(visits, true, state, visit => this.editVisit(visit));
     const key = state.scope;
     const paint = (): void => {
       parent.empty();
       const shown = this.overviewPreviewExpanded.has(key) ? nodes : nodes.slice(0, 8);
-      const header: TimelineNode = { icon: process.source === 'view' ? 'app-window' : 'file-text', kind: process.source,
-        title: overviewSourceName(process.source), timeRange: from.slice(11, 19) + ' – ' + to.slice(11, 19),
+      const header: TimelineNode = { icon: overviewSourceIcon(process.source), kind: process.source,
+        title: this.processTitle(process, visits), timeRange: from.slice(11, 19) + ' – ' + to.slice(11, 19),
         lines: [formatDurationParts(Math.round((process.endAbs - process.startAbs) * 60))] };
       renderTimelineList(parent, summary && nodes.length > 1 ? [header, ...shown] : shown, state);
       if (nodes.length > 8) {
@@ -2177,32 +2299,148 @@ export class ActivitySidebarView extends ItemView {
     paint();
   }
 
+  /** 视图/文档过程用真实标题，不再回落到「插件视图」「文档」 / real titles instead of source labels. */
+  private visitDisplayTitle(visit: TargetVisit): string {
+    return visit.title?.trim() || (isPluginViewKey(visit.target) ? pluginViewLabel(visit.target) : visit.target.split('/').pop() ?? visit.target);
+  }
+
+  /** 取过程范围内停留最久的那一段作为标题 / the longest stay names the process. */
+  private processTitle(process: OverviewProcess, visits: readonly TargetVisit[]): string {
+    if (process.session) return process.session.note || overviewSourceName(process.source);
+    const from = parseSessionStartTime(this.overviewTimestamp(process.startAbs))?.getTime();
+    const to = parseSessionStartTime(this.overviewTimestamp(process.endAbs))?.getTime();
+    let best: TargetVisit | null = null;
+    let bestOverlap = 0;
+    for (const visit of visits) {
+      if ((isPluginViewKey(visit.target) ? 'view' : 'document') !== process.source) continue;
+      const start = parseSessionStartTime(visit.from)?.getTime();
+      const end = parseSessionStartTime(visit.to)?.getTime();
+      if (start === undefined || end === undefined) continue;
+      const overlap = Math.min(end, to ?? end) - Math.max(start, from ?? start);
+      if (overlap > bestOverlap) { best = visit; bestOverlap = overlap; }
+    }
+    return best ? this.visitDisplayTitle(best) : overviewSourceName(process.source);
+  }
+
+  /**
+   * 整小时视图：列出与该小时相交的全部过程 / every process overlapping the hour.
+   *
+   * 过程跨出小时时按它的真实起止显示，不在整点被截断 —— 这正是"被断片了就持续显示直到结束"：
+   * 一行读到的始终是同一个过程，而不是按小时切开的几段。
+   *
+   * A process crossing the hour is shown over its real extent instead of being cut at the hour:
+   * a row always reads as one process, never as slices split by clock boundaries.
+   */
+  private renderOverviewHour(
+    parent: HTMLElement, tracks: readonly OverviewTrack[], hour: number,
+    sources: ReadonlySet<OverviewSource>,
+  ): void {
+    const dayBase = toAbsoluteMinutes(this.day + ' 00:00:00')!;
+    const hourStartAbs = dayBase + hour * 60;
+    const hourEndAbs = hourStartAbs + 60;
+    const hourStart = this.overviewTimestamp(hourStartAbs);
+    const hourEnd = this.overviewTimestamp(hourEndAbs);
+    parent.createDiv({ cls: 'rtt-vtl-range', text: hourStart.slice(11, 19) + ' – ' + hourEnd.slice(11, 19) });
+
+    const overlapping = tracks
+      .filter(track => sources.has(track.source))
+      .flatMap(track => track.processes.filter(process => process.endAbs > hourStartAbs && process.startAbs < hourEndAbs));
+    const rangeStart = overlapping.length > 0 ? Math.min(hourStartAbs, ...overlapping.map(process => process.startAbs)) : hourStartAbs;
+    const rangeEnd = overlapping.length > 0 ? Math.max(hourEndAbs, ...overlapping.map(process => process.endAbs)) : hourEndAbs;
+    const from = this.overviewTimestamp(rangeStart);
+    const toFull = this.overviewTimestamp(rangeEnd);
+    const now = formatLocalFull(new Date(this.deps.clock.now()));
+    const to = toFull < now ? toFull : now;
+
+    const state: TimelineDisclosureState = { expanded: this.timelineExpanded, scope: this.day + ':hour:' + hour };
+    const documentSources = new Set([...sources].filter(source => source === 'document' || source === 'view'));
+    const visits = previewVisits(this.cachedEvents(), from, to, accountIntervals(this.accountInput(this.day)), documentSources)
+      .filter(visit => visit.to > hourStart && visit.from < hourEnd);
+    const items = visitNodes(visits, true, state, visit => this.editVisit(visit)).map(node => ({
+      at: toAbsoluteMinutes(this.day + ' ' + (node.timeRange?.slice(0, 8) ?? hourStart.slice(11, 19))) ?? hourStartAbs, node,
+    }));
+
+    for (const process of overlapping) {
+      const session = process.session;
+      if (!session) continue;
+      const kind = process.source === 'countdown' ? 'countdown' : 'manual';
+      const node: TimelineNode = { icon: kind === 'countdown' ? 'hourglass' : 'timer', kind,
+        key: 'hour:' + process.id, title: session.note || overviewSourceName(process.source),
+        timeRange: session.startTime.slice(11, 19) + ' – ' + session.endTime.slice(11, 19),
+        lines: [formatDurationParts(session.durationSeconds)],
+        onEdit: () => this.editRecord(draftForSession(kind, session, this.deps.history.getRevision())),
+        renderDetail: container => renderManualSessionDetail(container, session) };
+      items.push({ at: process.startAbs, node });
+    }
+    renderTimelineList(parent, items.sort((left, right) => left.at - right.at).map(item => item.node), state);
+  }
+
+  private renderEditableSession(parent: HTMLElement, session: ManualSession, kind: 'manual' | 'countdown'): void {
+    const toolbar = parent.createDiv({ cls: 'rtt-process-toolbar' });
+    this.iconButton(toolbar, 'pencil', t('editRecord'), () => this.editRecord(draftForSession(kind, session, this.deps.history.getRevision())), { ghost: true });
+    renderManualSessionDetail(parent, session);
+  }
+
   private renderOverviewList(root: HTMLElement, tracks: readonly OverviewTrack[]): void {
-    new Setting(root).setName(t('ovListTitle')).setHeading();
+    renderSectionHeading(root, 'list-tree', t('ovListTitle'));
     const sources = visibleSources(this.hiddenHeatmap);
-    for (const track of tracks) {
-      if (!sources.has(track.source) || !track.processes.length) continue;
+    // 一天只推导一次访问，供所有分组取真实标题 / derive the day's visits once for every group title.
+    //  absoluteOf() 的零点不是午夜，端点必须同样用「当天零点 + 1440 分钟」换算
+    //  absoluteOf() has an arbitrary origin, so the end must use the same day-base conversion.
+    const dayStartAbs = toAbsoluteMinutes(this.day + ' 00:00:00')!;
+    const dayVisits = buildVisits(this.cachedEvents(), this.day + ' 00:00:00', this.overviewTimestamp(dayStartAbs + 1440), false);
+    //  每个来源的总时长先算好，按降序排，并以此为分母给出占比
+    //  Totals are computed first, sorted descending, and used as the denominator for each share.
+    const entries = tracks
+      .filter(track => sources.has(track.source) && track.processes.length > 0)
+      .map(track => ({
+        track,
+        totalSeconds: track.processes.reduce((sum, process) => sum + (process.session?.durationSeconds ?? Math.round((process.endAbs - process.startAbs) * 60)), 0),
+      }))
+      .sort((left, right) => right.totalSeconds - left.totalSeconds);
+    const sumSeconds = entries.reduce((sum, entry) => sum + entry.totalSeconds, 0);
+    for (const { track, totalSeconds } of entries) {
       const key = this.day + ':' + track.source;
-      const group = root.createEl('details', { cls: 'rtt-source-processes' });
-      group.open = this.overviewSourcesExpanded.has(key);
-      const summary = group.createEl('summary');
+      const open = this.overviewSourcesExpanded.has(key);
+      const group = root.createDiv({ cls: 'rtt-source-processes' });
+      const summary = group.createEl('button', { cls: 'rtt-source-header ' + sourceClass[track.source], attr: { type: 'button', 'aria-expanded': String(open) } });
+      const share = sumSeconds > 0 ? (totalSeconds / sumSeconds) * 100 : 0;
+      summary.setCssProps({ '--rtt-share': `${share}%` });
+      const icon = summary.createSpan({ cls: 'rtt-source-icon ' + sourceClass[track.source] });
+      setIcon(icon, overviewSourceIcon(track.source));
       summary.createSpan({ cls: 'rtt-source-name', text: overviewSourceName(track.source) });
-      summary.createSpan({ cls: 'rtt-source-count', text: t('processCount').replace('{n}', String(track.processes.length)) });
+      const metrics = summary.createSpan({ cls: 'rtt-source-metrics' });
+      metrics.createSpan({ cls: 'rtt-source-total', text: formatDurationWithSeconds(totalSeconds) });
+      metrics.createSpan({ cls: 'rtt-source-share', text: share > 0 && share < 1 ? '<1%' : `${Math.round(share)}%` });
+      const chevron = summary.createSpan({ cls: 'rtt-source-chevron' });
       const content = group.createDiv({ cls: 'rtt-source-content' });
+      let expanded = open;
+      content.hidden = !expanded;
+      const paintChevron = (): void => setIcon(chevron, expanded ? 'chevron-down' : 'chevron-right');
+      paintChevron();
       const render = (): void => {
         if (content.hasChildNodes()) return;
         const state: TimelineDisclosureState = { expanded: this.timelineExpanded, scope: key };
         const nodes: TimelineNode[] = track.processes.map(process => ({
-          key: process.id, icon: track.source === 'document' ? 'file-text' : track.source === 'view' ? 'app-window' : track.source === 'manual' ? 'timer' : 'hourglass', kind: track.source,
+          key: process.id, icon: overviewSourceIcon(track.source), kind: track.source,
           timeRange: this.overviewTimestamp(process.startAbs).slice(11, 19) + ' – ' + this.overviewTimestamp(process.endAbs).slice(11, 19),
-          title: process.session?.note || overviewSourceName(track.source),
+          title: this.processTitle(process, dayVisits),
           lines: [formatDurationParts(process.session?.durationSeconds ?? Math.round((process.endAbs - process.startAbs) * 60))],
+          onEdit: process.session ? () => this.editRecord(draftForSession(process.source === 'countdown' ? 'countdown' : 'manual', process.session!, this.deps.history.getRevision())) : undefined,
           renderDetail: container => this.renderOverviewProcess(container, process, false),
         }));
         renderTimelineList(content, nodes, state);
       };
-      if (group.open) render();
-      group.addEventListener('toggle', () => { if (group.open) { this.overviewSourcesExpanded.add(key); render(); } else this.overviewSourcesExpanded.delete(key); });
+      const setOpen = (next: boolean): void => {
+        expanded = next;
+        content.hidden = !next;
+        summary.setAttribute('aria-expanded', String(next));
+        paintChevron();
+        if (next) { this.overviewSourcesExpanded.add(key); render(); }
+        else this.overviewSourcesExpanded.delete(key);
+      };
+      summary.addEventListener('click', () => setOpen(!expanded));
+      if (open) render();
     }
   }
 
@@ -2303,12 +2541,12 @@ export class ActivitySidebarView extends ItemView {
     const sessions = this.deps.history.getManualSessions();
     const rows = buildManualDayRows(sessions, this.day);
     const marks = buildManualDayFlags(sessions, this.day);
-    const selectRound = (target: HTMLElement, id: string): void => {
+    const selectRound = (target: HTMLElement, id: string, hour: number): void => {
       target.addClass('is-clickable');
       target.setAttribute('role', 'button');
       target.tabIndex = 0;
       const select = (): void => {
-        const segment = [...head.querySelectorAll<HTMLElement>('.rtt-hm-seg')].find((element) => element.dataset.rttGroup === id);
+        const segment = [...head.querySelectorAll<HTMLElement>('.rtt-hm-seg')].find((element) => element.dataset.rttGroup === id && Number(element.closest<HTMLElement>('.rtt-hm-row')?.dataset.rttHour) === hour);
         segment?.click();
       };
       target.addEventListener('click', select);
@@ -2350,7 +2588,7 @@ export class ActivitySidebarView extends ItemView {
           for (const pause of rows[hour]!.pauseSegments) {
             const block = bar.createDiv({ cls: 'rtt-hm-pause-block' });
             setTooltip(block, t('evPause'));
-            selectRound(block, pause.session.id);
+            selectRound(block, pause.session.id, hour);
             block.setCssProps({
               left: `${(pause.startMinute / 60) * 100}%`,
               width: `${Math.max(0.4, (pause.durationMinutes / 60) * 100)}%`,
@@ -2364,7 +2602,7 @@ export class ActivitySidebarView extends ItemView {
           for (const mark of marks) {
             if (Math.floor(mark.atMinute / 60) !== hour) continue;
             const tick = bar.createDiv({ cls: 'rtt-hm-flag' });
-            selectRound(tick, mark.session.id);
+            selectRound(tick, mark.session.id, hour);
             tick.setCssProps({ left: `${((mark.atMinute % 60) / 60) * 100}%` });
             setTooltip(
               tick,
@@ -2375,13 +2613,7 @@ export class ActivitySidebarView extends ItemView {
           }
         }
       },
-      { groupOf: (segment) => segment.session.id, renderHour: (panel, segments) => {
-        //  一小时里可能有多次手动计时，逐条列出，而不是只显示第一段
-        //  An hour can hold several manual runs; list them all rather than only the first
-        const sessions = [...new Map(segments.map((segment) => [segment.session.id, segment.session])).values()]
-          .sort((a, b) => a.startTime.localeCompare(b.startTime));
-        for (const session of sessions) renderManualSessionDetail(panel, session);
-      }, render: (panel, segment) => renderManualSessionDetail(panel, segment.session) },
+      { groupOf: (segment) => segment.session.id, render: (panel, segment) => this.renderEditableSession(panel, segment.session, 'manual') },
     );
 
     if (!drawn) {
@@ -2672,19 +2904,26 @@ export class ActivitySidebarView extends ItemView {
    */
   private availableDays(): string[] {
     const days = new Set<string>();
+    const addRange = (from: string, to: string): void => {
+      const start = parseSessionStartTime(from);
+      const end = parseSessionStartTime(to);
+      if (!start || !end || end <= start) return;
+      const cursor = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+      while (cursor < end) { days.add(formatLocalFull(cursor).slice(0, 10)); cursor.setDate(cursor.getDate() + 1); }
+    };
     for (const event of this.cachedEvents()) {
       const day = event.time.slice(0, 10);
       if (day) days.add(day);
     }
     for (const session of this.deps.history.getManualSessions()) {
-      const day = session.startTime.slice(0, 10);
-      if (day) days.add(day);
+      addRange(session.startTime, session.endTime);
     }
     //  倒计时也是可翻阅的一天 / countdown days are browsable too
     for (const session of this.deps.history.getCountdownSessions()) {
-      const day = session.startTime.slice(0, 10);
-      if (day) days.add(day);
+      addRange(session.startTime, session.endTime);
     }
+    // 更正后移到的新日期也须能从日历进入 / corrected dates remain reachable in the calendar.
+    for (const edit of editsOf(this.cachedEvents())) addRange(edit.visit.startTime, edit.visit.endTime);
     return [...days].sort();
   }
 
@@ -2701,7 +2940,7 @@ export class ActivitySidebarView extends ItemView {
       .slice()
       .reverse();
 
-    new Setting(root).setName(t('manualRecent')).setHeading();
+    renderSectionHeading(root, 'history', t('manualRecent'));
 
     if (all.length === 0) {
       root.createDiv({ cls: 'rtt-list-empty', text: t('manualNoRecords') });
@@ -2927,9 +3166,11 @@ export class ActivitySidebarView extends ItemView {
     }
 
     const total = planTotalSeconds(plan);
+    //  跳段记录的有效偏移只影响定位，实际读数与记录时长始终来自已过时间
+    //  The skip offset affects phase location only; readings and saved durations stay real elapsed time.
     const position: CountdownPosition | null = idle
       ? null
-      : locatePhase(plan, selectCountdownElapsedSeconds(state, nowMs));
+      : locatePhase(plan, selectCountdownElapsedSeconds(state, nowMs) + (countdown.skippedSeconds ?? 0));
 
     const remaining = position ? position.remaining : total;
     const phaseIndex = position ? position.index : 0;
@@ -2969,12 +3210,8 @@ export class ActivitySidebarView extends ItemView {
       }
     }
 
-    //  方案标签只改类，不重绘：段切换每秒都可能发生，重绘会打断滚动与选中
-    //  The chips only change class, never re-render: a phase can turn over on any tick, and a
-    //  re-render would throw away scroll position and selection.
-    this.liveNodes.countdownChips?.forEach((chip, index) => {
-      chip.toggleClass('is-active', !idle && index === phaseIndex);
-      chip.toggleClass('is-done', !idle && index < phaseIndex);
-    });
+    //  段的切换只更新流程图里的 ▶/✓，不重绘整块面板
+    //  A phase turn only updates the flow's ▶/✓ marks, never re-renders the whole panel.
+    this.syncCountdownFlow(plan, position);
   }
 }

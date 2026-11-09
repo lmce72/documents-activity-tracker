@@ -15,6 +15,7 @@ import type {
   RecordEntry,
   TimelineEvent,
 } from '../core/types';
+import type { EventHistory, RecordEdit } from '../core/recordEditing';
 
 export interface HistoryStore {
   /** whether the store is ready */
@@ -33,7 +34,10 @@ export interface HistoryStore {
   getRevision(): number;
 
   // events ----
-  getEvents(): TimelineEvent[];
+  getEvents(): EventHistory;
+  getRecordEdits(): RecordEdit[];
+  /** 版本检查与事务保存；失败抛出 / conflict-checked, durable correction; rejects on failure. */
+  commitRecordEdit(edit: RecordEdit): Promise<void>;
   appendEvents(events: readonly TimelineEvent[]): void;
   replaceEvents(events: readonly TimelineEvent[]): void;
   deleteFileEvents(filePath: string): number;
@@ -76,5 +80,5 @@ export interface HistoryStore {
    * `force` bypasses the flush gate: quitting, the manual save and creating a new database must
    * reach the vault file.
    */
-  flushNow(options?: { force?: boolean; trigger?: 'session-end' | 'interval' | 'quit' }): Promise<void>;
+  flushNow(options?: { force?: boolean; trigger?: 'session-end' | 'interval' | 'quit'; throwOnError?: boolean }): Promise<void>;
 }

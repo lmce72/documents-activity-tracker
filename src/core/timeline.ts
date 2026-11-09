@@ -22,6 +22,7 @@ import type {
 } from './types';
 import { eventFileRefs } from './migration';
 import { liveWallClockSeconds } from './types';
+import { applyFileRecordEdits, editsOf, filterEventHistory } from './recordEditing';
 
 /** Max credible unfinished session: 24h. */
 export const MAX_SESSION_DURATION = 24 * 60 * 60;
@@ -194,7 +195,7 @@ export function buildFileRecords(
   //  toward a total, never what is recorded or shown on its own.
   const countUnfocused = options.countUnfocused !== false;
   const fileRecords: Record<string, FileRecord> = {};
-  if (timeline.length === 0) return fileRecords;
+  if (timeline.length === 0) return applyFileRecordEdits(fileRecords, timeline, today, options, nowMs);
 
   interface OpenSession {
     filePath: string;
@@ -372,7 +373,7 @@ export function buildFileRecords(
     };
   }
 
-  return fileRecords;
+  return applyFileRecordEdits(fileRecords, timeline, today, options, nowMs);
 }
 
 /**
@@ -413,6 +414,13 @@ export function getTodaySeconds(
   countPluginViews = true,
 ): number {
   if (!countPluginViews && isPluginViewKey(filePath)) return 0;
+  if (editsOf(timeline).some(edit => edit.visit.target === filePath)) {
+    const record = buildFileRecords(timeline, file?.lastTickTimestamp ?? Date.now(), today, { countUnfocused, countPluginViews })[filePath];
+    const liveHasStart = file?.sessionStartTime && timeline.some(event => event.type === 'start' && event.file === filePath && event.time === file.sessionStartTime);
+    const pendingLive = !liveHasStart && file?.sessionStartTime?.startsWith(today)
+      ? file.activeSeconds + (countUnfocused ? file.unfocusedSeconds : 0) : 0;
+    return (record?.readTimeToday ?? 0) + pendingLive;
+  }
   let total = 0;
 
   for (const event of timeline) {
@@ -577,7 +585,7 @@ export function removeFileEvents(
   timeline: readonly TimelineEvent[],
   filePath: string,
 ): TimelineEvent[] {
-  return timeline.filter((event) => !eventFileRefs(event).includes(filePath));
+  return filterEventHistory(timeline, event => !eventFileRefs(event).includes(filePath), edit => edit.visit.target !== filePath);
 }
 
 /**
@@ -586,7 +594,7 @@ export function getFileEvents(
   timeline: readonly TimelineEvent[],
   filePath: string,
 ): TimelineEvent[] {
-  return timeline.filter((event) => eventFileRefs(event).includes(filePath));
+  return filterEventHistory(timeline, event => eventFileRefs(event).includes(filePath), edit => edit.visit.target === filePath);
 }
 
 /**
@@ -597,5 +605,6 @@ export function getTimeRangeEvents(
   start: string,
   end: string,
 ): TimelineEvent[] {
-  return timeline.filter((event) => event.time >= start && event.time <= end);
+  return filterEventHistory(timeline, event => event.time >= start && event.time <= end,
+    edit => (edit.visit.startTime <= end && edit.visit.endTime >= start) || (edit.visit.originalFrom <= end && edit.visit.originalTo >= start));
 }

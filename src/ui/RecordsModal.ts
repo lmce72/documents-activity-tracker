@@ -1,3 +1,8 @@
+import { chooseFileInterval, editVisitRecord } from './recordEditActions';
+import { renderSectionHeading } from './sectionHeading';
+import { buildVisits } from '../core/activityVisits';
+import { visitNodes } from './processList';
+import { renderTimelineList } from './timelineList';
 /**
  * Reading-records browser
  *
@@ -28,6 +33,7 @@ import {
 } from '../core/recordsTimeline';
 import {
   formatDurationWithSeconds,
+  formatLocalFull,
   formatReadTime,
   formatReadTimeParts,
   todayStr,
@@ -39,7 +45,6 @@ import {
 } from '../core/settings';
 import { buildFileRecords } from '../core/timeline';
 import { appendDurationParts, setReadTime } from './durationText';
-import { TextPromptModal } from './TextPromptModal';
 import {
   CHANNEL_CLASSES,
   filterRowsByClass,
@@ -243,7 +248,7 @@ export class RecordsModal extends Modal {
       { label: t('statsToday'), seconds: todaySeconds },
       { label: t('statsTodaySessions'), value: String(todaySessions) },
       { label: t('statsWeek'), seconds: this.weekSeconds(all) },
-      { label: t('recTotalFiles').replace('{n}', String(Object.keys(all).length)), value: '' },
+      { label: t('recTotalFiles'), value: String(Object.keys(all).length) },
     ];
 
     const bar = root.createDiv({ cls: 'rtt-stats-bar' });
@@ -365,14 +370,14 @@ export class RecordsModal extends Modal {
         void this.app.workspace.openLinkText(filePath, '', false);
       });
 
-      //  改名 / rename (display alias only)
+      //  选择时段后完整编辑 / select an interval for full editing.
       const edit = item.createEl('button', { cls: 'rtt-item-icon-btn' });
       setIcon(edit, 'pencil');
-      edit.setAttribute('aria-label', t('recordEditName'));
-      edit.title = t('recordEditName');
+      edit.setAttribute('aria-label', t('editRecord'));
+      edit.title = t('editRecord');
       edit.addEventListener('click', (event) => {
         event.stopPropagation();
-        this.promptAlias(filePath, record);
+        this.editIntervals(filePath, record);
       });
 
       //  明确的打开链接：点击行本身也会打开，但"这条指哪篇文档"要有一个可点的地方
@@ -454,10 +459,12 @@ export class RecordsModal extends Modal {
     record: FileRecord,
   ): void {
     const confirming = this.pendingDelete === filePath;
+    //  与改名、打开共用同一套图标按钮：同样的尺寸、底色与悬停反馈
+    //  Same icon-button style as rename/open: identical size, fill and hover feedback.
     const btn = item.createEl('button', {
-      cls: confirming ? 'rtt-item-delete is-confirming' : 'rtt-item-delete',
-      text: confirming ? '✓' : '×',
+      cls: confirming ? 'rtt-item-icon-btn is-danger is-confirming' : 'rtt-item-icon-btn is-danger',
     });
+    setIcon(btn, confirming ? 'check' : 'trash-2');
     btn.setAttribute('aria-label', t('recDelete'));
     btn.title = confirming ? t('recDeleteConfirm').replace('{name}', record.fileName) : t('recDelete');
 
@@ -490,32 +497,10 @@ export class RecordsModal extends Modal {
     });
   }
 
-  /**
-   * 改显示名 / edit the display alias.
-   *
-   * 写成设置里的别名，不动文件：改名是一个备注，指向的文档不变。
-   * Written into the settings alias map, never the file: a rename is a remark and the target stays.
-   */
-  private promptAlias(filePath: string, record: FileRecord): void {
-    const current = this.deps.settings().recordAliases?.[filePath] ?? '';
-    new TextPromptModal(this.app, {
-      title: t('recordEditName'),
-      description: t('recordEditNameDesc'),
-      placeholder: t('recordEditNamePlaceholder'),
-      initial: current,
-      onDone: (value) => {
-        if (value === null) return;
-        const aliases = { ...(this.deps.settings().recordAliases ?? {}) };
-        const trimmed = value.trim();
-        if (trimmed) aliases[filePath] = trimmed;
-        else delete aliases[filePath];
-        void this.deps.saveSetting?.({ recordAliases: aliases }).then(() => {
-          this.deps.onChanged?.();
-          this.render();
-        });
-        void record;
-      },
-    }).open();
+  /** 按真实时段编辑，不直接修改文件合计 / edit intervals rather than aggregate totals. */
+  private editIntervals(filePath: string, record: FileRecord): void {
+    const day = record.lastReadAt?.slice(0, 10) || this.day;
+    chooseFileInterval(this.app, this.deps.history, filePath, day, this.deps.clock.now(), () => { this.deps.onChanged?.(); this.render(); });
   }
 
   /** the selected file's heatmap for one day. */
@@ -524,24 +509,23 @@ export class RecordsModal extends Modal {
     all: Record<string, FileRecord>,
     mode: string,
   ): void {
-    new Setting(root).setName(t('recDetailTitle')).setHeading();
-
     const filePath = this.selected;
     const record = filePath ? all[filePath] : undefined;
 
     if (!filePath || !record) {
+      renderSectionHeading(root, 'flame', t('recDetailTitle'));
       root.createDiv({ cls: 'rtt-list-empty', text: t('recDetailHint') });
       return;
     }
 
-    //  失焦归类搬到了侧栏文档面板的「离开与空闲」区块：那是同一个面板里的一段列表，不再单开一层
-    //  弹窗。这里留一句指路，用户不会在记录浏览器里找那个已经不存在的按钮。
-    //  Blur classification moved to the document panel's "away and idle" block — one list inside a
-    //  panel instead of a layer of modal. A line of signposting beats a button that no longer exists.
-    root.createDiv({ cls: 'rtt-empty-hint', text: t('unfocusedMoved') });
+    //  文件名与日期放进与小节标题同一套样式里：控制条只剩日期输入
+    //  The file name and day share the section-heading style; the control row keeps just the date input.
+    renderSectionHeading(root, 'flame', `${recordName(this.deps.settings(), filePath, record.fileName)} · ${this.day}`);
+
     // day navigation
     const nav = root.createDiv({ cls: 'rtt-timeline-nav' });
-    const prev = nav.createEl('button', { cls: 'rtt-nav-btn', text: '‹' });
+    const prev = nav.createEl('button', { cls: 'rtt-nav-btn clickable-icon' });
+    setIcon(prev, 'chevron-left');
     prev.setAttribute('aria-label', t('prevDay'));
     prev.addEventListener('click', (event) => {
       event.stopPropagation();
@@ -549,9 +533,18 @@ export class RecordsModal extends Modal {
       this.render();
     });
 
-    nav.createSpan({ cls: 'rtt-nav-date', text: `${record.fileName} · ${this.day}` });
+    //  文件名已在选中的记录行里，这里只留一个可跳转的日期输入
+    //  The file name already reads on the selected row; this control only needs the day itself.
+    const dateInput = nav.createEl('input', { type: 'date', cls: 'rtt-nav-date-input', attr: { 'aria-label': t('editDay') } });
+    dateInput.value = this.day;
+    dateInput.addEventListener('change', () => {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(dateInput.value)) return;
+      this.day = dateInput.value;
+      this.render();
+    });
 
-    const next = nav.createEl('button', { cls: 'rtt-nav-btn', text: '›' });
+    const next = nav.createEl('button', { cls: 'rtt-nav-btn clickable-icon' });
+    setIcon(next, 'chevron-right');
     next.setAttribute('aria-label', t('nextDay'));
     next.addEventListener('click', (event) => {
       event.stopPropagation();
@@ -559,7 +552,7 @@ export class RecordsModal extends Modal {
       this.render();
     });
 
-    const todayBtn = nav.createEl('button', { text: t('todayLabel') });
+    const todayBtn = nav.createEl('button', { cls: 'rtt-nav-btn', text: t('todayLabel') });
     todayBtn.addEventListener('click', (event) => {
       event.stopPropagation();
       this.day = todayStr();
@@ -600,5 +593,10 @@ export class RecordsModal extends Modal {
       readingChannelClass,
       readingChannelLabel,
     );
+    const nextDay = new Date(this.day + 'T00:00:00'); nextDay.setDate(nextDay.getDate() + 1);
+    const until = [formatLocalFull(nextDay), formatLocalFull(new Date(this.deps.clock.now()))].sort()[0];
+    const visits = buildVisits(this.deps.history.getEvents(), this.day + ' 00:00:00', until, true).filter(visit => visit.target === filePath);
+    renderTimelineList(root, visitNodes(visits, true, undefined, visit => editVisitRecord(this.app, this.deps.history, visit, () => { this.deps.onChanged?.(); this.render(); })));
+
   }
 }

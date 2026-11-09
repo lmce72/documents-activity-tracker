@@ -67,9 +67,16 @@
     background: var(--background-modifier-hover);
 }
 
+/* 选中标签用淡强调底而不是整块实色：四格里的一个实色块会把其它入口全压下去
+   A tinted fill instead of a solid accent: one saturated cell overwhelms the other three. */
 .rtt-panel-tab.is-active {
-    color: var(--text-on-accent);
-    background: var(--interactive-accent);
+    color: var(--text-accent);
+    background: color-mix(in srgb, var(--interactive-accent) 14%, transparent);
+    font-weight: var(--font-medium);
+}
+
+.rtt-panel-tab.is-active .rtt-panel-tab-icon {
+    color: var(--interactive-accent);
 }
 
 .rtt-panel-tab-icon {
@@ -102,6 +109,39 @@
        Wrap at spaces only: `overflow-wrap: anywhere` breaks inside a word and was measured
        splitting "Document tracking" into "Documen" / "t tracking". */
     overflow-wrap: normal;
+}
+
+/* ── 小节标题 / section headings ─────────────────────────────────────────
+ * 标题与正文共用同一条左边线；图标只做视觉锚点，不抢标题本身。
+ * Heading and body share one left edge; the mark anchors the eye without competing.
+ */
+.rtt-section-heading {
+    display: flex;
+    align-items: center;
+    gap: var(--size-4-1);
+    margin: var(--size-4-4) 0 var(--size-4-2);
+    padding-top: var(--size-4-2);
+    border-top: 1px solid var(--background-modifier-border);
+    color: var(--text-normal);
+    font-size: var(--font-ui-small);
+    font-weight: var(--font-semibold);
+    line-height: 1.3;
+}
+
+.rtt-section-heading-icon {
+    display: flex;
+    flex: 0 0 auto;
+    color: var(--text-faint);
+}
+
+.rtt-section-heading-icon svg {
+    width: var(--icon-xs, 14px);
+    height: var(--icon-xs, 14px);
+}
+
+.rtt-section-heading-label {
+    min-width: 0;
+    overflow-wrap: anywhere;
 }
 
 /* ── 阅读记录面板 / Records browser ─────────────────────────────────────── */
@@ -176,13 +216,21 @@
     background: var(--background-modifier-hover);
 }
 
+/* 删除与改名、打开同一套图标按钮 / delete shares the rename/open icon-button language */
+.rtt-item-icon-btn.is-danger:hover {
+    color: var(--text-error);
+    background-color: var(--background-modifier-error-hover);
+}
+
 /* 待确认删除的行 / a row whose delete is awaiting confirmation */
-.rtt-item-delete.is-confirming {
+.rtt-item-icon-btn.is-danger.is-confirming {
     color: var(--text-on-accent);
-    background: var(--text-error);
-    border-radius: 4px;
-    padding: 0 6px;
-    width: auto;
+    background-color: var(--text-error);
+}
+
+.rtt-item-icon-btn.is-danger.is-confirming:hover {
+    color: var(--text-on-accent);
+    background-color: var(--text-error);
 }
 
 /* ── 秒表：外圈 + 读数 / stopwatch: ring plus readout ───────────────────── */
@@ -300,64 +348,30 @@
     font-weight: 600;
 }
 
-/* ── 倒计时的方案 / the countdown plan ────────────────────────────────────
+/* ── 倒计时的方案流程图 / the countdown plan as a flow diagram ────────────
  *
- * 一排小格，每格一段：读的是"这次由哪几段组成、现在在第几段"，所以用可换行的块而不是一整句。
- * 已跑过的段压暗、当前段用强调色描边 —— 状态靠类名切换，不靠重绘。
- *
- * One small block per phase: what the run is made of and which phase is current. Finished phases
- * are dimmed and the current one is outlined in the accent colour; the state is a class change,
- * never a re-render.
+ * 由 Obsidian 1.15 自带的 Pele 渲染 Mermaid；配色全部映射到主题变量，明暗主题自动跟随。
+ * Rendered by Pele, Obsidian 1.15's built-in Mermaid engine; every colour maps to a theme
+ * variable, so light and dark follow automatically.
  */
-.rtt-cd-plan {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr);
-    gap: 6px;
-    margin: 6px 0 4px;
+.rtt-cd-flow {
+    margin: var(--size-4-2) 0;
+    min-height: 1px;
+    --pele-bg: transparent;
+    --pele-fg: var(--text-normal);
+    --pele-muted: var(--text-muted);
+    --pele-line: var(--background-modifier-border);
+    --pele-surface: var(--background-secondary);
+    --pele-surface-alt: var(--background-secondary-alt, var(--background-secondary));
+    --pele-border: var(--background-modifier-border);
+    --pele-accent: var(--interactive-accent);
+    --pele-font: var(--font-interface);
+    --pele-radius: var(--radius-s);
 }
 
-.rtt-cd-chip {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 5px;
-    padding: 3px 8px;
-    border: 1px solid var(--background-modifier-border);
-    border-radius: var(--radius-s);
-    color: var(--text-muted);
-    font-size: var(--font-ui-smaller);
-}
-
-.rtt-cd-chip-icon {
-    display: inline-flex;
-    color: var(--text-faint);
-}
-
-.rtt-cd-chip-icon svg {
-    width: 13px;
-    height: 13px;
-}
-
-/* 当前段：强调色 + 边框跟着亮，眼睛一眼落到"现在在哪一段"上
-   The current phase: accent colour and a lit border, so the eye lands on where the run is now */
-.rtt-cd-chip.is-active {
-    border-color: var(--interactive-accent);
-    color: var(--text-accent);
-}
-
-.rtt-cd-chip.is-active .rtt-cd-chip-icon {
-    color: var(--interactive-accent);
-}
-
-/* 已经跑过的段：退到背景里，但仍看得见 / finished phases recede but stay legible */
-.rtt-cd-chip.is-done {
-    color: var(--text-faint);
-    border-style: dashed;
-}
-
-.rtt-cd-chip-time {
-    color: var(--text-faint);
-    font-variant-numeric: tabular-nums;
+.rtt-cd-flow svg {
+    max-width: 100%;
+    height: auto;
 }
 
 /* ── 标记 / marks ──────────────────────────────────────────────────────── */
@@ -742,6 +756,7 @@
 .rtt-vtl-node.is-manual .rtt-vtl-icon {
     color: var(--color-green);
 }
+.rtt-vtl-node.is-countdown .rtt-vtl-icon { color: var(--color-orange); }
 
 .rtt-vtl-body {
     flex: 1 1 auto;
@@ -918,6 +933,29 @@ button.clickable-icon.rtt-icon-btn:hover {
     color: var(--text-normal);
 }
 
+/* 主动作：空闲时的「开始」/ the primary action: "start" while idle.
+ * 与专注浮层的工具按钮同一语言 —— 实心强调圆、阴影、20px 图标。 */
+button.clickable-icon.rtt-icon-btn.is-primary {
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    border-radius: 50%;
+    background: var(--interactive-accent);
+    color: var(--text-on-accent);
+    box-shadow: var(--shadow-s);
+}
+
+button.clickable-icon.rtt-icon-btn.is-primary:hover {
+    background: var(--interactive-accent-hover);
+    color: var(--text-on-accent);
+    box-shadow: var(--shadow-s);
+}
+
+button.clickable-icon.rtt-icon-btn.is-primary svg {
+    width: 20px;
+    height: 20px;
+}
+
 /* 丢弃 / 删除类：悬浮转红，避免误点 / destructive actions turn red on hover */
 button.clickable-icon.rtt-icon-btn.is-danger:hover {
     color: var(--text-error);
@@ -1011,6 +1049,42 @@ button.rtt-view-all-btn:hover {
 .rtt-timeline-nav {
     /* 日历弹层要相对它定位 / the popover anchors to this */
     position: relative;
+}
+
+/* 翻页箭头统一成透明图标按钮 / paging arrows are transparent icon buttons */
+button.rtt-nav-btn {
+    background: none;
+    background-color: transparent;
+    border: none;
+    box-shadow: none;
+    color: var(--text-muted);
+    padding: var(--size-2-1);
+    border-radius: var(--radius-s);
+}
+
+button.rtt-nav-btn:hover:not(:disabled) {
+    background-color: var(--background-modifier-hover);
+    color: var(--text-normal);
+}
+
+.rtt-nav-btn svg {
+    width: var(--icon-s, 16px);
+    height: var(--icon-s, 16px);
+}
+
+/* 可跳转的日期输入 / a date field that jumps straight to any day */
+.rtt-nav-date-input {
+    width: auto;
+    min-width: 8.5em;
+    height: var(--input-height);
+    padding: 0 var(--size-4-2);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-s);
+    background: var(--background-modifier-form-field);
+    color: var(--text-normal);
+    font-family: var(--font-interface);
+    font-size: var(--font-ui-small);
+    font-variant-numeric: tabular-nums;
 }
 
 button.rtt-day-trigger {
@@ -1693,7 +1767,7 @@ button.rtt-live-deduct-value.clickable-icon:focus-visible {
     /* 左 30% / 右 70%：上面那部分（数字与状态）窄，下面那部分（热力图与列表）需要宽度 */
     /* Left 30% / right 70%: the upper part (figures and state) is narrow, the lower part (heatmap and
        list) needs the width */
-    grid-template-columns: minmax(0, 3fr) minmax(0, 7fr);
+    grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
 
     /* 两列各自从顶部开始排，不互相拉伸 */
     /* Each column starts at the top and does not stretch to match the other */
@@ -1932,6 +2006,8 @@ body.is-mobile .workspace-leaf-content[data-type="documents-activity-tracker-sid
     font-variant-numeric: tabular-nums;
 }
 
+.rtt-stats-card { padding: var(--size-4-2); gap: var(--size-4-1); }
+
 /* 主数字：淡淡的强调底色，一眼落到"总"上 / the headline figure gets an accent wash */
 .rtt-stats-card.is-primary {
     background: color-mix(in srgb, var(--interactive-accent) 9%, var(--background-secondary));
@@ -1955,7 +2031,8 @@ body.is-mobile .workspace-leaf-content[data-type="documents-activity-tracker-sid
 /* 标签最多两行，多出来的格子不会因为标签长短不一把数字顶到不同高度
    Labels stop at two lines so a long label cannot push its figure out of line with the others. */
 .rtt-stats-label {
-    min-height: 2.4em;
+    min-height: 1.2em;
+    line-height: 1.2;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -2194,44 +2271,165 @@ body.is-mobile .rtt-item-icon-btn {
 .rtt-vtl-inline { position: relative; z-index: 1; margin: var(--size-4-2) 0 var(--size-4-1) -22px; padding: var(--size-4-2); border: 1px solid var(--background-modifier-border); border-radius: var(--radius-s); background: var(--background-primary); overflow-wrap: anywhere; font-size: var(--font-ui-small); }
 .rtt-vtl-inline[hidden], .rtt-record-inline[hidden] { display: none; }
 .rtt-vtl-inline .rtt-vtl-node::before { display: none; }
-.rtt-process-toggle { margin-top: var(--size-2-1); }
 .rtt-hint-callout { margin: var(--size-4-2) 0; }
 .rtt-hint-callout > summary { cursor: pointer; list-style: none; }
 .rtt-hint-callout > summary::-webkit-details-marker { display: none; }
 .rtt-hint-callout .callout-content { font-size: var(--font-ui-small); }
-.rtt-cd-plan-summary { color: var(--text-muted); font-size: var(--font-ui-small); margin-bottom: var(--size-4-2); }
+.rtt-cd-plan-summary { color: var(--text-muted); font-size: var(--font-ui-small); margin-bottom: var(--size-4-2); line-height: 1.5; }
 .rtt-cd-chip-label { min-width: 0; overflow-wrap: anywhere; }
 .rtt-cd-chip-time { white-space: nowrap; font-variant-numeric: tabular-nums; }
+/* 方案与下一节之间留出和其它小节相同的呼吸 / same breathing room as every other section */
+.rtt-cd-plan + .setting-item { margin-top: var(--size-4-2); }
 
 .rtt-vtl-body { position: relative; }
-.rtt-vtl-body:has(> .rtt-process-toggle) > .rtt-vtl-range,
-.rtt-vtl-body:has(> .rtt-process-toggle) > .rtt-vtl-title { padding-right: var(--size-4-6); }
-.rtt-process-toggle { position: absolute; top: 0; right: 0; margin: 0; }
-.rtt-vtl-title:has(~ .rtt-process-toggle) { cursor: pointer; }
+.rtt-vtl-body.has-actions > .rtt-vtl-range,
+.rtt-vtl-body.has-actions > .rtt-vtl-title,
+.rtt-vtl-body.has-actions > .rtt-vtl-meta { padding-right: calc(var(--rtt-action-count, 1) * var(--size-4-6)); }
+.rtt-vtl-actions { position: absolute; top: 0; right: 0; display: flex; gap: 0; }
+.rtt-vtl-actions button { width: var(--size-4-6); height: var(--size-4-6); }
+.rtt-process-toggle { margin: 0; }
+.rtt-vtl-body.has-detail > .rtt-vtl-title { cursor: pointer; }
 .rtt-live-card.is-empty .rtt-live-title { font-size: var(--font-ui-small); }
 
 /* Four independent source tracks share each hour / 四种来源共用小时坐标。 */
-.rtt-overview-tracks .rtt-hm-xaxis .rtt-hm-tick-wrap { margin-left: var(--size-4-5); min-width: 0; }
-.rtt-overview-hour { align-items: flex-start; padding-block: var(--size-4-1); border-bottom: 1px solid var(--background-modifier-border); }
-.rtt-overview-hour > .rtt-hm-hlabel { padding-top: var(--size-4-1); }
-.rtt-ov-lanes { flex: 1; min-width: 0; display: grid; gap: var(--size-2-1); }
-.rtt-ov-lane { display: flex; align-items: center; gap: var(--size-4-1); min-width: 0; }
-.rtt-ov-lane-icon { display: flex; flex: 0 0 var(--size-4-4); color: var(--text-muted); }
-.rtt-ov-lane-icon svg { width: var(--icon-xs); height: var(--icon-xs); }
-.rtt-ov-lane .rtt-hm-bar { min-width: 0; height: var(--size-4-4); }
+.rtt-overview-tracks .rtt-hm-xaxis .rtt-hm-tick-wrap {
+    margin-left: var(--size-4-3);
+    min-width: 0;
+}
+.rtt-overview-tracks { --rtt-track-height: var(--size-4-1); }
+.rtt-overview-hour {
+    align-items: center;
+    padding: 0;
+    border: 0;
+    /* 只按可见轨道数占高，至少留出小时标签本身的高度
+       Height follows the visible tracks, with the hour label as the floor. */
+    min-height: max(var(--size-4-3), calc(var(--rtt-visible-tracks, 4) * var(--rtt-track-height)));
+}
+.rtt-overview-hour > .rtt-hm-hlabel {
+    padding-top: 0;
+    line-height: 1.2;
+    position: relative;
+    z-index: 1;
+}
+.rtt-overview-hour + .rtt-overview-hour { margin-top: var(--size-4-1); }
+.rtt-ov-lanes {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+}
+.rtt-ov-lane {
+    display: flex;
+    align-items: center;
+    gap: var(--size-4-1);
+    min-width: 0;
+    height: var(--rtt-track-height);
+    min-height: var(--rtt-track-height);
+    line-height: 0;
+}
+.rtt-ov-lane-dot {
+    display: block;
+    flex: 0 0 calc(var(--size-2-1) * 1.5);
+    height: calc(var(--size-2-1) * 1.5);
+    width: calc(var(--size-2-1) * 1.5);
+    margin-inline: calc(var(--size-2-1) * 1.25);
+    border-radius: 50%;
+    background: var(--text-faint);
+}
+.rtt-ov-lane-dot.rtt-ov-doc { background: var(--interactive-accent); }
+.rtt-ov-lane-dot.rtt-ov-view { background: var(--color-blue); }
+.rtt-ov-lane-dot.rtt-ov-manual { background: var(--color-green); }
+.rtt-ov-lane-dot.rtt-ov-countdown { background: var(--color-orange); }
+.rtt-ov-lane .rtt-hm-bar {
+    min-width: 0;
+    height: var(--rtt-track-height);
+    border-radius: 0;
+}
 .rtt-hm-seg.rtt-ov-countdown { background: var(--color-orange); }
 .rtt-overview-tracks .rtt-hm-seg.is-selected { outline: 1px solid var(--text-normal); outline-offset: -1px; opacity: 1; z-index: 2; }
 .rtt-overview-tracks .rtt-hm-pause-block { background: repeating-linear-gradient(135deg, var(--background-primary), var(--background-primary) 2px, transparent 2px, transparent 4px); opacity: 0.8; pointer-events: none; z-index: 3; }
 .rtt-overview-tracks .rtt-hm-flag { pointer-events: none; }
 .rtt-overview-detail:empty { display: none; }
 .rtt-source-processes { margin-block: var(--size-4-2); border: 1px solid var(--background-modifier-border); border-radius: var(--radius-s); }
-.rtt-source-processes > summary { cursor: pointer; padding: var(--size-4-2); font-size: var(--font-ui-small); }
-.rtt-source-count { color: var(--text-muted); font-size: var(--font-ui-smaller); margin-left: var(--size-4-2); }
+button.rtt-source-header {
+    position: relative;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    gap: var(--size-4-1);
+    width: 100%;
+    padding: var(--size-4-2);
+    background: none;
+    background-color: transparent;
+    border: none;
+    box-shadow: none;
+    border-radius: var(--radius-s);
+    color: var(--text-normal);
+    font-size: var(--font-ui-small);
+    text-align: left;
+    cursor: pointer;
+}
+
+/* 占比块：背景按该来源在可见来源合计中的比例铺开 / share bar behind the row content */
+button.rtt-source-header::before {
+    content: '';
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: var(--rtt-share, 0%);
+    background: var(--text-muted);
+    opacity: 0.16;
+    pointer-events: none;
+}
+
+button.rtt-source-header > * { position: relative; z-index: 1; }
+button.rtt-source-header:hover { background-color: var(--background-modifier-hover); }
+.rtt-source-header.rtt-ov-doc::before { background: var(--interactive-accent); }
+.rtt-source-header.rtt-ov-view::before { background: var(--color-blue); }
+.rtt-source-header.rtt-ov-manual::before { background: var(--color-green); }
+.rtt-source-header.rtt-ov-countdown::before { background: var(--color-orange); }
+.rtt-source-icon { display: flex; flex: 0 0 auto; color: var(--text-muted); }
+.rtt-source-icon svg { width: var(--icon-xs); height: var(--icon-xs); }
+.rtt-source-icon.rtt-ov-doc { color: var(--interactive-accent); }
+.rtt-source-icon.rtt-ov-view { color: var(--color-blue); }
+.rtt-source-icon.rtt-ov-manual { color: var(--color-green); }
+.rtt-source-icon.rtt-ov-countdown { color: var(--color-orange); }
+.rtt-source-name { font-weight: var(--font-medium); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rtt-source-metrics { margin-left: auto; display: flex; align-items: baseline; gap: var(--size-4-1); }
+.rtt-source-total { color: var(--text-muted); font-size: var(--font-ui-smaller); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.rtt-source-share { min-width: 2.6em; color: var(--text-faint); font-size: var(--font-ui-smaller); font-variant-numeric: tabular-nums; text-align: right; }
+.rtt-source-chevron { display: flex; flex: 0 0 auto; color: var(--text-faint); }
+.rtt-source-chevron svg { width: var(--icon-xs); height: var(--icon-xs); }
 .rtt-source-content { padding: var(--size-4-2); }
-.rtt-source-processes:not([open]) > .rtt-source-content { display: none; }
+.rtt-source-content[hidden] { display: none; }
 
 /* Durations wrap between complete number/unit pairs / 数字与单位成组换行。 */
 .rtt-dur-part { display: inline-block; white-space: nowrap; }
 .rtt-stats-bar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .rtt-stats-card, .rtt-panel-col { min-width: 0; }
 .rtt-stats-value.rtt-dur { max-width: 100%; white-space: normal; text-align: center; }
+
+/* Chart and selected process form one responsive component / 热力图与过程共用自适应布局。 */
+.rtt-overview-tracks { position: relative; gap: 0; }
+.rtt-overview-tracks::before { content: ''; position: absolute; top: var(--size-4-4); bottom: 0; left: calc(var(--size-4-6) + var(--size-4-2)); width: 1px; background: var(--background-modifier-border); pointer-events: none; }
+.rtt-overview-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--size-4-3); align-items: start; }
+.rtt-overview-chart, .rtt-overview-aside { min-width: 0; }
+.rtt-overview-aside:empty { display: none; }
+.rtt-overview-detail { position: relative; z-index: 2; margin-block: var(--size-4-2); line-height: normal; }
+.rtt-overview-detail .rtt-vtl-node::before { display: none; }
+.rtt-overview-aside > .rtt-overview-detail { margin-top: 0; }
+.view-content.is-overview .rtt-panel-cols { grid-template-columns: minmax(0, 1fr); }
+body:not(.is-mobile) .rtt-overview-layout.is-wide.has-selection { grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); }
+body:not(.is-mobile) .rtt-overview-layout.is-wide .rtt-overview-aside { position: sticky; top: var(--size-4-2); }
+body:not(.is-mobile) .view-content.is-overview.is-wide .rtt-stats-bar { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+body:not(.is-mobile) .view-content.is-overview.is-wide .rtt-stats-bar.is-dense > .rtt-stats-card:last-child:nth-child(odd) { grid-column: auto; }
+.rtt-process-toolbar { display: flex; justify-content: flex-end; }
+.rtt-mobile-panel-picker, .rtt-mobile-source-picker { display: none; }
+.is-mobile .rtt-panel-tabs, .is-mobile .rtt-overview-chart > .rtt-hm-legend { display: none; }
+.is-mobile .rtt-mobile-panel-picker, .is-mobile .rtt-mobile-source-picker { display: block; margin-bottom: var(--size-4-2); }
+.is-mobile .rtt-mobile-panel-picker select, .is-mobile .rtt-mobile-source-picker select { width: 100%; max-width: 100%; }
+.is-mobile .view-content.is-wide .rtt-panel-cols { grid-template-columns: minmax(0, 1fr); }
+.is-mobile .rtt-vtl-actions button { min-width: var(--size-4-8); min-height: var(--size-4-8); }
+.is-mobile .rtt-vtl-body.has-actions > .rtt-vtl-range,
+.is-mobile .rtt-vtl-body.has-actions > .rtt-vtl-title,
+.is-mobile .rtt-vtl-body.has-actions > .rtt-vtl-meta { padding-right: calc(var(--rtt-action-count, 1) * var(--size-4-8)); }

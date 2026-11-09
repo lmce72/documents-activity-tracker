@@ -81,6 +81,7 @@ const CSS_MODULES_BASE = [
 const CSS_MODULES_EXTRA: readonly string[] = [
   // panel tabs and the records browser toolbar
   '95-sidebar.css',
+  '96-record-editor.css',
 ];
 
 /** final order: gated base, then extras. */

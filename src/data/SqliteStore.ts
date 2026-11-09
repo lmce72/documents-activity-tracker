@@ -47,6 +47,10 @@ import type {
 } from '../core/types';
 import type { DataAdapter } from './adapter';
 import type { HistoryStore } from './historyStore';
+import { assertEditCurrent, eventHistory, parseRecordEdit, sessionFingerprint, sessionsWithEdits, visitSourceFingerprint } from '../core/recordEditing';
+import type { EventHistory, RecordEdit } from '../core/recordEditing';
+import { buildVisits } from '../core/activityVisits';
+import { buildFileRecords } from '../core/timeline';
 import {
   META_SCHEMA_VERSION,
   SQL_MIGRATE_V1_TO_V2,
@@ -107,13 +111,7 @@ export function resolveDatabasePath(dataFilePath: string, pluginDir: string): st
 const SQL_SELECT_EVENTS = 'SELECT * FROM events ORDER BY time ASC, id ASC';
 const SQL_SELECT_RECORDS = 'SELECT * FROM records';
 const SQL_SELECT_MANUAL = 'SELECT * FROM manual_sessions ORDER BY start_time ASC';
-const SQL_SELECT_MANUAL_RANGE =
-  'SELECT * FROM manual_sessions WHERE start_time >= ? AND start_time <= ? ' +
-  'ORDER BY start_time ASC';
 const SQL_SELECT_COUNTDOWN = 'SELECT * FROM countdown_sessions ORDER BY start_time ASC';
-const SQL_SELECT_COUNTDOWN_RANGE =
-  'SELECT * FROM countdown_sessions WHERE start_time >= ? AND start_time <= ? ' +
-  'ORDER BY start_time ASC';
 
 export class SqliteStore implements HistoryStore {
   private db: Database | null = null;
@@ -259,8 +257,47 @@ export class SqliteStore implements HistoryStore {
   // Reads
   //  ==========================================================================
 
-  getEvents(): TimelineEvent[] {
-    return this.queryAll<EventRow>(SQL_SELECT_EVENTS).map(rowToEvent);
+  getEvents(): EventHistory {
+    return eventHistory(this.queryAll<EventRow>(SQL_SELECT_EVENTS).map(rowToEvent), this.getRecordEdits());
+  }
+
+  getRecordEdits(): RecordEdit[] {
+    return this.queryAll<{ payload: string }>('SELECT payload FROM record_edits ORDER BY version, updated_at, edit_id').map(row => parseRecordEdit(row.payload));
+  }
+
+  async commitRecordEdit(edit: RecordEdit): Promise<void> {
+    // 先发现其它设备的修改，再核对草稿版本 / detect remote changes before accepting a draft.
+    await this.reconcileWithDisk(true);
+    let sourceFingerprint: string | undefined;
+    if (edit.kind === 'manual' || edit.kind === 'countdown') {
+      const session = (edit.kind === 'manual' ? this.getManualSessions() : this.getCountdownSessions()).find(saved => saved.id === edit.session.id);
+      sourceFingerprint = session ? sessionFingerprint(session) : undefined;
+    } else {
+      const visit = buildVisits([...this.getEvents()], edit.visit.originalFrom, edit.visit.originalTo, true).find(saved => saved.target === edit.visit.target);
+      sourceFingerprint = visit ? visitSourceFingerprint(this.getEvents(), edit.visit.target, edit.visit.originalFrom, edit.visit.originalTo) : undefined;
+    }
+    assertEditCurrent(edit, this.getRecordEdits(), sourceFingerprint);
+    const db = this.requireDb();
+    db.run('BEGIN TRANSACTION');
+    try {
+      db.run('INSERT INTO record_edits (edit_id, record_key, version, updated_at, payload) VALUES (?, ?, ?, ?, ?)',
+        [edit.editId, edit.recordKey, edit.version, edit.updatedAt, JSON.stringify(edit)]);
+      db.run('COMMIT');
+    } catch (error) {
+      db.run('ROLLBACK');
+      throw error instanceof Error ? error : new Error('保存记录更正失败。');
+    }
+    this.revision++;
+    this.markDirty();
+    try {
+      await this.flushNow({ force: true, throwOnError: true });
+    } catch (error) {
+      // 只回滚本次更正，保留等待写盘时新增的采集事件 / never roll back concurrent collected events.
+      this.requireDb().run('DELETE FROM record_edits WHERE edit_id = ?', [edit.editId]);
+      this.revision++;
+      this.dirty = true;
+      throw error instanceof Error ? error : new Error('保存记录失败。');
+    }
   }
 
   /** every record entry, keyed by path. */
@@ -270,11 +307,21 @@ export class SqliteStore implements HistoryStore {
       const [filePath, entry] = rowToRecord(row);
       out[filePath] = entry;
     }
+    const edits = this.getRecordEdits();
+    const targets = new Set(edits.flatMap(edit => edit.kind === 'document' || edit.kind === 'view' ? [edit.visit.target] : []));
+    if (targets.size > 0) {
+      const records = buildFileRecords(this.getEvents(), Date.now());
+      for (const target of targets) {
+        const record = records[target];
+        if (record) out[target] = { fileName: record.fileName, totalReadTime: record.totalReadTime, unfocusedReadTime: record.unfocusedReadTime, lastReadAt: record.lastReadAt };
+      }
+    }
     return out;
   }
 
   /** one record entry, or null. */
   getRecord(filePath: string): RecordEntry | null {
+    if (this.getRecordEdits().some(edit => (edit.kind === 'document' || edit.kind === 'view') && edit.visit.target === filePath)) return this.getRecords()[filePath] ?? null;
     const row = this.queryOne<RecordRow>(
       'SELECT * FROM records WHERE file_path = ?',
       [filePath],
@@ -284,24 +331,20 @@ export class SqliteStore implements HistoryStore {
 
   /** every manual session, oldest first. */
   getManualSessions(): ManualSession[] {
-    return this.queryAll<ManualSessionRow>(SQL_SELECT_MANUAL).map(rowToManualSession);
+    return sessionsWithEdits('manual', this.queryAll<ManualSessionRow>(SQL_SELECT_MANUAL).map(rowToManualSession), this.getRecordEdits());
   }
 
   getManualSessionsInRange(start: string, end: string): ManualSession[] {
-    return this.queryAll<ManualSessionRow>(SQL_SELECT_MANUAL_RANGE, [start, end]).map(
-      rowToManualSession,
-    );
+    return this.getManualSessions().filter(session => session.startTime >= start && session.startTime <= end);
   }
 
   /** every countdown session, oldest first. */
   getCountdownSessions(): CountdownSession[] {
-    return this.queryAll<CountdownSessionRow>(SQL_SELECT_COUNTDOWN).map(rowToCountdownSession);
+    return sessionsWithEdits('countdown', this.queryAll<CountdownSessionRow>(SQL_SELECT_COUNTDOWN).map(rowToCountdownSession), this.getRecordEdits());
   }
 
   getCountdownSessionsInRange(start: string, end: string): CountdownSession[] {
-    return this.queryAll<CountdownSessionRow>(SQL_SELECT_COUNTDOWN_RANGE, [start, end]).map(
-      rowToCountdownSession,
-    );
+    return this.getCountdownSessions().filter(session => session.startTime >= start && session.startTime <= end);
   }
 
   //  ==========================================================================
@@ -351,6 +394,9 @@ export class SqliteStore implements HistoryStore {
       [filePath, filePath, filePath],
     );
     db.run('DELETE FROM records WHERE file_path = ?', [filePath]);
+    for (const edit of this.getRecordEdits()) {
+      if ((edit.kind === 'document' || edit.kind === 'view') && edit.visit.target === filePath) db.run('DELETE FROM record_edits WHERE edit_id = ?', [edit.editId]);
+    }
     const after = this.count('SELECT COUNT(*) AS n FROM events');
     this.markDirty();
     return before - after;
@@ -392,7 +438,8 @@ export class SqliteStore implements HistoryStore {
 
   upsertRecord(filePath: string, data: Partial<RecordEntry>): void {
     const db = this.requireDb();
-    const existing = this.getRecord(filePath);
+    const existingRow = this.queryOne<RecordRow>('SELECT * FROM records WHERE file_path = ?', [filePath]);
+    const existing = existingRow ? rowToRecord(existingRow)[1] : null;
     const merged: RecordEntry = {
       fileName: data.fileName ?? existing?.fileName ?? filePath.split('/').pop() ?? filePath,
       totalReadTime: data.totalReadTime ?? existing?.totalReadTime ?? 0,
@@ -446,6 +493,7 @@ export class SqliteStore implements HistoryStore {
         row.pauses ?? '[]',
       ],
     );
+    this.revision++;
     this.markDirty();
   }
 
@@ -454,13 +502,14 @@ export class SqliteStore implements HistoryStore {
     const db = this.requireDb();
     db.run('UPDATE manual_sessions SET note = ? WHERE id = ?', [note, id]);
     const changed = db.getRowsModified() > 0;
-    if (changed) this.markDirty();
+    if (changed) { this.revision++; this.markDirty(); }
     return changed;
   }
 
   /** Delete a manual session. */
   deleteManualSession(id: string): void {
     this.requireDb().run('DELETE FROM manual_sessions WHERE id = ?', [id]);
+    this.revision++;
     this.markDirty();
   }
 
@@ -499,12 +548,14 @@ export class SqliteStore implements HistoryStore {
         row.phases ?? '[]',
       ],
     );
+    this.revision++;
     this.markDirty();
   }
 
   /** Delete a countdown session. */
   deleteCountdownSession(id: string): void {
     this.requireDb().run('DELETE FROM countdown_sessions WHERE id = ?', [id]);
+    this.revision++;
     this.markDirty();
   }
 
@@ -512,6 +563,10 @@ export class SqliteStore implements HistoryStore {
     const db = this.requireDb();
     db.run('DELETE FROM events');
     db.run('DELETE FROM records');
+    for (const edit of this.getRecordEdits()) {
+      if (edit.kind === 'document' || edit.kind === 'view') db.run('DELETE FROM record_edits WHERE edit_id = ?', [edit.editId]);
+    }
+    this.revision++;
     this.markDirty();
   }
 
@@ -562,7 +617,7 @@ export class SqliteStore implements HistoryStore {
    * time|type|file|state); the record mirror only accumulates (keep the larger totals and the later
    * timestamp); a manual session is identified by its id (insert, ignore duplicates).
    */
-  private mergeSnapshot(bytes: Uint8Array): void {
+  private mergeSnapshot(bytes: Uint8Array, throwOnError = false): void {
     if (!this.db || !this.SQL || bytes.byteLength === 0) return;
 
     let other: Database | null = null;
@@ -570,6 +625,7 @@ export class SqliteStore implements HistoryStore {
       other = new this.SQL.Database(bytes);
     } catch (error) {
       this.log.warn('[RTT][sqlite] 快照无法打开，跳过合并 / cannot open the snapshot, skipping:', error);
+      if (throwOnError) throw error instanceof Error ? error : new Error('同步快照无法打开。');
       return;
     }
 
@@ -584,6 +640,7 @@ export class SqliteStore implements HistoryStore {
       `${String(time)}|${String(type)}|${file === null ? `${String(from ?? '')}>${String(to ?? '')}` : String(file)}|${String(state ?? '')}`;
 
     let added = 0;
+    this.db.run('BEGIN TRANSACTION');
     try {
       const seen = new Set<string>();
       const existing = this.db.prepare(
@@ -656,20 +713,39 @@ export class SqliteStore implements HistoryStore {
       //  更旧的快照没有 duration_ms：没有就按整秒×1000 推，别让一次合并因为缺列而失败
       //  An older snapshot has no duration_ms: derive it from whole seconds rather than fail the merge
       const otherManualMs = SqliteStore.hasColumnOf(other, 'manual_sessions', 'duration_ms');
+      const otherManualPauses = SqliteStore.hasColumnOf(other, 'manual_sessions', 'pauses');
       const manIn = other.prepare(
         'SELECT id, start_time, end_time, duration_seconds, note, flags, ' +
           (otherManualMs ? 'duration_ms' : 'duration_seconds * 1000 AS duration_ms') +
+          (otherManualPauses ? ', pauses' : ", '[]' AS pauses") +
           ' FROM manual_sessions',
       );
       const manUp = this.db.prepare(
-        'INSERT OR IGNORE INTO manual_sessions (id, start_time, end_time, duration_seconds, duration_ms, note, flags) VALUES (?,?,?,?,?,?,?)',
+        'INSERT OR IGNORE INTO manual_sessions (id, start_time, end_time, duration_seconds, duration_ms, note, flags, pauses) VALUES (?,?,?,?,?,?,?,?)',
       );
       while (manIn.step()) {
         const r = manIn.getAsObject();
-        manUp.run([r.id, r.start_time, r.end_time, r.duration_seconds, r.duration_ms, r.note, r.flags]);
+        manUp.run([r.id, r.start_time, r.end_time, r.duration_seconds, r.duration_ms, r.note, r.flags, r.pauses]);
       }
       manIn.free();
       manUp.free();
+
+      // 更正按不可变 edit_id 求并集，读取时按版本选胜出者 / immutable corrections merge without resurrecting old values.
+      if (SqliteStore.hasTable(other, 'record_edits')) {
+        const editsIn = other.prepare('SELECT payload FROM record_edits');
+        const editsUp = this.db.prepare('INSERT OR IGNORE INTO record_edits (edit_id, record_key, version, updated_at, payload) VALUES (?, ?, ?, ?, ?)');
+        try {
+          while (editsIn.step()) {
+            const row = editsIn.getAsObject();
+            if (typeof row.payload !== 'string') throw new Error('同步快照中的记录更正无效。');
+            const edit = parseRecordEdit(row.payload);
+            editsUp.run([edit.editId, edit.recordKey, edit.version, edit.updatedAt, row.payload]);
+          }
+        } finally {
+          editsIn.free();
+          editsUp.free();
+        }
+      }
 
       //  倒计时同理：id 即身份，整条插入，重复则忽略。
       //
@@ -714,13 +790,16 @@ export class SqliteStore implements HistoryStore {
         cdUp.free();
       }
 
+      this.db.run('COMMIT');
       this.dirty = true;
       this.revision++;
       if (added > 0) {
         this.log.info('[RTT][sqlite] 合并了另一份快照 / merged another snapshot:', added, '新增事件 / new events');
       }
     } catch (error) {
+      this.db.run('ROLLBACK');
       this.log.warn('[RTT][sqlite] 合并快照失败 / merge failed:', error);
+      if (throwOnError) throw error instanceof Error ? error : new Error('同步快照合并失败。');
     } finally {
       other.close();
     }
@@ -733,7 +812,7 @@ export class SqliteStore implements HistoryStore {
    * If the fingerprint changed, another device wrote it: merge that whole snapshot in before
    * writing, instead of covering it with our own.
    */
-  private async reconcileWithDisk(): Promise<void> {
+  private async reconcileWithDisk(throwOnError = false): Promise<void> {
     try {
       if (!(await this.adapter.exists(this.dbPath))) return;
       const bytes = new Uint8Array(await this.adapter.readBinary(this.dbPath));
@@ -744,10 +823,11 @@ export class SqliteStore implements HistoryStore {
       if (SqliteStore.hashBytes(bytes) === this.lastKnownHash) return;
 
       this.log.info('[RTT][sqlite] 文件已被别的设备写过，先合并 / the file changed elsewhere, merging first');
-      this.mergeSnapshot(bytes);
+      this.mergeSnapshot(bytes, throwOnError);
       this.lastKnownHash = SqliteStore.hashBytes(bytes);
     } catch (error) {
       this.log.warn('[RTT][sqlite] 与磁盘对账失败 / reconciliation failed:', error);
+      if (throwOnError) throw error instanceof Error ? error : new Error('同步记录核对失败。');
     }
   }
 
@@ -755,7 +835,7 @@ export class SqliteStore implements HistoryStore {
    * Flush right away.
    * Serialised through a queue: two interleaved exports would write a truncated database.
    */
-  async flushNow(options: { force?: boolean; trigger?: FlushTrigger } = {}): Promise<void> {
+  async flushNow(options: { force?: boolean; trigger?: FlushTrigger; throwOnError?: boolean } = {}): Promise<void> {
     if (this.flushTimer !== null) {
       clearTimeout(this.flushTimer);
       this.flushTimer = null;
@@ -810,7 +890,7 @@ export class SqliteStore implements HistoryStore {
 
           //  写之前先和磁盘对账：对方写过就先把它并进来，避免相互覆盖
           //  Reconcile first: if the other device wrote, merge its snapshot in rather than covering it
-          await this.reconcileWithDisk();
+          await this.reconcileWithDisk(options.throwOnError === true);
 
           const finalBytes = this.db.export();
           const finalPayload = finalBytes.buffer.slice(
@@ -831,11 +911,13 @@ export class SqliteStore implements HistoryStore {
           this.log.warn('[RTT][sqlite] 落盘失败 / flush failed:', error);
           this.flushErrorReported = true;
         }
+        if (options.throwOnError) throw error instanceof Error ? error : new Error('记录无法写入存储。');
       }
     });
 
     this.flushChain = pending.catch(() => {});
-    await pending.catch(() => {});
+    if (options.throwOnError) await pending;
+    else await pending.catch(() => {});
   }
 
   //  ==========================================================================

@@ -187,6 +187,37 @@ describe('CountdownTimerService / 计时与落库', () => {
     expect(countdown.elapsedSeconds()).toBe(90);
   });
 
+  it('跳过本段立刻进入下一段，已计时长不变', () => {
+    const { clock, countdown } = setup();
+    countdown.start(buildCountdownPlan(config({ mode: 'pomodoro', repeat: true, cycles: 2 })));
+    clock.advanceSeconds(300);
+    expect(countdown.position()?.index).toBe(0);
+
+    expect(countdown.skipPhase()).toBe(true);
+    expect(countdown.position()?.index).toBe(1);
+    expect(countdown.position()?.phaseElapsed).toBe(0);
+    //  跳过的只是本段剩余的等待，不是已经跑过的时间
+    expect(countdown.elapsedSeconds()).toBe(300);
+
+    clock.advanceSeconds(30);
+    expect(countdown.elapsedSeconds()).toBe(330);
+    expect(countdown.position()?.index).toBe(1);
+  });
+
+  it('跳过最后一段按完成收尾，但只记真实已计时长', async () => {
+    const { clock, countdown } = setup();
+    countdown.start(buildCountdownPlan(config({ downMinutes: 25 })));
+    clock.advanceSeconds(120);
+
+    expect(countdown.skipPhase()).toBe(true);
+    expect(countdown.isComplete()).toBe(true);
+
+    const session = await countdown.stop('');
+    expect(session?.completed).toBe(true);
+    expect(session?.plannedSeconds).toBe(1500);
+    expect(session?.durationSeconds).toBe(120);
+  });
+
   it('跑完后保存的长度夹到计划值，并标记完成', async () => {
     const { clock, history, countdown } = setup();
     countdown.start(buildCountdownPlan(config({ downMinutes: 1 })));

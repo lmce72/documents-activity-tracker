@@ -1,0 +1,33 @@
+/* Shared clock rows retain the same shape on touch and desktop / 两端共用紧凑时间行。 */
+.rtt-record-edit-modal { width: min(90vw, 34rem); }
+.rtt-record-edit-modal .modal-content { display: flex; flex-direction: column; gap: var(--size-4-3); }
+.rtt-edit-name { width: 100%; font-weight: var(--font-semibold); }
+.rtt-edit-time-range { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: end; gap: var(--size-4-2); }
+.rtt-edit-field { display: flex; flex-direction: column; gap: var(--size-4-1); min-width: 0; color: var(--text-muted); font-size: var(--font-ui-small); }
+.rtt-edit-field input, .rtt-edit-flag-row input { width: 100%; min-width: 0; }
+.rtt-edit-clock-input { height: var(--input-height); min-width: 0; padding: 0 var(--size-4-2); border: var(--input-border-width, 1px) solid var(--background-modifier-border); border-radius: var(--input-radius, var(--radius-s)); color: var(--text-normal); background: var(--background-modifier-form-field); font-family: var(--font-interface); font-size: var(--font-ui-small); font-variant-numeric: tabular-nums; }
+.rtt-edit-range-sep { display: flex; align-items: center; height: var(--input-height); color: var(--text-faint); }
+.rtt-edit-dates { color: var(--text-muted); font-size: var(--font-ui-smaller); }
+.rtt-edit-dates > summary { display: flex; align-items: center; gap: var(--size-4-1); cursor: pointer; list-style: none; }
+.rtt-edit-dates > summary::-webkit-details-marker { display: none; }
+.rtt-edit-date-icon { display: inline-flex; }
+.rtt-edit-date-icon svg { width: var(--icon-xs); height: var(--icon-xs); }
+.rtt-edit-date-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--size-4-2); padding-top: var(--size-4-2); }
+.rtt-edit-date-grid input { max-width: 100%; }
+.rtt-edit-section-head { display: flex; align-items: center; justify-content: space-between; gap: var(--size-4-2); }
+.rtt-edit-section-head .setting-item { border: 0; padding-block: var(--size-4-1); }
+.rtt-edit-section-head button { box-shadow: none; }
+.rtt-edit-pause-row, .rtt-edit-flag-row { display: grid; align-items: start; gap: var(--size-4-2); margin-top: var(--size-4-2); }
+.rtt-edit-pause-row { grid-template-columns: minmax(0, 1fr) auto; }
+.rtt-edit-pause-times { min-width: 0; display: flex; flex-direction: column; gap: var(--size-4-1); }
+.rtt-edit-pause-row > .rtt-edit-remove { align-self: center; }
+.rtt-edit-flag-row { grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr) auto; }
+.rtt-edit-flag-clock { min-width: 0; }
+.rtt-edit-flag-clock > input { width: 100%; }
+.rtt-edit-flag-number { display: flex; align-items: center; height: var(--input-height); font-size: var(--font-ui-smaller); color: var(--text-muted); }
+.rtt-edit-error { color: var(--text-error); font-size: var(--font-ui-small); }
+.rtt-edit-error:empty { display: none; }
+.rtt-modal-actions { display: flex; justify-content: flex-end; gap: var(--size-4-2); }
+.is-mobile .rtt-record-edit-modal { width: min(100%, 34rem); max-width: 100%; }
+.is-mobile .rtt-record-edit-modal .setting-item { gap: var(--size-4-2); }
+.is-mobile .rtt-edit-section-head button, .is-mobile .rtt-edit-remove { min-width: var(--size-4-8); min-height: var(--size-4-8); }

@@ -41,3 +41,9 @@ interface ImportMeta {
   readonly dir: string;
   readonly path: string;
 }
+
+declare module 'bun:test' {
+  namespace mock {
+    function module(name: string, factory: () => unknown): void;
+  }
+}

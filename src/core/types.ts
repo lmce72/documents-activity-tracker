@@ -516,6 +516,16 @@ export interface CountdownTimerState {
   /** marks placed during this run */
   flags: ManualFlag[];
   /**
+   * 跳过分段累计的有效时间偏移（秒）/ effective-time offset from skipped phase remainders.
+   *
+   * 跳过的只是**本段剩下的等待**，不是已经过去的时间：定位分段时加在已过秒数上，实际时长
+   * （`selectCountdownElapsed*`）不受影响，所以跳过期间真实计时仍照常计入。
+   * Only the phase's remaining wait is skipped, never time already lived: the offset is added when
+   * locating the phase, while the real elapsed value is untouched, so the time spent in the skipped
+   * phase still counts.
+   */
+  skippedSeconds: number;
+  /**
    * 本次运行解析好的方案 / the plan resolved when this run started.
    * 运行中改设置不碰它 —— 这正是"方案在开始时冻结"的实现。
    * Editing settings mid-run never touches it: that is what freezing the plan at start means.
@@ -745,11 +755,17 @@ export type TimerAction =
         pauses: ManualPause[];
         flags: ManualFlag[];
         plan: CountdownPlan;
+        skippedSeconds?: number;
       };
     }
   | { type: Extract<ActionType, 'COUNTDOWN_PAUSE'> }
   | { type: Extract<ActionType, 'COUNTDOWN_RESUME'> }
   | { type: Extract<ActionType, 'COUNTDOWN_STOP'> }
+  | {
+      type: Extract<ActionType, 'COUNTDOWN_SKIP'>;
+      /** 要跳过的本段剩余秒数 / remaining seconds of the current phase to skip */
+      payload: { seconds: number };
+    }
   | {
       type: Extract<ActionType, 'COUNTDOWN_FLAG'>;
       payload: { atSeconds: number; atTime: string; label: string; phase: number };

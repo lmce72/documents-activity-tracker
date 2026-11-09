@@ -13,7 +13,7 @@ import { Platform, MarkdownView, type App, type EventRef, type Plugin } from 'ob
 
 import { isPluginViewKey, resolveActiveTarget } from '../core/activePath';
 
-import { MobileActivity } from '../core/mobileActivity';
+import { MobileActivity, type MobileActivitySignal } from '../core/mobileActivity';
 
 import type { Logger } from '../core/logger';
 import type { TimerService } from '../services/TimerService';
@@ -171,23 +171,13 @@ export function installBindings(deps: BindingDeps): Binding {
   mobile.focused = document.hasFocus();
   let nativeRevision = 0;
 
-  const setSuspended = (next: boolean, reason: string): void => {
+  const setSuspended = (next: boolean, reason: MobileActivitySignal): void => {
     if (destroyed) return;
     if (Platform.isMobile) {
-      if (reason === 'window-focus' || reason === 'window-blur') mobile.focused = !next;
-      else if (reason.startsWith('visibility-') || reason === 'startup' || reason === 'poll') {
-        mobile.visible = document.visibilityState === 'visible';
-        mobile.focused = document.hasFocus();
-      } else if (reason === 'page-freeze' || reason === 'page-resume') mobile.frozen = next;
-      else if (reason === 'pagehide' || reason === 'pageshow') mobile.visible = !next;
-      else if (reason === 'capacitor-pause') { mobile.nativePaused = true; nativeRevision++; }
-      else if (reason === 'capacitor-resume') {
-        mobile.nativePaused = false; mobile.nativeActive = true; nativeRevision++;
-      } else if (reason === 'capacitor-app-state' || reason === 'capacitor-initial-state') {
-        mobile.nativeActive = !next;
-        if (!next) mobile.nativePaused = false;
-        nativeRevision++;
-      }
+      mobile.update(reason, next, {
+        visible: document.visibilityState === 'visible', focused: document.hasFocus(),
+      });
+      if (reason.startsWith('capacitor-')) nativeRevision++;
       const background = mobile.background(deps.mobileMultiWindow?.() === true);
       void service.onMobileBackgroundChange(background)
         .then(async () => {
@@ -290,7 +280,7 @@ export function installBindings(deps: BindingDeps): Binding {
     nativePollPending = true;
     void capacitorApp.getState().then(state => {
       if (!destroyed && revision === nativeRevision && typeof state?.isActive === 'boolean') {
-        setSuspended(!state.isActive, 'capacitor-initial-state');
+        setSuspended(!state.isActive, 'capacitor-poll-state');
       }
     }).catch((error: unknown) => log.warn('[RTT] Native activity poll failed:', error))
       .finally(() => { nativePollPending = false; });
@@ -360,6 +350,7 @@ export function installBindings(deps: BindingDeps): Binding {
    * timing is possible — a hard dead end.
    */
   const syncStartupState = (): void => {
+    if (destroyed) return;
     try {
       if (Platform.isMobile) setSuspended(!document.hasFocus(), 'startup');
       else void service.onWindowFocusChange(document.hasFocus());
@@ -367,9 +358,12 @@ export function installBindings(deps: BindingDeps): Binding {
       log.warn('[RTT][binding] 初始焦点探测失败 / initial focus probe failed:', error);
     }
 
-    //  Idempotent: onActivePathChange returns early when from === to
+    //  Idempotent: a bound, running file is left alone. 刚启用时活动叶可能还没就绪，用当前文件兜底
+    //  补一次自动开始 —— 否则「全自动」要等用户手动切一次标签页才生效。
+    //  On enable the active leaf may not exist yet; the current file is used as a one-off fallback
+    //  so "always" does not wait for a tab switch.
     try {
-      void service.onActivePathChange();
+      void service.autoStartStartup(app.workspace.getActiveFile()?.path ?? null);
     } catch (error) {
       log.warn('[RTT][binding] 初始路径对齐失败 / initial path sync failed:', error);
     }
@@ -378,6 +372,8 @@ export function installBindings(deps: BindingDeps): Binding {
   //  Both paths are needed: the timeout covers an already-ready layout (plugin reload),
   //  onLayoutReady covers a cold start. The latter alone would never fire on reload.
   window.setTimeout(syncStartupState, 0);
+  //  运行时启用插件可能短暂没有活动叶，延迟再补一次 / one delayed retry covers that window.
+  window.setTimeout(syncStartupState, 800);
   app.workspace.onLayoutReady(syncStartupState);
 
   return {

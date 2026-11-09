@@ -42,9 +42,11 @@ export interface LiveTimerEntry {
   running: boolean;
 }
 
-/** 倒计时多一份方案 / the countdown carries its plan too. */
+/** 倒计时多一份方案与跳段偏移 / the countdown carries its plan and skip offset too. */
 export interface LiveCountdownEntry extends LiveTimerEntry {
   plan: CountdownPlan;
+  /** 跳过的本段剩余等待（秒）/ skipped phase waits, in seconds */
+  skippedSeconds: number;
 }
 
 /** 整个快照 / the whole snapshot. */
@@ -137,8 +139,10 @@ export function readLiveSnapshot(storage?: SnapshotStorage | null): LiveSnapshot
     const countdownRaw = parsed.countdown;
     const countdownEntry = toEntry(countdownRaw);
     const plan = isObject(countdownRaw) ? toPlan(countdownRaw.plan) : null;
+    const skippedSeconds = isObject(countdownRaw) && typeof countdownRaw.skippedSeconds === 'number'
+      ? Math.max(0, countdownRaw.skippedSeconds) : 0;
     const countdown: LiveCountdownEntry | null =
-      countdownEntry && plan ? { ...countdownEntry, plan } : null;
+      countdownEntry && plan ? { ...countdownEntry, plan, skippedSeconds } : null;
 
     if (!manual && !countdown) return null;
     return {

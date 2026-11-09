@@ -126,6 +126,7 @@ export function createIdleCountdownState(): CountdownTimerState {
     pauseStartFull: '',
     pauses: [],
     flags: [],
+    skippedSeconds: 0,
     plan: null,
   };
 }
@@ -499,6 +500,8 @@ export function createTimerReducer(deps: ReducerDeps) {
       case ActionTypes.COUNTDOWN_RESTORE: {
         if (state.countdown.status !== MANUAL_STATUS.IDLE) return state;
         const { startTimestamp, startedAt, pausedMs, pauses, flags, plan } = action.payload;
+        const skippedSeconds = typeof action.payload.skippedSeconds === 'number'
+          ? Math.max(0, Math.round(action.payload.skippedSeconds)) : 0;
         if (plan.phases.length === 0) return state;
         return {
           ...state,
@@ -511,6 +514,7 @@ export function createTimerReducer(deps: ReducerDeps) {
             pauseStartFull: deps.nowFull(),
             pauses: [...pauses],
             flags: [...flags],
+            skippedSeconds,
             plan,
           },
         };
@@ -560,6 +564,20 @@ export function createTimerReducer(deps: ReducerDeps) {
         //  与正计时同理：调用方先读走时长与标记，再发这个动作
         //  Same as the count-up: the caller reads the duration and marks before dispatching this
         return { ...state, countdown: createIdleCountdownState() };
+      }
+
+      //  只跳过"还要等多久"，不碰已计时长 / skip the wait, never the time already lived
+      case ActionTypes.COUNTDOWN_SKIP: {
+        if (state.countdown.status === MANUAL_STATUS.IDLE) return state;
+        const seconds = Math.max(0, Math.round(action.payload.seconds));
+        if (seconds === 0) return state;
+        return {
+          ...state,
+          countdown: {
+            ...state.countdown,
+            skippedSeconds: state.countdown.skippedSeconds + seconds,
+          },
+        };
       }
 
       case ActionTypes.COUNTDOWN_FLAG: {

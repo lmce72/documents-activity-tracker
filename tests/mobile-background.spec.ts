@@ -10,13 +10,13 @@ import { MemoryHistory } from './helpers/memory-history';
 import { pickDeviceLocal, withoutDeviceLocal } from '../src/data/sharedSettings';
 
 const path = 'view:mobile-ink-annotation-center-view';
-function setup(mobile = true) {
+function setup(mobile = true, serviceClass: typeof TimerService = TimerService) {
   const clock = new FakeClock('2026-10-25T23:59:50');
   const log = new CapturingLogger();
   const { deps } = testDeps(clock, log);
   const store = new TimerStore(deps, createInitialState(deps));
   const history = new MemoryHistory();
-  const service = new TimerService({ store, history, clock, log, isMobile: mobile,
+  const service = new serviceClass({ store, history, clock, log, isMobile: mobile,
     getActivePath: () => path, getOpenPaths: () => [path],
     settings: () => ({ ...DEFAULT_SETTINGS, autoStartMode: 'always', idleTimeoutEnabled: false, minReadSeconds: 60 }),
   });
@@ -107,5 +107,64 @@ it('desktop ignores mobile lifecycle requests', async () => {
   const c = setup(false);
   await c.service.onActivePathChange();
   await c.service.onMobileBackgroundChange(true);
+  expect(c.store.getState().files.get(path)?.status).toBe('tracking');
+});
+
+class DelayedFlushService extends TimerService {
+  private barrier: { enter: () => void; released: Promise<void> } | null = null;
+
+  delayNextFlush(): { entered: Promise<void>; release: () => void } {
+    let enter = (): void => {};
+    let release = (): void => {};
+    const entered = new Promise<void>(resolve => { enter = resolve; });
+    const released = new Promise<void>(resolve => { release = resolve; });
+    this.barrier = { enter, released };
+    return { entered, release };
+  }
+
+  override async flushPendingWrites(): Promise<void> {
+    const barrier = this.barrier;
+    this.barrier = null;
+    if (barrier) {
+      barrier.enter();
+      await barrier.released;
+    }
+    await super.flushPendingWrites();
+  }
+}
+
+it('a frozen-gap tick waiting for storage cannot revive a background-saved round', async () => {
+  const c = setup(true, DelayedFlushService);
+  const service = c.service as DelayedFlushService;
+  await service.onActivePathChange();
+  c.clock.advanceSeconds(1);
+  await service.tick();
+  c.clock.setLocal('2026-10-26T08:00:00');
+  const barrier = service.delayNextFlush();
+  const tick = service.tick();
+  await barrier.entered;
+  await service.onMobileBackgroundChange(true);
+  barrier.release();
+  await tick;
+  expect(c.store.getState().files.get(path)?.status).toBe('idle');
+  expect(c.history.getEvents().slice(-1)[0]?.type).toBe('auto-save');
+  expect(c.account().total).toBe(0);
+});
+
+it('an old start waiting for storage cannot cross a complete background/foreground cycle', async () => {
+  const c = setup(true, DelayedFlushService);
+  const service = c.service as DelayedFlushService;
+  await service.onActivePathChange();
+  await service.onMobileBackgroundChange(true);
+  const barrier = service.delayNextFlush();
+  const foreground = service.onMobileBackgroundChange(false);
+  await barrier.entered;
+  await service.onMobileBackgroundChange(true);
+  await service.onMobileBackgroundChange(false);
+  const before = c.history.getEvents().length;
+  barrier.release();
+  await foreground;
+  expect(c.history.getEvents()).toHaveLength(before);
+  expect(c.history.getEvents().filter(event => event.type === 'start')).toHaveLength(2);
   expect(c.store.getState().files.get(path)?.status).toBe('tracking');
 });

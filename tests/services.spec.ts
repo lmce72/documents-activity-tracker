@@ -364,6 +364,26 @@ describe('TimerService — 切换文件与事件顺序 / switching and event ord
     const file = ctx.store.getState().files.get(FILE)!;
     expect(file.status).toBe(STATUS.IDLE);
   });
+
+  it('启动时活动叶尚未就绪，用当前文件兜底自动开始', async () => {
+    const ctx = setup({ autoStartMode: 'always', minReadSeconds: 0 });
+    //  活动叶还没有可读目标（刚启用插件），但工作区已有当前文件
+    ctx.setActive(null);
+    ctx.setOpen([FILE]);
+    await ctx.service.autoStartStartup(FILE);
+    await ctx.advance(2);
+
+    expect(ctx.store.getState().activeFilePath).toBe(FILE);
+    expect(ctx.store.getState().files.get(FILE)?.status).toBe(STATUS.TRACKING);
+  });
+
+  it('启动兜底不会越过 manual 模式', async () => {
+    const ctx = setup({ autoStartMode: 'manual', minReadSeconds: 0 });
+    ctx.setActive(null);
+    await ctx.service.autoStartStartup(FILE);
+
+    expect(ctx.store.getState().files.get(FILE)?.status ?? STATUS.IDLE).toBe(STATUS.IDLE);
+  });
 });
 
 describe('TimerService — 标签关闭 / closing tabs', () => {

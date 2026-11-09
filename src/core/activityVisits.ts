@@ -1,5 +1,6 @@
 import { parseSessionStartTime } from './time';
 import type { TimelineEvent } from './types';
+import { applyVisitEdits, visitSourceFingerprint } from './recordEditing';
 
 /** One visit to a target: from becoming active to handing over. */
 export interface TargetVisit {
@@ -10,8 +11,19 @@ export interface TargetVisit {
   activeSeconds: number;
   unfocusedSeconds: number;
   pausedSeconds: number;
+  idleSeconds?: number;
+  ignoredSeconds?: number;
   /** Whether a transition out of this visit led to another target. */
   nextTarget: string | null;
+  originalFrom?: string;
+  originalTo?: string;
+  disposition?: 'preserve' | 'reading' | 'paused' | 'ignored';
+  note?: string;
+  editVersion?: number;
+  sourceFingerprint?: string;
+  editStartTime?: string;
+  editEndTime?: string;
+  isOpen?: boolean;
 }
 
 /** Split a "YYYY-MM-DD HH:mm:ss" into milliseconds for arithmetic. */
@@ -27,21 +39,24 @@ function timeMs(value: string): number {
  * time *means*, so they are accumulated into the visit that contains them rather than becoming
  * nodes of their own.
  */
-export function buildVisits(events: readonly TimelineEvent[], from: string, to: string): TargetVisit[] {
+export function buildVisits(events: readonly TimelineEvent[], from: string, to: string, includeIgnored = false): TargetVisit[] {
   const visits: TargetVisit[] = [];
   // A holder rather than a captured `let`: TypeScript narrows a mutable capture to `never`
   // once a helper assigns null to it, and every read afterwards fails to type-check.
   const holder: { visit: TargetVisit | null } = { visit: null };
-  let state: 'active' | 'unfocused' | 'paused' = 'active';
+  type VisitState = 'active' | 'unfocused' | 'paused' | 'idle' | 'ignored';
+  let state: VisitState = 'active';
   let stateSince = '';
 
   const bank = (until: string): void => {
     const visit = holder.visit;
     if (!visit || !stateSince) return;
-    const seconds = Math.max(0, (timeMs(until) - Math.max(timeMs(stateSince), timeMs(from))) / 1000);
+    const seconds = Math.max(0, (Math.min(timeMs(until), timeMs(to)) - Math.max(timeMs(stateSince), timeMs(from))) / 1000);
     if (state === 'active') visit.activeSeconds += seconds;
     else if (state === 'unfocused') visit.unfocusedSeconds += seconds;
-    else visit.pausedSeconds += seconds;
+    else if (state === 'paused') visit.pausedSeconds += seconds;
+    else if (state === 'idle') visit.idleSeconds = (visit.idleSeconds ?? 0) + seconds;
+    else visit.ignoredSeconds = (visit.ignoredSeconds ?? 0) + seconds;
   };
 
   const open = (target: string, at: string, title?: string): void => {
@@ -64,12 +79,13 @@ export function buildVisits(events: readonly TimelineEvent[], from: string, to: 
     }
 
     bank(at);
-    if (holder.visit) holder.visit.to = at;
+    if (holder.visit) { holder.visit.to = at < to ? at : to; holder.visit.originalTo = at; }
     const visit: TargetVisit = {
       target,
       title,
       from: at < from ? from : at,
       to: at,
+      originalFrom: at,
       activeSeconds: 0,
       unfocusedSeconds: 0,
       pausedSeconds: 0,
@@ -85,20 +101,19 @@ export function buildVisits(events: readonly TimelineEvent[], from: string, to: 
     const visit = holder.visit;
     if (!visit) return;
     bank(at);
-    visit.to = at;
+    visit.to = at < to ? at : to;
+    visit.originalTo = at;
     holder.visit = null;
     stateSince = '';
   };
 
   for (const event of events) {
-    if (event.time > to) continue;
-
     switch (event.type) {
       case 'start':
         open(event.file, event.time, event.activityTitle);
         break;
       case 'activity': {
-        const previousState: 'active' | 'unfocused' | 'paused' = state;
+        const previousState: VisitState = state;
         close(event.time);
         open(event.file, event.time, event.activityTitle);
         state = previousState;
@@ -114,7 +129,7 @@ export function buildVisits(events: readonly TimelineEvent[], from: string, to: 
       }
       case 'blur':
         bank(event.time);
-        state = event.unfocusedDisposition === 'reading' ? 'active' : event.unfocusedDisposition === 'paused' ? 'paused' : 'unfocused';
+        state = event.unfocusedDisposition === 'reading' ? 'active' : event.unfocusedDisposition === 'paused' ? 'paused' : event.unfocusedDisposition === 'ignored' ? 'ignored' : 'unfocused';
         stateSince = event.time;
         break;
       case 'focus':
@@ -128,8 +143,14 @@ export function buildVisits(events: readonly TimelineEvent[], from: string, to: 
         stateSince = event.time;
         break;
       case 'resume':
+      case 'idle-end':
         bank(event.time);
         state = 'active';
+        stateSince = event.time;
+        break;
+      case 'idle':
+        bank(event.time);
+        state = event.unfocusedDisposition === 'reading' ? 'active' : event.unfocusedDisposition === 'paused' ? 'paused' : event.unfocusedDisposition === 'ignored' ? 'ignored' : 'idle';
         stateSince = event.time;
         break;
       case 'save':
@@ -146,10 +167,13 @@ export function buildVisits(events: readonly TimelineEvent[], from: string, to: 
   if (holder.visit) {
     bank(to);
     holder.visit.to = to;
+    holder.visit.originalTo = to;
+    holder.visit.isOpen = true;
   }
 
   // A visit that banked nothing is a leftover boundary, not a reading stretch.
-  const withTime = visits.filter((visit) => visit.activeSeconds + visit.unfocusedSeconds + visit.pausedSeconds > 0);
-  return withTime;
+  const withTime = visits.filter((visit) => visit.activeSeconds + visit.unfocusedSeconds + visit.pausedSeconds + (visit.idleSeconds ?? 0) + (includeIgnored ? visit.ignoredSeconds ?? 0 : 0) > 0).map(visit => ({ ...visit,
+    sourceFingerprint: visitSourceFingerprint(events, visit.target, visit.originalFrom ?? visit.from, visit.originalTo ?? visit.to) }));
+  return applyVisitEdits(withTime, events, from, to, includeIgnored);
 }
 

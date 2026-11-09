@@ -57,7 +57,7 @@ describe('live snapshot / 快照读写', () => {
         version: LIVE_SNAPSHOT_VERSION,
         savedAt: 1000,
         manual: entry,
-        countdown: { ...entry, plan: { mode: 'down', phases: [{ kind: 'focus', seconds: 600 }] } },
+        countdown: { ...entry, skippedSeconds: 0, plan: { mode: 'down', phases: [{ kind: 'focus', seconds: 600 }] } },
       },
       storage,
     );

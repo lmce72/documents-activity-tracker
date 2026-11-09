@@ -452,13 +452,13 @@ describe('SqliteStore — 倒计时 / countdown sessions', () => {
     await reopened.close();
   });
 
-  it('schema 版本升到 5，旧库升级后仍有表与毫秒列', async () => {
-    expect(SQLITE_SCHEMA_VERSION).toBe(5);
+  it('schema 版本升到 6，旧库升级后仍有表与毫秒列', async () => {
+    expect(SQLITE_SCHEMA_VERSION).toBe(6);
 
     const adapter = makeAdapter();
     const store = new SqliteStore(adapter, DB_PATH, silentLogger);
     await store.init();
-    expect(store.getMeta(META_SCHEMA_VERSION)).toBe('5');
+    expect(store.getMeta(META_SCHEMA_VERSION)).toBe('6');
     expect(store.getCountdownSessions()).toEqual([]);
     await store.close();
   });

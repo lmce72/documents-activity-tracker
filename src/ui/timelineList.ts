@@ -1,3 +1,4 @@
+import { t } from '../core/i18n';
 /**
  * Vertical timeline list / 垂直节点时间轴
  *
@@ -48,6 +49,7 @@ export interface TimelineNode {
   onSelect?: () => void;
   /** When set, a small button on the right opens the underlying file or view. */
   onOpen?: () => void;
+  onEdit?: () => void;
   /** Accessible name for the open button. */
   openLabel?: string;
   /**
@@ -104,28 +106,22 @@ export function renderTimelineList(
       }
     }
 
-    // The open control lives outside the body so it can sit hard against the right edge and
-    // stay put however long the title wraps.
-    if (node.onOpen) {
-      const open = row.createEl('button', { cls: 'clickable-icon rtt-icon-btn rtt-vtl-open' });
-      setIcon(open, 'external-link');
-      const label = node.openLabel ?? '';
-      if (label) {
-        setTooltip(open, label);
-        open.setAttribute('aria-label', label);
-      }
-      open.addEventListener('click', (event) => {
-        event.stopPropagation();
-        node.onOpen?.();
-      });
-    }
+    const actions = body.createDiv({ cls: 'rtt-vtl-actions' });
+    const action = (icon: string, label: string, run: () => void): HTMLButtonElement => {
+      const button = actions.createEl('button', { cls: 'clickable-icon rtt-icon-btn', attr: { 'aria-label': label } });
+      setIcon(button, icon); setTooltip(button, label);
+      button.addEventListener('click', event => { event.stopPropagation(); run(); });
+      return button;
+    };
+    if (node.onOpen) action('external-link', node.openLabel ?? '', node.onOpen);
+    if (node.onEdit) action('pencil', t('editRecord'), node.onEdit);
 
     if (node.renderDetail) {
       const detail = body.createDiv({ cls: 'rtt-vtl-inline' });
       const key = (state?.scope ?? '') + '|' + (node.key ?? [node.kind, node.timeRange, node.title].join('|'));
       detail.hidden = !state?.expanded.has(key);
       if (!detail.hidden) node.renderDetail(detail);
-      const toggle = body.createEl('button', { cls: 'rtt-process-toggle clickable-icon', attr: { 'aria-expanded': 'false', 'aria-label': node.title } });
+      const toggle = actions.createEl('button', { cls: 'rtt-process-toggle clickable-icon', attr: { 'aria-expanded': 'false', 'aria-label': node.title } });
       toggle.setAttribute('aria-expanded', String(!detail.hidden));
       setIcon(toggle, detail.hidden ? 'chevron-down' : 'chevron-up');
       toggle.addEventListener('click', event => {
@@ -137,10 +133,13 @@ export function renderTimelineList(
         toggle.setAttribute('aria-expanded', String(!detail.hidden));
         setIcon(toggle, detail.hidden ? 'chevron-down' : 'chevron-up');
       });
-      body.insertBefore(toggle, detail);
       const title = body.querySelector<HTMLElement>('.rtt-vtl-title');
       title?.addEventListener('click', () => toggle.click());
+      body.addClass('has-detail');
     }
+
+    if (actions.hasChildNodes()) { body.addClass('has-actions'); body.setCssProps({ '--rtt-action-count': String(actions.children.length) }); }
+    else actions.remove();
 
     if (node.onSelect) {
       row.addClass('is-clickable');

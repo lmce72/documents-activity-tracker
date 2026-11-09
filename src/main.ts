@@ -41,6 +41,7 @@ import { CountdownTimerService } from './services/CountdownTimerService';
 import { buildCountdownPlan, countdownConfigFrom } from './core/countdown';
 import { formatDurationWithSeconds } from './core/time';
 import { systemClock } from './services/clock';
+import { newRecordId } from './services/recordId';
 import { ActivitySidebarView, VIEW_TYPE_RTT_SIDEBAR } from './ui/SidebarView';
 import { RecordsModal } from './ui/RecordsModal';
 import { ConfirmModal } from './ui/ConfirmModal';
@@ -214,6 +215,9 @@ export default class ReadTimeTrackerPlugin extends Plugin {
       new Notice(t('recoveryNotice'), 12000);
     }
 
+    // Close the previous process's session before startup bindings may create a new one.
+    await this.timerService.recoverUnfinishedSessions();
+
     this.binding = installBindings({
       mobileMultiWindow: () => this.settings.mobileMultiWindow === true,
       app: this.app,
@@ -222,8 +226,6 @@ export default class ReadTimeTrackerPlugin extends Plugin {
       log: this.log,
       ownViewTypes: [VIEW_TYPE_RTT_SIDEBAR],
     });
-
-    await this.timerService.recoverUnfinishedSessions();
 
     this.registerView(
       VIEW_TYPE_RTT_SIDEBAR,
@@ -717,6 +719,7 @@ export default class ReadTimeTrackerPlugin extends Plugin {
         state.countdown.status,
         state.countdown.flags.length,
         state.countdown.pauses.length,
+        state.countdown.skippedSeconds,
       ].join('|');
 
       //  空闲且没有待恢复的残留：不必再写
@@ -753,6 +756,7 @@ export default class ReadTimeTrackerPlugin extends Plugin {
             flags: state.countdown.flags,
             running: state.countdown.status === MANUAL_STATUS.RUNNING,
             plan: state.countdown.plan,
+            skippedSeconds: state.countdown.skippedSeconds,
           }
         : this.pendingLive?.countdown;
 
@@ -810,6 +814,7 @@ export default class ReadTimeTrackerPlugin extends Plugin {
             pauses: entry.pauses,
             flags: entry.flags,
             plan: entry.plan,
+            skippedSeconds: entry.skippedSeconds,
           },
         });
       }
@@ -930,16 +935,7 @@ export default class ReadTimeTrackerPlugin extends Plugin {
 
   /** generate a manual session id. */
   private newSessionId(): string {
-    try {
-      if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-        return crypto.randomUUID();
-      }
-    } catch (error) {
-
-      //  Some mobile WebViews lack crypto.randomUUID; fall back to time + random
-      this.log.warn('[RTT] randomUUID 不可用 / unavailable:', error);
-    }
-    return `manual-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    return newRecordId('manual');
   }
 
   //  ==========================================================================

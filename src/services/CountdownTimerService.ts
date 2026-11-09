@@ -87,7 +87,38 @@ export class CountdownTimerService {
     if (state.countdown.status === MANUAL_STATUS.IDLE) return null;
     const plan = state.countdown.plan;
     if (!plan) return null;
-    return locatePhase(plan, this.elapsedSeconds());
+    //  跳过的只是本段剩余的等待：定位用有效时间，实际时长仍由已过时间决定
+    //  Skipping removes only the phase's remaining wait: location uses effective time while the
+    //  recorded duration still comes from real elapsed time.
+    return locatePhase(plan, this.elapsedSeconds() + (state.countdown.skippedSeconds ?? 0));
+  }
+
+  /**
+   * 跳过当前分段 / skip the current phase.
+   *
+   * 把本段剩余的等待记入偏移，立刻进入下一段；已经过去的时间不动，所以这一段的真实计时照常计入
+   * 本次记录。最后一段被跳过时按跑完收尾，由主循环的完赛检查落下记录。
+   *
+   * Records the current phase's remaining wait as an offset and moves straight to the next phase.
+   * Time already lived is untouched, so the stretch still counts in the saved run; skipping the last
+   * phase completes the run and the main loop's finish check settles it.
+   *
+   * whether anything was skipped
+   */
+  skipPhase(): boolean {
+    try {
+      const state = this.deps.store.getState();
+      if (state.countdown.status === MANUAL_STATUS.IDLE) return false;
+      const position = this.position();
+      if (!position || position.completed) return false;
+      const seconds = Math.max(0, position.phaseSeconds - position.phaseElapsed);
+      if (seconds === 0) return false;
+      this.deps.store.dispatch({ type: ActionTypes.COUNTDOWN_SKIP, payload: { seconds } });
+      return true;
+    } catch (error) {
+      this.deps.log.warn('[RTT][countdown] 跳过分段失败 / skip phase failed:', error);
+      return false;
+    }
   }
 
   /** 本次运行的方案 / the plan this run was started with. */
@@ -123,7 +154,9 @@ export class CountdownTimerService {
 
       const elapsedMs = this.elapsedMs();
       const mark: ManualFlag = {
-        atSeconds: position.elapsed,
+        //  标记的累计时长是真实已计时长；段号仍用跳过后的有效位置
+        //  The mark's elapsed counter is real time; the phase number still uses the effective position.
+        atSeconds: Math.floor(elapsedMs / 1000),
         atMs: elapsedMs,
         atTime: this.deps.clock.nowFull(),
         label,
@@ -170,9 +203,13 @@ export class CountdownTimerService {
 
       const plan = countdown.plan;
       const durationMs = this.elapsedMs();
-      const position = locatePhase(plan, durationMs / 1000);
+      //  完赛与否看有效位置；记录的时长只算真实计时，不包括被跳过的等待
+      //  Completion follows the effective position; the saved duration is real time only, with the
+      //  skipped waits left out.
+      const position = locatePhase(plan, durationMs / 1000 + (countdown.skippedSeconds ?? 0));
       const endTime = this.deps.clock.nowFull();
       const plannedSeconds = planTotalSeconds(plan);
+      const actualSeconds = Math.min(Math.floor(durationMs / 1000), plannedSeconds);
 
       const session: CountdownSession = {
         id: this.deps.newId(),
@@ -180,7 +217,7 @@ export class CountdownTimerService {
         startTime: countdown.startedAt || endTime,
         endTime,
         plannedSeconds,
-        durationSeconds: Math.min(position.elapsed, plannedSeconds),
+        durationSeconds: actualSeconds,
         durationMs: Math.min(durationMs, plannedSeconds * 1000),
         completed: position.completed,
         note,

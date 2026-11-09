@@ -36,7 +36,7 @@ import type {
  * 4 → 5 adds `duration_ms` to both, because the arithmetic is millisecond-based and a whole-second
  * column would throw the fraction away at save time.
  */
-export const SQLITE_SCHEMA_VERSION = 5;
+export const SQLITE_SCHEMA_VERSION = 6;
 
 /** the meta key holding the schema version. */
 export const META_SCHEMA_VERSION = 'schema_version';
@@ -48,6 +48,16 @@ CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+-- 更正是独立的版本化账本，原始采集记录保持不变 / versioned corrections preserve source rows.
+CREATE TABLE IF NOT EXISTS record_edits (
+  edit_id    TEXT PRIMARY KEY,
+  record_key TEXT NOT NULL,
+  version    INTEGER NOT NULL,
+  updated_at TEXT NOT NULL,
+  payload    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_record_edits_key ON record_edits(record_key, version);
 
 CREATE TABLE IF NOT EXISTS events (
   id                INTEGER PRIMARY KEY AUTOINCREMENT,

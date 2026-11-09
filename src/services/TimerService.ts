@@ -78,18 +78,25 @@ function awayDisposition(
 
 export class TimerService {
   private mobileBackground = false;
+  private lifecycleRevision = 0;
   private foregroundResumePath: string | null = null;
+
+  private isCurrentLifecycle(revision: number): boolean {
+    return revision === this.lifecycleRevision && !this.mobileBackground;
+  }
 
   /** Close the reading round before the WebView can freeze; background has no live tail. */
   async onMobileBackgroundChange(background: boolean): Promise<void> {
     if (!this.deps.isMobile || background === this.mobileBackground) return;
     this.mobileBackground = background;
+    const revision = ++this.lifecycleRevision;
     try {
       if (background) {
         const state = this.deps.store.getState();
         const path = state.activeFilePath;
         const file = path ? state.files.get(path) : undefined;
-        this.foregroundResumePath = file?.status === STATUS.TRACKING ? path : null;
+        if (file?.status === STATUS.TRACKING) this.foregroundResumePath = path;
+        else if (file?.status === STATUS.PAUSED) this.foregroundResumePath = null;
         // No await before closing and appending: native pause may freeze JS immediately.
         if (path && file) {
           const last = file.lastTickTimestamp;
@@ -104,10 +111,14 @@ export class TimerService {
         await this.flushPendingWrites();
       } else {
         const resumePath = this.foregroundResumePath;
-        this.foregroundResumePath = null;
         this.deps.store.dispatch({ type: ActionTypes.SET_WINDOW_FOCUS, payload: { focused: true } });
         await this.onActivePathChange();
-        if (!this.mobileBackground && resumePath && resumePath === this.deps.getActivePath()) await this.startCurrent();
+        if (!this.isCurrentLifecycle(revision)) return;
+        if (resumePath && resumePath === this.deps.getActivePath()) {
+          await this.startCurrent();
+          if (!this.isCurrentLifecycle(revision)) return;
+        }
+        this.foregroundResumePath = null;
       }
     } catch (error) {
       this.deps.log.warn('[RTT][service] Mobile lifecycle transition failed:', error);
@@ -184,19 +195,21 @@ export class TimerService {
    */
   async tick(): Promise<void> {
     if (this.mobileBackground) return;
+    const revision = this.lifecycleRevision;
     if (!isDocumentRecordingEnabled(this.deps.settings())) return;
 
     try {
       await this.applyIdleState();
+      if (!this.isCurrentLifecycle(revision)) return;
 
       //  断层排在跨日/关孤儿之前：否则跨夜冻结会被跨日收尾写成"整夜专注"
       //  The gap goes before rollover and orphan closing: a freeze across midnight would otherwise be
       //  turned into "focused all night" by the rollover's own auto-save.
       await this.closeFrozenGap();
-      if (this.mobileBackground) return;
+      if (!this.isCurrentLifecycle(revision)) return;
       this.applyDayRollover();
       await this.closeOrphanSessions();
-      if (this.mobileBackground) return;
+      if (!this.isCurrentLifecycle(revision)) return;
 
       const filePath = this.deps.store.getState().activeFilePath;
       if (filePath) {
@@ -204,6 +217,7 @@ export class TimerService {
       }
 
       await this.flushPendingWrites();
+      if (!this.isCurrentLifecycle(revision)) return;
       this.syncActivityTitle();
       this.writeHeartbeat();
     } catch (error) {
@@ -262,6 +276,7 @@ export class TimerService {
    * the two ledgers cannot disagree.
    */
   private async closeFrozenGap(): Promise<void> {
+    const revision = this.lifecycleRevision;
     const state = this.deps.store.getState();
     const filePath = state.activeFilePath;
     const file = filePath ? state.files.get(filePath) : undefined;
@@ -277,6 +292,10 @@ export class TimerService {
 
     try {
       await this.flushPendingWrites();
+      if (!this.isCurrentLifecycle(revision)) return;
+      const current = this.deps.store.getState().files.get(filePath);
+      if (current?.status !== STATUS.TRACKING || current.sessionStartTime !== file.sessionStartTime
+        || current.lastTickTimestamp !== last) return;
 
       //  最后一个心跳覆盖的是它自己那一秒，从下一毫秒起才算离开
       //  The last heartbeat covered its own second; the stretch starts right after it
@@ -360,8 +379,10 @@ export class TimerService {
    * exactly the one that needs its own boundary.
    */
   private async settleIdle(entering: boolean): Promise<void> {
+    const revision = this.lifecycleRevision;
     try {
       await this.flushPendingWrites();
+      if (!this.isCurrentLifecycle(revision)) return;
       this.writeIdleBoundary(entering);
 
       this.deps.store.dispatch({
@@ -460,6 +481,7 @@ export class TimerService {
   /** The body of {@link onActivePathChange}; see there for why it is serialised. */
   private async applyActivePathChange(): Promise<void> {
     if (this.mobileBackground) return;
+    const revision = this.lifecycleRevision;
     if (!isDocumentRecordingEnabled(this.deps.settings())) return;
 
     try {
@@ -472,7 +494,7 @@ export class TimerService {
       if (fromPath === toPath) return;
 
       await this.flushPendingWrites();
-      if (this.mobileBackground) return;
+      if (!this.isCurrentLifecycle(revision)) return;
 
       if (fromPath) {
         this.dispatchSave(fromPath, 'auto-save');
@@ -481,10 +503,11 @@ export class TimerService {
         //  queues, so appending the switch now would put it before the session it closes
         //  and the derivation could not attribute that stretch.
         await this.flushPendingWrites();
+        if (!this.isCurrentLifecycle(revision)) return;
         if (toPath) this.appendEvent(this.buildSwitchEvent(fromPath, toPath));
       }
 
-      if (this.mobileBackground) return;
+      if (!this.isCurrentLifecycle(revision)) return;
       if (toPath) {
         this.deps.store.dispatch({
           type: ActionTypes.SWITCH_FILE,
@@ -544,6 +567,8 @@ export class TimerService {
    * the event stream still records when the window was not in front.
    */
   async onWindowFocusChange(focused: boolean): Promise<void> {
+    if (this.mobileBackground) return;
+    const revision = this.lifecycleRevision;
     if (!isDocumentRecordingEnabled(this.deps.settings())) return;
 
     try {
@@ -553,6 +578,7 @@ export class TimerService {
       //  Drain the queue before appending the boundary event, for the same reason as in
       //  onActivePathChange: observations must follow the session events they came after.
       await this.flushPendingWrites();
+      if (!this.isCurrentLifecycle(revision)) return;
 
       this.deps.store.dispatch({ type: ActionTypes.SET_WINDOW_FOCUS, payload: { focused } });
 
@@ -672,6 +698,7 @@ export class TimerService {
    */
   async startCurrent(): Promise<void> {
     if (this.mobileBackground) return;
+    const revision = this.lifecycleRevision;
     //  新的一轮以 start 事件开头，之前那条空闲边界随之作废；按下开始本身就是一次用户动作，
     //  残留的空闲标志一并清掉，否则新一轮的第一秒会被记成空闲
     //  A new round opens with a start event, which retires any idle boundary still lying open. Pressing
@@ -688,7 +715,7 @@ export class TimerService {
       // 先处理排队中的视图切换，防止开始按钮使用上一个对象。
       // Resolve queued view changes before starting the current target.
       await this.onActivePathChange();
-      if (this.mobileBackground) return;
+      if (!this.isCurrentLifecycle(revision)) return;
 
       const state = this.deps.store.getState();
       const target = this.deps.getActivePath();
@@ -703,7 +730,7 @@ export class TimerService {
       if (file?.status === STATUS.TRACKING) return;
 
       await this.flushPendingWrites();
-      if (this.mobileBackground) return;
+      if (!this.isCurrentLifecycle(revision)) return;
       this.deps.store.dispatch({
         type: ActionTypes.SWITCH_FILE,
         payload: { fromPath: state.activeFilePath, toPath: target, autoStart: true },
@@ -711,6 +738,51 @@ export class TimerService {
       await this.flushPendingWrites();
     } catch (error) {
       this.deps.log.warn('[RTT][service] 开始计时失败 / start failed:', error);
+    }
+  }
+
+  /**
+   * 启动时补一次自动开始 / one auto-start pass after the plugin loads.
+   *
+   * 启动同步可能早于活动叶就绪：那一刻 `getActivePath()` 还是 null，路径变化因此永远不会发生。
+   * 「全自动」不能等下一条事件才生效，所以这里用工作区当前文件作一次性兜底；是否真的开跑仍由
+   * `autoStartMode` 决定，手动/仅返回等模式不会被这条兜底越过。
+   *
+   * Startup sync can run before any leaf is ready, when `getActivePath()` is still null — no path
+   * change can follow. "Always" must not wait for the next event, so the workspace's active file is
+   * used once as a fallback; `autoStartMode` still decides whether a round actually starts.
+   */
+  async autoStartStartup(fallbackPath: string | null): Promise<void> {
+    if (this.mobileBackground) return;
+    const settings = this.deps.settings();
+    if (!isDocumentRecordingEnabled(settings)) return;
+    const revision = this.lifecycleRevision;
+    try {
+      await this.onActivePathChange();
+      if (!this.isCurrentLifecycle(revision)) return;
+
+      const state = this.deps.store.getState();
+      const resolved = this.deps.getActivePath();
+      const target = resolved && isTrackableTarget(resolved, settings)
+        ? resolved
+        : state.activeFilePath === null && fallbackPath && isTrackableTarget(fallbackPath, settings)
+          ? fallbackPath
+          : null;
+      if (!target) return;
+
+      const file = state.files.get(target);
+      if (file && file.status !== STATUS.IDLE) return;
+      if (!this.shouldAutoStart(target, settings)) return;
+
+      await this.flushPendingWrites();
+      if (!this.isCurrentLifecycle(revision)) return;
+      this.deps.store.dispatch({
+        type: ActionTypes.SWITCH_FILE,
+        payload: { fromPath: state.activeFilePath, toPath: target, autoStart: true },
+      });
+      await this.flushPendingWrites();
+    } catch (error) {
+      this.deps.log.warn('[RTT][service] 启动自动计时失败 / startup auto-start failed:', error);
     }
   }
 

@@ -12,7 +12,7 @@
  *
  */
 
-import { removeFileEvents as removeFileEventsPure } from '../core/timeline';
+import { buildFileRecords, removeFileEvents as removeFileEventsPure } from '../core/timeline';
 import type {
   CountdownSession,
   ManualSession,
@@ -20,6 +20,9 @@ import type {
   TimelineEvent,
 } from '../core/types';
 import type { HistoryStore } from './historyStore';
+import { assertEditCurrent, eventHistory, sessionFingerprint, sessionsWithEdits, visitSourceFingerprint } from '../core/recordEditing';
+import type { EventHistory, RecordEdit } from '../core/recordEditing';
+import { buildVisits } from '../core/activityVisits';
 
 export class VolatileHistoryStore implements HistoryStore {
   protected events: TimelineEvent[] = [];
@@ -27,6 +30,7 @@ export class VolatileHistoryStore implements HistoryStore {
   protected manual: ManualSession[] = [];
   protected countdown: CountdownSession[] = [];
   protected revision = 0;
+  protected edits: RecordEdit[] = [];
 
   isReady(): boolean {
     return true;
@@ -36,8 +40,33 @@ export class VolatileHistoryStore implements HistoryStore {
     return this.revision;
   }
 
-  getEvents(): TimelineEvent[] {
-    return [...this.events];
+  getEvents(): EventHistory {
+    return eventHistory(this.events, this.edits);
+  }
+
+  getRecordEdits(): RecordEdit[] {
+    return structuredClone(this.edits);
+  }
+
+  async commitRecordEdit(edit: RecordEdit): Promise<void> {
+    let sourceFingerprint: string | undefined;
+    if (edit.kind === 'manual' || edit.kind === 'countdown') {
+      const session = (edit.kind === 'manual' ? this.getManualSessions() : this.getCountdownSessions()).find(saved => saved.id === edit.session.id);
+      sourceFingerprint = session ? sessionFingerprint(session) : undefined;
+    } else {
+      const visit = buildVisits(this.events, edit.visit.originalFrom, edit.visit.originalTo, true).find(saved => saved.target === edit.visit.target);
+      sourceFingerprint = visit ? visitSourceFingerprint(this.events, edit.visit.target, edit.visit.originalFrom, edit.visit.originalTo) : undefined;
+    }
+    assertEditCurrent(edit, this.edits, sourceFingerprint);
+    this.edits.push(structuredClone(edit));
+    this.revision++;
+    try {
+      await this.flushNow();
+    } catch (error) {
+      this.edits = this.edits.filter(saved => saved.editId !== edit.editId);
+      this.revision++;
+      throw error instanceof Error ? error : new Error('保存记录失败。');
+    }
   }
 
   appendEvents(events: readonly TimelineEvent[]): void {
@@ -61,15 +90,26 @@ export class VolatileHistoryStore implements HistoryStore {
     const before = this.events.length;
     this.events = removeFileEventsPure(this.events, filePath);
     this.records.delete(filePath);
+    this.edits = this.edits.filter(edit => (edit.kind !== 'document' && edit.kind !== 'view') || edit.visit.target !== filePath);
     this.revision++;
     return before - this.events.length;
   }
 
   getRecords(): Record<string, RecordEntry> {
-    return Object.fromEntries(this.records);
+    const out = Object.fromEntries(this.records);
+    const targets = new Set(this.edits.flatMap(edit => edit.kind === 'document' || edit.kind === 'view' ? [edit.visit.target] : []));
+    if (targets.size > 0) {
+      const records = buildFileRecords(this.getEvents(), Date.now());
+      for (const target of targets) {
+        const record = records[target];
+        if (record) out[target] = { fileName: record.fileName, totalReadTime: record.totalReadTime, unfocusedReadTime: record.unfocusedReadTime, lastReadAt: record.lastReadAt };
+      }
+    }
+    return out;
   }
 
   getRecord(filePath: string): RecordEntry | null {
+    if (this.edits.some(edit => (edit.kind === 'document' || edit.kind === 'view') && edit.visit.target === filePath)) return this.getRecords()[filePath] ?? null;
     return this.records.get(filePath) ?? null;
   }
 
@@ -107,47 +147,54 @@ export class VolatileHistoryStore implements HistoryStore {
   }
 
   getManualSessions(): ManualSession[] {
-    return [...this.manual];
+    return sessionsWithEdits('manual', this.manual, this.edits);
   }
 
   getManualSessionsInRange(start: string, end: string): ManualSession[] {
-    return this.manual.filter((s) => s.startTime >= start && s.startTime <= end);
+    return this.getManualSessions().filter((s) => s.startTime >= start && s.startTime <= end);
   }
 
   appendManualSession(session: ManualSession): void {
-    this.manual.push(session);
+    this.manual = [...this.manual.filter(saved => saved.id !== session.id), session];
+    this.revision++;
   }
 
   deleteManualSession(id: string): void {
     this.manual = this.manual.filter((s) => s.id !== id);
+    this.revision++;
   }
 
   updateManualSessionNote(id: string, note: string): boolean {
     const index = this.manual.findIndex((session) => session.id === id);
     if (index < 0) return false;
     this.manual[index] = { ...this.manual[index]!, note };
+    this.revision++;
     return true;
   }
 
   getCountdownSessions(): CountdownSession[] {
-    return [...this.countdown];
+    return sessionsWithEdits('countdown', this.countdown, this.edits);
   }
 
   getCountdownSessionsInRange(start: string, end: string): CountdownSession[] {
-    return this.countdown.filter((s) => s.startTime >= start && s.startTime <= end);
+    return this.getCountdownSessions().filter((s) => s.startTime >= start && s.startTime <= end);
   }
 
   appendCountdownSession(session: CountdownSession): void {
-    this.countdown.push(session);
+    this.countdown = [...this.countdown.filter(saved => saved.id !== session.id), session];
+    this.revision++;
   }
 
   deleteCountdownSession(id: string): void {
     this.countdown = this.countdown.filter((s) => s.id !== id);
+    this.revision++;
   }
 
   clearAll(): void {
     this.events = [];
     this.records.clear();
+    this.edits = this.edits.filter(edit => edit.kind === 'manual' || edit.kind === 'countdown');
+    this.revision++;
   }
 
   /** nothing to flush without a disk. */
