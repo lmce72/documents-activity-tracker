@@ -1900,9 +1900,9 @@ export class ActivitySidebarView extends ItemView {
     phase: number | null;
     /** 生成图表时的分钟刻度：运行中每分钟重画一次，起点才一直是「现在」 */
     minute: number;
-    /** 每根甘特条对应的阶段类型，用来上色 / phase kind per bar, used for colouring */
-    kinds: Array<'focus' | 'break' | 'segment'>;
     options: PeleMountOptions;
+    /** 时间轴两端 / the two ends of the timeline */
+    range: { now: HTMLElement; finish: HTMLElement };
   } | null = null;
 
   /** countdown controls: the ring and its buttons. */
@@ -2095,29 +2095,45 @@ export class ActivitySidebarView extends ItemView {
     appendDurationParts(summary, formatDurationParts(total));
     if (after) summary.createSpan({ text: after });
 
-    //  方案画成甘特图：起点固定为「现在」，终点是理想状态下的预计完成时刻，
-    //  比一排节点更能说明"这次要跑到什么时候"。
-    //  A Gantt chart anchors the plan at "now" and ends at the ideal finish time, which says more
-    //  than a row of nodes: when will this run be done.
+    //  方案画成一行色块时间轴：起点固定为「现在」，终点是理想状态下的预计完成时刻。
+    //  甘特图每段各占一行，纵向会随分段数增长；block 图始终只有一行，色块按阶段类型着色。
+    //  One row of coloured blocks from "now" to the ideal finish. A Gantt gives every phase its own
+    //  row and grows vertically; a block diagram stays one row while the blocks still carry phases.
     this.countdownFlow?.mounted?.destroy();
     const nowMs = this.deps.clock.now();
     const position = state.countdown.status === 'idle'
       ? null
       : locatePhase(plan, selectCountdownElapsedSeconds(state, nowMs) + (state.countdown.skippedSeconds ?? 0));
-    const flow = root.createDiv({ cls: 'rtt-cd-flow' });
     const built = this.countdownFlowSource(plan, position, nowMs);
+    const showSeconds = this.deps.settings().countdownShowSeconds !== false;
+    const range = root.createDiv({ cls: 'rtt-cd-range' });
+    const nowLabel = range.createSpan({ cls: 'rtt-cd-range-now' });
+    range.createSpan({ cls: 'rtt-cd-range-arrow', text: '→' });
+    const finishLabel = range.createSpan({ cls: 'rtt-cd-range-finish' });
+    this.paintCountdownRange(nowLabel, finishLabel, nowMs, built.finishMs, showSeconds);
+    const flow = root.createDiv({ cls: 'rtt-cd-flow' });
+    const kinds = new Set(plan.phases.map(phase => phase.kind));
+    if (kinds.size > 0) {
+      const legend = root.createDiv({ cls: 'rtt-cd-legend' });
+      for (const kind of kinds) legend.createSpan({ cls: `rtt-cd-key rtt-cd-key-${kind}`, text: t(phaseLabelKey(kind)) });
+    }
     this.countdownFlow = {
       container: flow,
       mounted: null,
       source: built.source,
       phase: position && !position.completed ? position.index : null,
       minute: Math.floor(nowMs / 60000),
-      kinds: built.kinds,
-      //  字号与内边距压小，甘特图在窄侧栏里仍按容器宽度缩放
-      //  Smaller type and padding; the Gantt still scales to the narrow container.
-      options: { zoom: false, fontSize: 12, padding: 4 },
+      options: { zoom: false, fontSize: 10, padding: 2 },
+      range: { now: nowLabel, finish: finishLabel },
     };
     void this.mountCountdownFlow(flow, built.source);
+  }
+
+  /** 时间轴两端的读数 / the two ends of the timeline. */
+  private paintCountdownRange(now: HTMLElement, finish: HTMLElement, nowMs: number, finishMs: number, showSeconds: boolean): void {
+    const clock = (ms: number): string => formatLocalFull(new Date(ms)).slice(11, showSeconds ? 19 : 16);
+    now.setText(`${t('countdownNow')} ${clock(nowMs)}`);
+    finish.setText(t('countdownEta').replace('{time}', clock(finishMs)));
   }
 
   /**
@@ -2134,33 +2150,39 @@ export class ActivitySidebarView extends ItemView {
     plan: CountdownPlan,
     position: CountdownPosition | null,
     nowMs: number,
-  ): { source: string; kinds: Array<'focus' | 'break' | 'segment'> } {
-    const showSeconds = this.deps.settings().countdownShowSeconds !== false;
+  ): { source: string; finishMs: number } {
     const schedule = this.countdownSchedule(plan, position, nowMs);
     const remainingSeconds = position
       ? (position.completed ? 0 : Math.max(0, position.total - position.elapsed))
       : planTotalSeconds(plan);
     const finishMs = nowMs + remainingSeconds * 1000;
-    const stamp = (ms: number): string => formatLocalFull(new Date(ms)).slice(0, 19);
-    const clock = (ms: number): string => stamp(ms).slice(11, showSeconds ? 19 : 16);
-    const cycles = plan.mode === 'pomodoro' ? Math.max(1, Math.round(plan.phases.length / 2)) : 0;
-    const title = `${t(modeLabelKey(plan.mode))}${cycles > 1 ? ` ×${cycles} 轮` : ''} · ${t('countdownEta').replace('{time}', clock(finishMs))}`;
-    const lines = [
-      'gantt',
-      `    title ${title}`,
-      '    dateFormat YYYY-MM-DD HH:mm:ss',
-      `    axisFormat ${showSeconds ? '%H:%M:%S' : '%H:%M'}`,
-      '    todayMarker off',
-    ];
+    if (schedule.length === 0) {
+      return {
+        source: `block-beta\n    columns 1\n    done["${t('countdownCompleted')}"]`,
+        finishMs,
+      };
+    }
+
+    //  时间按比例换成列：目标总列数固定，块宽仍随真实时长变化，且始终只占一行
+    //  Time becomes columns on a fixed scale: block widths still follow real durations while the
+    //  diagram stays a single row.
+    const totalSeconds = schedule.reduce((sum, item) => sum + item.seconds, 0) || 1;
+    const targetColumns = Math.max(schedule.length, 48);
+    const spans = schedule.map(item => Math.max(1, Math.round((item.seconds / totalSeconds) * targetColumns)));
+    const columns = spans.reduce((sum, span) => sum + span, 0);
+    const lines = ['block-beta', `    columns ${columns}`];
     schedule.forEach((item, index) => {
-      //  当前段用 active 态画出，已跑完/未开始都不用再标
-      //  The current phase carries the active state; nothing else needs a mark.
-      const state = position && !position.completed && item.phaseIndex === position.index ? 'active, ' : '';
-      lines.push(`    ${item.label} :${state}t${index}, ${stamp(item.startMs)}, ${Math.max(1, Math.round(item.seconds))}s`);
+      //  只留阶段名：条太窄，完整时长已经写在摘要里 / name only: bars are narrow and the summary has durations
+      lines.push(`    p${index}["${item.label.split(' · ')[0]}"]:${spans[index]}`);
     });
-    const milestone = position?.completed ? t('countdownCompleted') : t('countdownEtaLabel');
-    lines.push(`    ${milestone} :milestone, m0, ${stamp(finishMs)}, 0s`);
-    return { source: lines.join('\n'), kinds: schedule.map(item => item.kind) };
+    lines.push('    classDef rttFocus fill:var(--interactive-accent),stroke:var(--interactive-accent)');
+    lines.push('    classDef rttBreak fill:var(--color-green),stroke:var(--color-green)');
+    lines.push('    classDef rttSegment fill:var(--color-blue),stroke:var(--color-blue)');
+    schedule.forEach((item, index) => {
+      const cls = item.kind === 'focus' ? 'rttFocus' : item.kind === 'break' ? 'rttBreak' : 'rttSegment';
+      lines.push(`    class p${index} ${cls}`);
+    });
+    return { source: lines.join('\n'), finishMs };
   }
 
   /** 从「现在」开始的剩余排程 / the remaining schedule starting at the present. */
@@ -2216,27 +2238,9 @@ export class ActivitySidebarView extends ItemView {
     if (!pele || !flow || flow.container !== container || !container.isConnected) return;
     try {
       flow.mounted = pele.mount(container, flow.source || source, flow.options);
-      this.paintGanttKinds(flow.container, flow.kinds);
     } catch (error) {
       this.deps.log.warn('[RTT][sidebar] 方案流程图渲染失败 / plan flow render failed:', error);
     }
-  }
-
-  /**
-   * 给甘特条按阶段类型上色 / colour the Gantt bars by phase kind.
-   *
-   * Pele 的甘特图把所有条画成同一种强调色，只给了 active/done 这类状态类；色块的区别要在这里补：
-   * 任务 id 是 `t0…`，按排程顺序对应回阶段类型。重绘会换掉整个 SVG，所以每次挂载/更新后都重贴。
-   *
-   * Pele paints every Gantt bar in the accent colour and only exposes state classes such as
-   * active/done. The per-phase colour is added here: task ids are `t0…`, matching the schedule
-   * order. A redraw replaces the SVG, so the classes are reapplied after every mount and update.
-   */
-  private paintGanttKinds(container: HTMLElement, kinds: readonly ('focus' | 'break' | 'segment')[]): void {
-    kinds.forEach((kind, index) => {
-      container.querySelector<HTMLElement>(`.pele-task[data-id="t${index}"]`)?.addClass(`rtt-gantt-${kind}`);
-    });
-    container.querySelector<HTMLElement>('.pele-task[data-id="m0"]')?.addClass('rtt-gantt-eta');
   }
 
   /**
@@ -2263,9 +2267,9 @@ export class ActivitySidebarView extends ItemView {
     flow.minute = minute;
     const built = this.countdownFlowSource(plan, position, nowMs);
     flow.source = built.source;
-    flow.kinds = built.kinds;
     flow.mounted?.update(flow.source);
-    if (flow.mounted) this.paintGanttKinds(flow.container, flow.kinds);
+    this.paintCountdownRange(flow.range.now, flow.range.finish, nowMs, built.finishMs,
+      this.deps.settings().countdownShowSeconds !== false);
   }
 
   /** 这一天的倒计时记录 / that day's countdown runs. */

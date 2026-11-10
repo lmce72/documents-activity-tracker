@@ -374,26 +374,47 @@
     height: auto;
 }
 
-/* 甘特条按阶段上色：Pele 默认全部用强调色，这里按任务 id 贴上的类区分
-   Gantt bars coloured by phase; Pele paints them all in the accent colour, so the classes applied
-   to each task id carry the distinction. */
-.rtt-cd-flow .pele-task.rtt-gantt-focus rect {
-    fill: color-mix(in srgb, var(--interactive-accent) 32%, transparent);
-    stroke: var(--interactive-accent);
+/* 一行色块时间轴：块内文字按容器缩得太小，读名交给下方图例
+   One row of coloured blocks: labels scale below legibility in the narrow column, so the legend
+   below carries the names. */
+.rtt-cd-flow .pele-block text { display: none; }
+
+.rtt-cd-range {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--size-4-1);
+    margin-top: var(--size-4-1);
+    color: var(--text-muted);
+    font-size: var(--font-ui-smaller);
+    font-variant-numeric: tabular-nums;
 }
 
-.rtt-cd-flow .pele-task.rtt-gantt-break rect {
-    fill: color-mix(in srgb, var(--color-green) 30%, transparent);
-    stroke: var(--color-green);
+.rtt-cd-range-arrow { color: var(--text-faint); }
+.rtt-cd-range-finish { color: var(--text-normal); }
+
+.rtt-cd-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--size-4-2);
+    margin-top: var(--size-4-1);
+    color: var(--text-muted);
+    font-size: var(--font-ui-smaller);
 }
 
-.rtt-cd-flow .pele-task.rtt-gantt-segment rect {
-    fill: color-mix(in srgb, var(--color-blue) 30%, transparent);
-    stroke: var(--color-blue);
+.rtt-cd-key { display: inline-flex; align-items: center; gap: 4px; }
+
+.rtt-cd-key::before {
+    content: '';
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+    background: var(--text-faint);
 }
 
-.rtt-cd-flow .pele-task text { fill: var(--text-normal); }
-.rtt-cd-flow .pele-task.rtt-gantt-eta path { fill: var(--text-muted); stroke: var(--text-muted); }
+.rtt-cd-key-focus::before { background: var(--interactive-accent); }
+.rtt-cd-key-break::before { background: var(--color-green); }
+.rtt-cd-key-segment::before { background: var(--color-blue); }
 
 /* 小节标题右侧的动作 / the action at the end of a section heading */
 .rtt-section-heading .rtt-section-action { margin-left: auto; }
