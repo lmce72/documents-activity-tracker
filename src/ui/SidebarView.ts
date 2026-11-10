@@ -1881,6 +1881,7 @@ export class ActivitySidebarView extends ItemView {
     this.renderRecoveryCard(left, 'countdown');
     this.renderCountdownControls(left);
     this.renderCountdownStats(left);
+    this.renderCountdownToggles(left);
     this.renderCountdownPlan(right);
     this.renderCountdownList(right);
   }
@@ -1894,6 +1895,8 @@ export class ActivitySidebarView extends ItemView {
     mounted: PeleMounted | null;
     source: string;
     phase: number | null;
+    /** 生成图表时的分钟刻度：运行中每分钟重画一次，起点才一直是「现在」 */
+    minute: number;
     options: PeleMountOptions;
   } | null = null;
 
@@ -1927,10 +1930,8 @@ export class ActivitySidebarView extends ItemView {
       text: t('countdownIdle'),
     });
     this.liveNodes.countdownProgress = stateLine.createDiv({ cls: 'rtt-state-progress' });
-    this.liveNodes.countdown = face.createDiv({
-      cls: 'rtt-stopwatch-time',
-      text: formatDurationWithSeconds(0),
-    });
+    this.liveNodes.countdown = face.createDiv({ cls: 'rtt-stopwatch-time' });
+    this.paintCountdownTime(this.liveNodes.countdown, 0);
     renderHint(parent, t('countdownRingHint'));
   }
 
@@ -2004,6 +2005,19 @@ export class ActivitySidebarView extends ItemView {
     }
   }
 
+  /** 倒计时的显示开关 / the countdown's display switch. */
+  private renderCountdownToggles(root: HTMLElement): void {
+    const settings = this.deps.settings();
+    new Setting(root)
+      .setName(t('countdownShowSeconds'))
+      .setDesc(t('countdownShowSecondsDesc'))
+      .addToggle(toggle => toggle
+        .setValue(settings.countdownShowSeconds !== false)
+        .onChange(value => {
+          void this.deps.saveSetting({ countdownShowSeconds: value }).then(() => this.render());
+        }));
+  }
+
   /** 今日倒计时合计 / today's countdown totals. */
   private renderCountdownStats(root: HTMLElement): void {
     const sessions = this.deps.history.getCountdownSessions();
@@ -2046,83 +2060,109 @@ export class ActivitySidebarView extends ItemView {
     appendDurationParts(summary, formatDurationParts(total));
     if (after) summary.createSpan({ text: after });
 
-    //  方案画成流程图：分段之间的先后关系比一排胶囊更直观
-    //  The plan becomes a flow diagram: the order between phases reads better than a row of chips.
+    //  方案画成甘特图：起点固定为「现在」，终点是理想状态下的预计完成时刻，
+    //  比一排节点更能说明"这次要跑到什么时候"。
+    //  A Gantt chart anchors the plan at "now" and ends at the ideal finish time, which says more
+    //  than a row of nodes: when will this run be done.
     this.countdownFlow?.mounted?.destroy();
+    const nowMs = this.deps.clock.now();
     const position = state.countdown.status === 'idle'
       ? null
-      : locatePhase(plan, selectCountdownElapsedSeconds(state, this.deps.clock.now()) + (state.countdown.skippedSeconds ?? 0));
+      : locatePhase(plan, selectCountdownElapsedSeconds(state, nowMs) + (state.countdown.skippedSeconds ?? 0));
     const flow = root.createDiv({ cls: 'rtt-cd-flow' });
-    const source = this.countdownFlowSource(plan, position);
+    const source = this.countdownFlowSource(plan, position, nowMs);
     this.countdownFlow = {
       container: flow,
       mounted: null,
       source,
       phase: position && !position.completed ? position.index : null,
-      //  字号与内边距压小；番茄钟强制横向，一圈两节点比八段竖排矮得多
-      //  Smaller type and padding; pomodoro stays horizontal — one cycle beats eight stacked nodes.
-      options: { zoom: false, fontSize: 12, padding: 4, autoDirection: plan.mode !== 'pomodoro' },
+      minute: Math.floor(nowMs / 60000),
+      //  字号与内边距压小，甘特图在窄侧栏里仍按容器宽度缩放
+      //  Smaller type and padding; the Gantt still scales to the narrow container.
+      options: { zoom: false, fontSize: 12, padding: 4 },
     };
     void this.mountCountdownFlow(flow, source);
   }
 
-  /** 把方案转成 Mermaid flowchart 源码 / turn the plan into Mermaid flowchart source. */
-  private countdownFlowSource(plan: CountdownPlan, position: CountdownPosition | null): string {
-    if (plan.mode === 'pomodoro') return this.pomodoroFlowSource(plan, position);
-    const lines = ['flowchart LR'];
-    plan.phases.forEach((phase, index) => {
-      const label = phase.kind === 'segment'
-        ? t('countdownSegmentN').replace('{n}', String(index + 1))
-        : t(phaseLabelKey(phase.kind));
-      //  当前段用 ▶、已跑过的段用 ✓：流程图本身不必再区分颜色
-      //  ▶ marks the current phase and ✓ the finished ones, so colour is not the only cue.
-      const mark = position && !position.completed
-        ? index < position.index ? '✓ ' : index === position.index ? '▶ ' : ''
-        : '';
-      lines.push(`  n${index}["${mark}${label} · ${formatDurationWithSeconds(phase.seconds)}"]`);
-      if (index > 0) lines.push(`  n${index - 1} --> n${index}`);
+  /**
+   * 方案时间轴 / the plan's timeline.
+   *
+   * 起点是当前时刻，终点是「理想状态下」的预计完成：运行中只排剩余部分，暂停不计入预计 ——
+   * 这张图回答的是"继续跑下去什么时候结束"，不是"暂停了多久"。
+   *
+   * Starts at the present and ends at the ideal finish: a running plan schedules only what is left,
+   * and pauses are excluded. The question is "when will this end if I keep going", not "how long
+   * was I paused".
+   */
+  private countdownFlowSource(plan: CountdownPlan, position: CountdownPosition | null, nowMs: number): string {
+    const showSeconds = this.deps.settings().countdownShowSeconds !== false;
+    const schedule = this.countdownSchedule(plan, position, nowMs);
+    const remainingSeconds = position
+      ? (position.completed ? 0 : Math.max(0, position.total - position.elapsed))
+      : planTotalSeconds(plan);
+    const finishMs = nowMs + remainingSeconds * 1000;
+    const stamp = (ms: number): string => formatLocalFull(new Date(ms)).slice(0, 19);
+    const clock = (ms: number): string => stamp(ms).slice(11, showSeconds ? 19 : 16);
+    const cycles = plan.mode === 'pomodoro' ? Math.max(1, Math.round(plan.phases.length / 2)) : 0;
+    const title = `${t(modeLabelKey(plan.mode))}${cycles > 1 ? ` ×${cycles} 轮` : ''} · ${t('countdownEta').replace('{time}', clock(finishMs))}`;
+    const lines = [
+      'gantt',
+      `    title ${title}`,
+      '    dateFormat YYYY-MM-DD HH:mm:ss',
+      `    axisFormat ${showSeconds ? '%H:%M:%S' : '%H:%M'}`,
+      '    todayMarker off',
+    ];
+    schedule.forEach((item, index) => {
+      //  当前段用 active 态画出，已跑完/未开始都不用再标
+      //  The current phase carries the active state; nothing else needs a mark.
+      const state = position && !position.completed && item.phaseIndex === position.index ? 'active, ' : '';
+      lines.push(`    ${item.label} :${state}t${index}, ${stamp(item.startMs)}, ${Math.max(1, Math.round(item.seconds))}s`);
     });
+    const milestone = position?.completed ? t('countdownCompleted') : t('countdownEtaLabel');
+    lines.push(`    ${milestone} :milestone, m0, ${stamp(finishMs)}, 0s`);
     return lines.join('\n');
   }
 
-  /**
-   * 番茄钟只画一圈 / one pomodoro cycle, not every repeat.
-   *
-   * 八段其实是同一组「专注 + 休息」重复四次；把四次展开成八个节点，高度翻四倍却没有任何新信息。
-   * 这里画一圈，轮数写在子图标题上；当前轮与段用 ▶/✓ 标出。
-   *
-   * Eight phases are the same focus-and-break pair four times over: unrolling them quadruples the
-   * height without adding information. One cycle is drawn, the repeat count sits on the subgraph
-   * title, and ▶/✓ still mark the current round and phase.
-   */
-  private pomodoroFlowSource(plan: CountdownPlan, position: CountdownPosition | null): string {
-    const cycles = Math.max(1, Math.round(plan.phases.length / 2));
-    const running = position !== null && !position.completed;
-    const cycleIndex = running ? Math.floor(position.index / 2) : null;
-    const inCycle = running ? position.index % 2 : null;
-    const labelOf = (phaseIndex: number, slot: number): string => {
-      const phase = plan.phases[phaseIndex];
-      if (!phase) return '';
-      const label = phase.kind === 'segment'
-        ? t('countdownSegmentN').replace('{n}', String(phaseIndex + 1))
+  /** 从「现在」开始的剩余排程 / the remaining schedule starting at the present. */
+  private countdownSchedule(
+    plan: CountdownPlan,
+    position: CountdownPosition | null,
+    nowMs: number,
+  ): Array<{ label: string; phaseIndex: number; startMs: number; seconds: number }> {
+    const out: Array<{ label: string; phaseIndex: number; startMs: number; seconds: number }> = [];
+    const phases = plan.phases;
+    let cursor = nowMs;
+    const push = (index: number, seconds: number): void => {
+      const phase = phases[index];
+      if (!phase || seconds < 1) return;
+      const name = phase.kind === 'segment'
+        ? t('countdownSegmentN').replace('{n}', String(index + 1))
         : t(phaseLabelKey(phase.kind));
-      const mark = inCycle === null ? '' : slot < inCycle ? '✓ ' : slot === inCycle ? '▶ ' : '';
-      return `${mark}${label} · ${formatDurationWithSeconds(phase.seconds)}`;
+      const duration = formatDurationWithSeconds(Math.round(seconds));
+      const label = position && index === position.index && !position.completed
+        ? `${name} · ${t('countdownRemainingLabel').replace('{time}', duration)}`
+        : `${name} · ${duration}`;
+      out.push({ label, phaseIndex: index, startMs: cursor, seconds });
+      cursor += seconds * 1000;
     };
-    const focus = labelOf(0, 0);
-    const rest = labelOf(1, 1);
-    if (cycles <= 1) {
-      return rest
-        ? `flowchart LR\n  n0["${focus}"]\n  n1["${rest}"]\n  n0 --> n1`
-        : `flowchart LR\n  n0["${focus}"]`;
+
+    if (position?.completed) return out;
+    if (!position) {
+      //  空闲预览：番茄钟只排一圈（轮数写在标题上），其余模式排完整方案
+      //  Idle preview: one pomodoro cycle (the count lives in the title), everything else in full.
+      const count = plan.mode === 'pomodoro' ? Math.min(phases.length, 2) : phases.length;
+      for (let index = 0; index < count; index++) push(index, phases[index]!.seconds);
+      return out;
     }
-    const title = `↻ ×${cycles} 轮${cycleIndex === null ? '' : ` · 第 ${cycleIndex + 1} 轮`}`;
-    return [
-      'flowchart LR',
-      `  subgraph cycle["${title}"]`,
-      `    n0["${focus}"] --> n1["${rest}"]`,
-      '  end',
-    ].join('\n');
+    //  运行中：停在「本轮结束」，后面的轮次由标题里的预计完成时刻表达
+    //  Running: stop at the end of this cycle; later cycles are represented by the finish milestone.
+    const end = plan.mode === 'pomodoro'
+      ? Math.min(phases.length, position.index + (2 - (position.index % 2)))
+      : phases.length;
+    for (let index = position.index; index < end; index++) {
+      push(index, index === position.index ? position.remaining : phases[index]!.seconds);
+    }
+    return out;
   }
 
   /** 挂载/更新流程图 / mount the flow chart, then let phase changes update it in place. */
@@ -2137,14 +2177,29 @@ export class ActivitySidebarView extends ItemView {
     }
   }
 
-  /** 段切换时重画流程图 / redraw when the active phase changes. */
-  private syncCountdownFlow(plan: CountdownPlan, position: CountdownPosition | null): void {
+  /**
+   * 段切换或整分钟推进时重画时间轴 / redraw on a phase turn or a whole-minute advance.
+   *
+   * 甘特图的起点是「现在」：运行中每分钟重画一次，跑久了也不会留下一条从旧时刻开始的条。
+   * 暂停与空闲不推进刻度，预计完成时刻因此保持不动。
+   *
+   * The Gantt starts at "now": while running it redraws once a minute so a long run does not keep
+   * a bar anchored to a stale start. Paused and idle keep the tick still, so the estimate stays put.
+   */
+  private syncCountdownFlow(
+    plan: CountdownPlan,
+    position: CountdownPosition | null,
+    nowMs: number,
+    advanceMinute: boolean,
+  ): void {
     const flow = this.countdownFlow;
     if (!flow) return;
     const phase = position && !position.completed ? position.index : null;
-    if (flow.phase === phase) return;
+    const minute = advanceMinute ? Math.floor(nowMs / 60000) : flow.minute;
+    if (flow.phase === phase && flow.minute === minute) return;
     flow.phase = phase;
-    flow.source = this.countdownFlowSource(plan, position);
+    flow.minute = minute;
+    flow.source = this.countdownFlowSource(plan, position, nowMs);
     flow.mounted?.update(flow.source);
   }
 
@@ -3256,6 +3311,12 @@ export class ActivitySidebarView extends ItemView {
    * current phase. The ring is the **phase**, not the whole run: a pomodoro's "how far through
    * everything" is one continuous line that says nothing about which phase you are in.
    */
+  /** 倒计时读数：秒开关只影响显示，记录仍是毫秒 / display only; records keep milliseconds. */
+  private paintCountdownTime(el: HTMLElement, seconds: number): void {
+    if (this.deps.settings().countdownShowSeconds !== false) setClockTime(el, seconds);
+    else setReadTime(el, seconds, 'compact');
+  }
+
   private updateCountdownLive(state: TimerState, nowMs: number): void {
     const countdown = state.countdown;
     const idle = countdown.status === 'idle';
@@ -3264,7 +3325,7 @@ export class ActivitySidebarView extends ItemView {
     if (!plan || plan.phases.length === 0) {
       this.liveNodes.countdownPhase?.setText(t('countdownIdle'));
       this.liveNodes.countdownProgress?.setText('');
-      if (this.liveNodes.countdown) setClockTime(this.liveNodes.countdown, 0);
+      if (this.liveNodes.countdown) this.paintCountdownTime(this.liveNodes.countdown, 0);
       this.liveNodes.countdownRing?.setCssProps({ '--rtt-ring-pct': '0' });
       return;
     }
@@ -3279,7 +3340,7 @@ export class ActivitySidebarView extends ItemView {
     const remaining = position ? position.remaining : total;
     const phaseIndex = position ? position.index : 0;
 
-    if (this.liveNodes.countdown) setClockTime(this.liveNodes.countdown, remaining);
+    if (this.liveNodes.countdown) this.paintCountdownTime(this.liveNodes.countdown, remaining);
 
     if (this.liveNodes.countdownRing) {
       const percent = position && position.phaseSeconds > 0
@@ -3314,8 +3375,8 @@ export class ActivitySidebarView extends ItemView {
       }
     }
 
-    //  段的切换只更新流程图里的 ▶/✓，不重绘整块面板
-    //  A phase turn only updates the flow's ▶/✓ marks, never re-renders the whole panel.
-    this.syncCountdownFlow(plan, position);
+    //  段切换与整分钟推进只更新甘特图，不重绘整块面板
+    //  A phase turn or a minute tick only updates the Gantt, never re-renders the whole panel.
+    this.syncCountdownFlow(plan, position, nowMs, countdown.status === 'running');
   }
 }

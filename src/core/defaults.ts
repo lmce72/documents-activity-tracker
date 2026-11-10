@@ -79,4 +79,7 @@ export const DEFAULT_SETTINGS: PluginSettings = {
   //  收尾备注默认不问：跑完直接保存，想要备注的人自己打开
   //  No note prompt by default: the run saves itself, and whoever wants a note turns it on
   countdownPromptNote: false,
+  //  秒表默认显示秒；关掉后读数与方案时间轴只到分钟
+  //  Seconds are on by default; off keeps the readout and plan axis at whole minutes
+  countdownShowSeconds: true,
 };

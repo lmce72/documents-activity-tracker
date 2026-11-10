@@ -216,6 +216,14 @@ export interface PluginSettings {
   countdownPromptNote: boolean;
 
   /**
+   * 倒计时秒表是否显示秒 / whether the countdown readout shows seconds.
+   *
+   * 只影响读数与方案时间轴，不影响记录；关闭后按分钟读数。
+   * Affects the readout and the plan's time axis only, never the record; off shows whole minutes.
+   */
+  countdownShowSeconds: boolean;
+
+  /**
    * 记录别名 / display aliases for records.
    *
    * 键是记录的身份（文件路径或 view: 视图键），值只用于显示。改名是给自己看的备注，不改变指向：
