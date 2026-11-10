@@ -53,6 +53,12 @@ export interface AccountPolicy {
 }
 
 /** 一天的输入 / everything one window needs. */
+/** 一条正在进行的会话 / one running session. */
+export interface LiveTail {
+  filePath: string;
+  state: SessionState;
+}
+
 export interface AccountInput {
   /**
    * 事件流；只在没有预建 records 时才需要。
@@ -72,7 +78,7 @@ export interface AccountInput {
    * The running session, so its last stretch reaches "now": the event stream stops at the last
    * event, and without this the minute being read would only appear at the next event.
    */
-  live?: { filePath: string; state: SessionState } | null;
+  live?: LiveTail | readonly LiveTail[] | null;
   /**
    * 已推导好的 records / prebuilt records.
    *
@@ -206,27 +212,30 @@ function collectIntervals(input: AccountInput): OverviewInterval[] {
     ...countdownIntervals(input.countdown),
   ];
 
-  //  正在跑的那一轮：区间到最后一个事件为止，剩下这段单独补上
-  //  The running session: its interval stops at the last event, so the remainder is appended here.
-  const live = input.live;
-  if (live) {
+  //  正在跑的会话：每条区间都到最后一个事件为止，剩下这段逐条补上。
+  //  并行模式下不止一条，只看「当前焦点」会漏掉其它正在计时的轨迹。
+  //  Running sessions: each interval stops at its last event, so the remainder is appended per
+  //  session. Parallel mode can have several; looking only at the focused one drops the others.
+  const lives = input.live
+    ? (Array.isArray(input.live) ? input.live : [input.live])
+    : [];
+  for (const live of lives) {
     const record = records[live.filePath];
     const lastMap = record?.readTimeLine[record.readTimeLine.length - 1];
     const lastKey = lastMap ? Object.keys(lastMap).sort().pop() : undefined;
     const startAbs = lastKey ? toAbsoluteMinutes(lastKey) : null;
     const endAbs = toAbsoluteMinutes(formatLocalFull(new Date(input.nowMs)));
-    if (startAbs !== null && endAbs !== null && endAbs > startAbs) {
-      const channel: OverviewChannel = live.state === 'tracking' ? 'focus'
-        : live.state === 'inactive' ? 'away'
-          : live.state === 'idle' ? 'idle'
-            : 'paused';
-      out.push({
-        startAbs,
-        endAbs,
-        source: isPluginViewKey(live.filePath) ? 'view' : 'document',
-        channel,
-      });
-    }
+    if (startAbs === null || endAbs === null || endAbs <= startAbs) continue;
+    const channel: OverviewChannel = live.state === 'tracking' ? 'focus'
+      : live.state === 'inactive' ? 'away'
+        : live.state === 'idle' ? 'idle'
+          : 'paused';
+    out.push({
+      startAbs,
+      endAbs,
+      source: isPluginViewKey(live.filePath) ? 'view' : 'document',
+      channel,
+    });
   }
 
   return out;

@@ -493,9 +493,10 @@ export class StatusBarMetrics {
     //  Today's three figures come from one account. "Today's total" used to mean "focus (+away)"
     //  here and "focus + away + paused" on the panel — one label, two numbers.
     if (needed.has('todayTotal') || needed.has('todayRead') || needed.has('idleToday')) {
-      const path = state.activeFilePath;
-      const file = path ? state.files.get(path) : undefined;
       const policy = attributionPolicy(settings);
+      const lives = [...state.files]
+        .filter(([, file]) => file.status !== 'idle')
+        .map(([filePath, file]) => ({ filePath, state: selectLiveSessionState(state, file) }));
       const records = this.recordsCache.get(this.deps.history.getRevision(), () =>
         buildFileRecords(this.deps.history.getEvents(), this.deps.clock.now(), today, {}),
       );
@@ -507,9 +508,7 @@ export class StatusBarMetrics {
         day: today,
         nowMs: this.deps.clock.now(),
         policy: { ...policy, pluginViews: countsPluginViewsAsReading(settings) },
-        live: path && file && file.status !== 'idle'
-          ? { filePath: path, state: selectLiveSessionState(state, file) }
-          : null,
+        live: lives,
       });
 
       values['todayTotal'] = { seconds: account.total };
@@ -539,9 +538,10 @@ export class StatusBarMetrics {
 
     const wantsOverview = [...needed].some((id) => OVERVIEW_METRICS.has(id));
     if (wantsOverview) {
-      const path = state.activeFilePath;
-      const file = path ? state.files.get(path) : undefined;
       const policy = attributionPolicy(settings);
+      const lives = [...state.files]
+        .filter(([, file]) => file.status !== 'idle')
+        .map(([filePath, file]) => ({ filePath, state: selectLiveSessionState(state, file) }));
       const account = dayAccount({
         events: this.deps.history.getEvents(),
         manual: this.deps.history.getManualSessions(),
@@ -549,9 +549,7 @@ export class StatusBarMetrics {
         day: today,
         nowMs: this.deps.clock.now(),
         policy: { ...policy, pluginViews: countsPluginViewsAsReading(settings) },
-        live: path && file && file.status !== 'idle'
-          ? { filePath: path, state: selectLiveSessionState(state, file) }
-          : null,
+        live: lives,
       });
 
       values['union'] = { seconds: account.union };

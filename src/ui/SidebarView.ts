@@ -1023,9 +1023,12 @@ export class ActivitySidebarView extends ItemView {
   private accountInput(day: string): AccountInput {
     const state = this.deps.store.getState();
     const settings = this.deps.settings();
-    const filePath = state.activeFilePath;
-    const file = filePath ? state.files.get(filePath) : undefined;
     const policy = attributionPolicy(settings);
+    //  所有进行中的会话都作为活尾巴传进去，而不是只有当前焦点那一条
+    //  Every running session is passed as a live tail, not only the focused one.
+    const lives = [...state.files]
+      .filter(([, file]) => file.status !== STATUS.IDLE)
+      .map(([path, file]) => ({ filePath: path, state: selectLiveSessionState(state, file) }));
 
     const nowMs = this.deps.clock.now();
 
@@ -1042,9 +1045,7 @@ export class ActivitySidebarView extends ItemView {
       day,
       nowMs,
       policy: { ...policy, pluginViews: countsPluginViewsAsReading(settings) },
-      live: filePath && file && file.status !== STATUS.IDLE
-        ? { filePath, state: selectLiveSessionState(state, file) }
-        : null,
+      live: lives,
       records,
     };
   }

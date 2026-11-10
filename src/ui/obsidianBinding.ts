@@ -11,7 +11,7 @@
 
 import { Platform, MarkdownView, type App, type EventRef, type Plugin } from 'obsidian';
 
-import { NON_READING_VIEW_TYPES, pluginViewKey, resolveActiveTarget } from '../core/activePath';
+import { NON_READING_VIEW_TYPES, pluginViewKey } from '../core/activePath';
 
 import { MobileActivity, type MobileActivitySignal } from '../core/mobileActivity';
 
@@ -77,51 +77,21 @@ export function installBindings(deps: BindingDeps): Binding {
   let destroyed = false;
 
   /**
-   * the active markdown file, or null when nothing is being read.
+   * 面向过程：焦点在哪就记哪 / process-oriented: record whatever holds focus.
    *
-   * `getActiveViewOfType(MarkdownView)` answers "is the *focused leaf* a markdown view", so
-   * it returns null whenever focus sits anywhere else. Two opposite mistakes come from
-   * treating that null naively:
-   *
-   *   - Falling back to `getActiveFile()` unconditionally keeps the timer running on the
-   *     last note while the user is actually reading a *plugin view* — an RSS reader, a
-   *     translator pane. Measured: those panes were credited to the previously focused note.
-   *   - Not falling back at all unbinds the file the moment the user clicks our own sidebar,
-   *     which is exactly when they are trying to start the timer.
-   *
-   * So the fallback is scoped to our own views: focus anywhere else that is not a markdown
-   * view means nothing is being read, and the session ends.
+   * 不再“记住上一段内容目标”来兜底：操作追踪面板本身时，焦点就是那个视图，计入追踪面板
+   * （它也是一个插件视图）；聚焦文件浏览器、搜索等非阅读界面时才没有目标。
+   * No "remember the previous content target" fallback: operating the tracker panel is itself a
+   * focused plugin view and is recorded as such; non-reading chrome (file explorer, search) still
+   * resolves to nothing.
    */
-  //  上一次真正的内容目标 / the last real content target.
-  //
-  // 操作追踪侧栏本身时，焦点落在自己的视图上；这时要继续计时刚才那个文档或插件视图，而不是
-  // 解绑。`getMostRecentLeaf()` 往往返回的也是侧栏自己，靠它兜底并不可靠，所以记住上一次
-  // 成功解析出的内容目标。
-  // Operating the tracker sidebar focuses our own view; timing must continue on the content target
-  // that was in use, not unbind. `getMostRecentLeaf()` often returns the sidebar itself, which is
-  // why the last successfully resolved content target is remembered instead.
-  let lastContentTarget: string | null = null;
-
   const getActivePath = (): string | null => {
     const focused = app.workspace.activeLeaf?.view;
-    const focusedType = focused?.getViewType() ?? null;
-    if (focusedType && ownViewTypes.has(focusedType)) {
-      if (lastContentTarget) return lastContentTarget;
-      const fallback = getSplitTargets()[0] ?? null;
-      lastContentTarget = fallback;
-      return fallback;
-    }
-
-    const recent = app.workspace.getMostRecentLeaf()?.view;
-    const target = resolveActiveTarget({
-      markdownPath: focused instanceof MarkdownView ? focused.file?.path ?? null : null,
-      focusedViewType: focusedType,
-      ownViewTypes: [...ownViewTypes],
-      recentViewType: recent?.getViewType() ?? null,
-      recentMarkdownPath: recent instanceof MarkdownView ? recent.file?.path ?? null : null,
-    });
-    if (target !== null) lastContentTarget = target;
-    return target;
+    if (!focused) return null;
+    if (focused instanceof MarkdownView) return focused.file?.path ?? null;
+    const type = focused.getViewType();
+    if (!type || NON_READING_VIEW_TYPES.includes(type)) return null;
+    return pluginViewKey(type);
   };
 
   const targetOfLeaf = (leaf: import('obsidian').WorkspaceLeaf | null): string | null => {
@@ -143,10 +113,8 @@ export function installBindings(deps: BindingDeps): Binding {
   };
 
   const getActiveTitle = (): string | null => {
-    const focused = app.workspace.activeLeaf?.view;
-    const view = focused && ownViewTypes.has(focused.getViewType())
-      ? app.workspace.getMostRecentLeaf()?.view : focused;
-    return view?.getDisplayText().trim() || null;
+    //  目标就是焦点视图，标题也取它自己的 / the target is the focused view, so is its title
+    return app.workspace.activeLeaf?.view?.getDisplayText().trim() || null;
   };
 
   const getOpenPaths = (): string[] => {
@@ -159,7 +127,9 @@ export function installBindings(deps: BindingDeps): Binding {
       //  A plugin view has no file, but its leaf is the evidence that the target is still open. With
       //  parallel tracking every open readable view counts, not only the active one.
       const type = view.getViewType();
-      if (!type || ownViewTypes.has(type) || NON_READING_VIEW_TYPES.includes(type)) return;
+      //  追踪面板自己也是插件视图，过程模式会把它当作目标；它同样要算「还开着」
+      //  The tracker panel is a plugin view too and process mode may target it, so it counts as open.
+      if (!type || NON_READING_VIEW_TYPES.includes(type)) return;
       paths.push(pluginViewKey(type));
     });
     return paths;
