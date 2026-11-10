@@ -987,6 +987,10 @@ export class ActivitySidebarView extends ItemView {
     //  Top: the numbers for now (grid + current session); bottom: the day's shape and ranking
     this.renderDocumentStats(left, records, settings);
     this.renderCurrentSession(left, filePath, records);
+    //  文档账本里同样可能有多个并行目标：当前这张卡之外，其余会话逐行列出来
+    //  The document ledger can run several targets too: every session besides the current card is
+    //  listed as its own row.
+    this.renderActiveTasks(left, true, filePath);
     this.renderAwaySection(left);
     this.renderDocumentHeatmap(right, records);
     this.renderTodayList(right, records);
@@ -2431,7 +2435,7 @@ export class ActivitySidebarView extends ItemView {
    * readout, that ledger's own controls, and a jump-to-panel button. Several document targets simply
    * produce several rows.
    */
-  private renderActiveTasks(root: HTMLElement): void {
+  private renderActiveTasks(root: HTMLElement, documentLedgerOnly = false, excludePath: string | null = null): void {
     const state = this.deps.store.getState();
     const settings = this.deps.settings();
     const displayMode = settings.timeDisplayMode;
@@ -2451,6 +2455,7 @@ export class ActivitySidebarView extends ItemView {
     const tasks: Task[] = [];
 
     for (const [path, file] of state.files) {
+      if (excludePath === path) continue;
       if (file.status !== STATUS.TRACKING && file.status !== STATUS.PAUSED) continue;
       const isView = isPluginViewKey(path);
       const paused = file.status === STATUS.PAUSED;
@@ -2478,7 +2483,7 @@ export class ActivitySidebarView extends ItemView {
       });
     }
 
-    if (state.manual.status !== 'idle') {
+    if (!documentLedgerOnly && state.manual.status !== 'idle') {
       const paused = state.manual.status === 'paused';
       tasks.push({
         id: 'manual',
@@ -2513,7 +2518,7 @@ export class ActivitySidebarView extends ItemView {
     }
 
     const countdown = state.countdown;
-    if (countdown.status !== 'idle' && countdown.plan) {
+    if (!documentLedgerOnly && countdown.status !== 'idle' && countdown.plan) {
       const paused = countdown.status === 'paused';
       const position = locatePhase(countdown.plan, selectCountdownElapsedSeconds(state, now) + (countdown.skippedSeconds ?? 0));
       tasks.push({
@@ -2550,7 +2555,7 @@ export class ActivitySidebarView extends ItemView {
 
     if (tasks.length === 0) return;
 
-    const heading = renderSectionHeading(root, 'activity', t('activeTasks'));
+    const heading = renderSectionHeading(root, 'activity', documentLedgerOnly ? t('parallelSessions') : t('activeTasks'));
     const tools = root.createDiv({ cls: 'rtt-live-all-actions' });
     this.iconButton(tools, 'pause', t('pauseAll'), () => {
       void this.deps.service.pauseAll().then(() => this.render());
