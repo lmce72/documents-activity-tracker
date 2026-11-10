@@ -92,16 +92,36 @@ export function installBindings(deps: BindingDeps): Binding {
    * So the fallback is scoped to our own views: focus anywhere else that is not a markdown
    * view means nothing is being read, and the session ends.
    */
+  //  上一次真正的内容目标 / the last real content target.
+  //
+  // 操作追踪侧栏本身时，焦点落在自己的视图上；这时要继续计时刚才那个文档或插件视图，而不是
+  // 解绑。`getMostRecentLeaf()` 往往返回的也是侧栏自己，靠它兜底并不可靠，所以记住上一次
+  // 成功解析出的内容目标。
+  // Operating the tracker sidebar focuses our own view; timing must continue on the content target
+  // that was in use, not unbind. `getMostRecentLeaf()` often returns the sidebar itself, which is
+  // why the last successfully resolved content target is remembered instead.
+  let lastContentTarget: string | null = null;
+
   const getActivePath = (): string | null => {
     const focused = app.workspace.activeLeaf?.view;
+    const focusedType = focused?.getViewType() ?? null;
+    if (focusedType && ownViewTypes.has(focusedType)) {
+      if (lastContentTarget) return lastContentTarget;
+      const fallback = getSplitTargets()[0] ?? null;
+      lastContentTarget = fallback;
+      return fallback;
+    }
+
     const recent = app.workspace.getMostRecentLeaf()?.view;
-    return resolveActiveTarget({
+    const target = resolveActiveTarget({
       markdownPath: focused instanceof MarkdownView ? focused.file?.path ?? null : null,
-      focusedViewType: focused?.getViewType() ?? null,
+      focusedViewType: focusedType,
       ownViewTypes: [...ownViewTypes],
       recentViewType: recent?.getViewType() ?? null,
       recentMarkdownPath: recent instanceof MarkdownView ? recent.file?.path ?? null : null,
     });
+    if (target !== null) lastContentTarget = target;
+    return target;
   };
 
   const targetOfLeaf = (leaf: import('obsidian').WorkspaceLeaf | null): string | null => {
