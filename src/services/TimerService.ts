@@ -823,6 +823,43 @@ export class TimerService {
       await this.onActivePathChange();
       if (!this.isCurrentLifecycle(revision)) return;
 
+      //  并行模式启动：工作区里已经打开的每个可读目标都要有会话。只启动"当前焦点"那一个，
+      //  会造成「整机重启时记录了两个、只重载插件时只记录一个」的不一致。
+      //  Parallel startup starts a session for every readable target already open. Starting only the
+      //  focused one made a full app restart record two targets while a plugin-only reload recorded one.
+      if (this.parallelTracking()) {
+        const state = this.deps.store.getState();
+        const activeBefore = state.activeFilePath;
+        const resolved = this.deps.getActivePath();
+        const open = new Set(this.deps.getOpenPaths());
+        if (resolved && isTrackableTarget(resolved, settings)) open.add(resolved);
+        if (fallbackPath && isTrackableTarget(fallbackPath, settings)) open.add(fallbackPath);
+        let started = false;
+        for (const path of open) {
+          if (!isTrackableTarget(path, settings)) continue;
+          const file = this.deps.store.getState().files.get(path);
+          if (file?.status === STATUS.TRACKING) continue;
+          if (!this.shouldAutoStart(path, settings)) continue;
+          if (file?.status === STATUS.PAUSED) {
+            await this.togglePausePath(path);
+            started = true;
+            continue;
+          }
+          this.deps.store.dispatch({
+            type: ActionTypes.SWITCH_FILE,
+            payload: { fromPath: null, toPath: path, autoStart: true, parallel: true },
+          });
+          started = true;
+        }
+        if (started) {
+          //  SWITCH_FILE 会把焦点移到最后一个目标，启动完再放回真正的前台目标
+          //  SWITCH_FILE moves the spotlight to each target; put it back on the real one afterwards.
+          this.deps.store.dispatch({ type: ActionTypes.FOCUS_FILE, payload: { filePath: activeBefore ?? resolved } });
+          await this.flushPendingWrites();
+        }
+        return;
+      }
+
       const state = this.deps.store.getState();
       const resolved = this.deps.getActivePath();
       const target = resolved && isTrackableTarget(resolved, settings)

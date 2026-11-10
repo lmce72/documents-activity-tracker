@@ -674,6 +674,19 @@ describe('TimerService — 并行记录 / parallel tracking', () => {
       event.type === 'start' && (event.time === '2026-09-15 10:00:00' || event.parallel === true))).toBe(true);
   });
 
+  it('并行启动为所有已打开目标建立会话', async () => {
+    const ctx = setup({ parallelTracking: true, autoStartMode: 'always', minReadSeconds: 0, idleTimeoutEnabled: false });
+    ctx.setActive(FILE);
+    ctx.setOpen([FILE, OTHER]);
+    await ctx.service.autoStartStartup(FILE);
+
+    const state = ctx.store.getState();
+    expect(state.files.get(FILE)?.status).toBe(STATUS.TRACKING);
+    expect(state.files.get(OTHER)?.status).toBe(STATUS.TRACKING);
+    //  前台目标仍是 FILE，而不是最后一个被启动的 OTHER
+    expect(state.activeFilePath).toBe(FILE);
+  });
+
   it('全部保存把两个目标各自落盘', async () => {
     const ctx = setup({ parallelTracking: true, autoStartMode: 'always', minReadSeconds: 0, idleTimeoutEnabled: false });
     await ctx.open(FILE);
