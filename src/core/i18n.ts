@@ -87,12 +87,12 @@ export const I18N = {
     now: '现在',
 
     sidebarTitle: '活动追踪',
-    panelDocument: '文档追踪',
+    panelDocument: '追踪计时',
     panelManual: '手动计时',
     openSidebar: '打开活动追踪侧栏',
     tabUnfocused: '脱离窗口',
     tabInWindow: '窗口内',
-    trackerOff: '文档追踪已关闭',
+    trackerOff: '追踪计时已关闭',
     trackerOffDesc: '在设置中开启后才会记录阅读时长。',
     noOpenFile: '当前没有正在追踪的文档',
     btnStart: '开始计时',
@@ -123,11 +123,11 @@ export const I18N = {
     nextDay: '后一天',
     todayLabel: '今天',
     noteLabel: '内容',
-    settingDocumentTracking: '文档追踪',
-    settingDocumentTrackingDesc: '按文档记录阅读时长。关闭后隐藏文档面板并停止计时。',
+    settingDocumentTracking: '追踪计时',
+    settingDocumentTrackingDesc: '按文档与插件视图记录阅读时长。关闭后隐藏追踪面板并停止计时。',
     settingManualTimer: '手动计时',
     settingManualTimerDesc:
-      '独立于文档追踪的秒表：开始、停止，并写下这段时间做了什么。',
+      '独立于追踪计时的秒表：开始、停止，并写下这段时间做了什么。',
 
     todayTotalDisplay: '今日总计显示模式',
     todayTotalDisplayDesc:
@@ -442,7 +442,7 @@ export const I18N = {
     singleThreadTracking: '单线程计时模式',
     singleThreadTrackingDesc: '只跟随当前获得焦点的文档或视图：切走时上一段结束，切回来再开新的一轮。关闭时多个目标并行计时。仅桌面端生效。',
     timingMode: '计时模式',
-    timingModeDesc: '过程模式：只计时当前获得焦点的视图，切换时结束上一段；并行：左侧栏、右侧栏与主区域各自跟随活动标签，可同时计时。仅桌面端生效。',
+    timingModeDesc: '只影响追踪计时（文档与插件视图），手动计时与倒计时不受影响。过程模式：只计时当前获得焦点的视图，切换时结束上一段；并行：左侧栏、右侧栏与主区域各自跟随活动标签，可同时计时。仅桌面端生效。',
     timingModeParallel: '并行：各分屏活动标签',
     timingModeSingle: '过程模式：仅当前焦点',
     activeTasks: '正在进行',
@@ -848,7 +848,7 @@ export const I18N = {
     singleThreadTracking: 'Single-thread timing',
     singleThreadTrackingDesc: 'Only the focused document or view is timed: switching away ends the previous round and coming back starts a new one. Off runs several targets in parallel. Desktop only.',
     timingMode: 'Timing mode',
-    timingModeDesc: 'Process: only the focused view is timed and switching ends the previous round. Parallel: the left dock, right dock and main area each follow their active tab and may run together. Desktop only.',
+    timingModeDesc: 'Applies to the tracking timer only (documents and plugin views); the manual timer and countdown are unaffected. Process: only the focused view is timed and switching ends the previous round. Parallel: the left dock, right dock and main area each follow their active tab and may run together. Desktop only.',
     timingModeParallel: 'Parallel: each split’s active tab',
     timingModeSingle: 'Process: focused target only',
     activeTasks: 'Running now',
@@ -873,12 +873,12 @@ export const I18N = {
 
     //  New in this refactor: sidebar, manual timer, feature toggles
     sidebarTitle: 'Activity tracker',
-    panelDocument: 'Document tracking',
+    panelDocument: 'Tracking timer',
     panelManual: 'Manual timer',
     openSidebar: 'Open activity tracker sidebar',
     tabUnfocused: 'Out of window',
     tabInWindow: 'In window',
-    trackerOff: 'Document tracking is off',
+    trackerOff: 'Tracking timer is off',
     trackerOffDesc: 'Enable it in settings to start recording reading time.',
     noOpenFile: 'No document is being tracked',
     btnStart: 'Start tracking',
@@ -909,12 +909,12 @@ export const I18N = {
     nextDay: 'Next day',
     todayLabel: 'Today',
     noteLabel: 'Note',
-    settingDocumentTracking: 'Document tracking',
+    settingDocumentTracking: 'Tracking timer',
     settingDocumentTrackingDesc:
       'Track reading time per document. Turning this off hides the document panel and stops the timer.',
     settingManualTimer: 'Manual timer',
     settingManualTimerDesc:
-      'An independent stopwatch: start it, stop it, and write down what you did. Unaffected by document tracking.',
+      'An independent stopwatch: start it, stop it, and write down what you did. Unaffected by the tracking timer.',
   },
 } as const;
 
