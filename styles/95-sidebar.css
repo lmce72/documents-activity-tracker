@@ -1622,7 +1622,18 @@ button.rtt-cal-today.is-disabled {
 }
 
 .rtt-live-actions .rtt-icon-btn { width: 22px; height: 22px; }
-.rtt-live-card .rtt-live-body { padding-right: calc(3 * 22px + var(--size-4-1)); }
+.rtt-live-card .rtt-live-body { padding-right: calc(var(--rtt-live-action-count, 3) * 22px + var(--size-4-1)); }
+
+/* 类型图标：小、彩色，只做识别；名称与读数仍按卡片版式
+   The type mark stays small and coloured; the name and readout follow the card layout. */
+.rtt-live-kind-icon { display: inline-flex; align-items: center; margin-right: 4px; color: var(--text-muted); }
+.rtt-live-kind-icon svg { width: 12px; height: 12px; }
+.rtt-live-kind-icon.is-document { color: var(--interactive-accent); }
+.rtt-live-kind-icon.is-view { color: var(--color-blue); }
+.rtt-live-kind-icon.is-manual { color: var(--color-green); }
+.rtt-live-kind-icon.is-countdown { color: var(--color-orange); }
+span.rtt-live-deduct-value { color: var(--color-orange); font-variant-numeric: tabular-nums; }
+span.rtt-live-deduct-value.is-empty { display: none; }
 
 /* Empty cards stack their icon and text without overlap / 空卡片纵向排列，避免窄栏重叠。 */
 .rtt-live-card.is-empty {

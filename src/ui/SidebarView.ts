@@ -342,7 +342,13 @@ export class ActivitySidebarView extends ItemView {
   private liveNodes: LiveNodes = {};
 
   /** 总看板运行中列表中每秒刷新的读数 / per-task readouts refreshed every second */
-  private readonly liveTaskTimes = new Map<string, { element: HTMLElement; kind: LiveTaskKind; key: string }>();
+  private readonly liveTaskTimes = new Map<string, {
+    element: HTMLElement;
+    kind: LiveTaskKind;
+    key: string;
+    pie?: (seconds: number) => void;
+    deduction?: HTMLElement;
+  }>();
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -2444,12 +2450,18 @@ export class ActivitySidebarView extends ItemView {
       id: string;
       kind: LiveTaskKind;
       icon: string;
-      kindLabel: string;
       name: string;
-      meta: string;
+      /** 第二行里跟在名字后的内容（轮次 / 开始时刻 / 段进度） */
+      suffix?: string;
+      /** 未计入读数的秒数，显示为橙色扣减 / seconds outside reading, drawn as an orange deduction */
+      deductionSeconds?: number;
+      /** 第三行：标签 + 时长 / third line: label plus a duration */
+      detailLabel?: string;
+      detailSeconds?: number;
       seconds: number;
       key: string;
       jump: Panel;
+      status: 'running' | 'paused';
       controls: (bar: HTMLElement) => void;
     }
     const tasks: Task[] = [];
@@ -2463,12 +2475,18 @@ export class ActivitySidebarView extends ItemView {
         id: 'doc:' + path,
         kind: isView ? 'view' : 'document',
         icon: isView ? 'app-window' : 'file-text',
-        kindLabel: t(isView ? 'ovKindView' : 'ovKindDocument'),
         name: recordName(settings, path, isView ? pluginViewLabel(path) : path.split('/').pop() ?? path),
-        meta: t('statusRound').replace('{n}', String(getTodaySessionCount(this.cachedEvents(), path))),
+        suffix: t('statusRound').replace('{n}', String(getTodaySessionCount(this.cachedEvents(), path))),
+        deductionSeconds: Math.max(0, liveWallClockSeconds(file, now) - file.activeSeconds),
+        detailLabel: t('statusFileToday'),
+        detailSeconds: getTodaySeconds(
+          this.cachedEvents(), file, path, undefined,
+          countsUnfocusedAsReading(settings), countsPluginViewsAsReading(settings),
+        ),
         seconds: file.activeSeconds,
         key: path,
         jump: 'document',
+        status: paused ? 'paused' : 'running',
         controls: bar => {
           this.iconButton(bar, paused ? 'play' : 'pause', paused ? t('btnResume') : t('btnPause'), () => {
             void this.deps.service.togglePausePath(path).then(() => this.render());
@@ -2489,12 +2507,12 @@ export class ActivitySidebarView extends ItemView {
         id: 'manual',
         kind: 'manual',
         icon: 'timer',
-        kindLabel: t('panelManual'),
-        name: t('panelManual'),
-        meta: t(paused ? 'manualPaused' : 'manualRunning'),
+        name: t(paused ? 'manualPaused' : 'manualRunning'),
+        suffix: `${t('evStart')} ${state.manual.startedAt.slice(11, 16)}`,
         seconds: selectManualElapsedSeconds(state, now),
         key: '',
         jump: 'manual',
+        status: paused ? 'paused' : 'running',
         controls: bar => {
           this.iconButton(bar, paused ? 'play' : 'pause', paused ? t('manualResume') : t('manualPause'), () => {
             if (paused) this.deps.manual.resume(); else this.deps.manual.pause();
@@ -2525,12 +2543,14 @@ export class ActivitySidebarView extends ItemView {
         id: 'countdown',
         kind: 'countdown',
         icon: 'hourglass',
-        kindLabel: t('panelCountdown'),
         name: t(modeLabelKey(countdown.plan.mode)),
-        meta: paused ? t('manualPaused') : t('manualRunning'),
+        suffix: t('countdownPhaseProgress').replace('{n}', String(position.index + 1)).replace('{total}', String(countdown.plan.phases.length)),
+        detailLabel: t('countdownPlanTitle'),
+        detailSeconds: planTotalSeconds(countdown.plan),
         seconds: position.remaining,
         key: '',
         jump: 'countdown',
+        status: paused ? 'paused' : 'running',
         controls: bar => {
           this.iconButton(bar, paused ? 'play' : 'pause', paused ? t('manualResume') : t('manualPause'), () => {
             if (paused) this.deps.countdown.resume(); else this.deps.countdown.pause();
@@ -2568,18 +2588,51 @@ export class ActivitySidebarView extends ItemView {
 
     const list = root.createDiv({ cls: 'rtt-live-tasks' });
     for (const task of tasks) {
-      const item = list.createDiv({ cls: 'rtt-live-task' });
-      const icon = item.createDiv({ cls: `rtt-live-task-icon is-${task.kind}` });
-      setIcon(icon, task.icon);
-      const body = item.createDiv({ cls: 'rtt-live-task-body' });
-      const head = body.createDiv({ cls: 'rtt-live-task-head' });
-      const time = head.createDiv({ cls: 'rtt-live-task-time' });
+      //  与文档计时卡同一套版式：状态圆钮、大字读数、名字行、明细行、右上角按钮组
+      //  Same card as document timing: status circle, big readout, name line, detail line, controls.
+      const item = list.createDiv({ cls: 'rtt-live-card' });
+      //  文档 3 个动作 + 跳转；手动/倒计时 4 个动作 + 跳转
+      //  Document has three actions plus jump; manual and countdown have four plus jump.
+      item.setCssProps({ '--rtt-live-action-count': task.kind === 'document' || task.kind === 'view' ? '4' : '5' });
+      const badge = item.createDiv({ cls: `rtt-live-icon is-${task.status}` });
+      let pie: ((seconds: number) => void) | undefined;
+      if (task.status === 'running') {
+        const secondPie = createSecondPie(badge);
+        pie = seconds => secondPie.setElapsed(seconds);
+      } else {
+        setIcon(badge, 'pause');
+      }
+
+      const body = item.createDiv({ cls: 'rtt-live-body' });
+      const time = body.createDiv({ cls: 'rtt-live-time' });
       setReadTime(time, task.seconds, displayMode);
-      this.liveTaskTimes.set(task.id, { element: time, kind: task.kind, key: task.key });
-      head.createSpan({ cls: 'rtt-live-task-kind', text: task.kindLabel });
-      body.createDiv({ cls: 'rtt-live-task-name', text: task.name });
-      body.createDiv({ cls: 'rtt-live-task-meta', text: task.meta });
-      const actions = item.createDiv({ cls: 'rtt-live-task-actions' });
+
+      const line2 = body.createDiv({ cls: 'rtt-live-line is-one-line' });
+      const kindIcon = line2.createSpan({ cls: `rtt-live-kind-icon is-${task.kind}` });
+      setIcon(kindIcon, task.icon);
+      const name = line2.createSpan({ cls: 'rtt-live-name' });
+      name.createSpan({ cls: 'rtt-live-name-track', text: task.name });
+      if (task.suffix) {
+        line2.createSpan({ cls: 'rtt-live-sep', text: ' · ' });
+        line2.createSpan({ cls: 'rtt-live-round', text: task.suffix });
+      }
+      let deduction: HTMLElement | undefined;
+      if (task.deductionSeconds !== undefined && task.deductionSeconds > 0) {
+        line2.createSpan({ cls: 'rtt-live-sep', text: ' · ' });
+        deduction = line2.createSpan({ cls: 'rtt-live-deduct-value' });
+        const away = Math.floor(task.deductionSeconds);
+        deduction.setText(`-${Math.floor(away / 60)}分${away % 60}秒`);
+      }
+
+      if (task.detailLabel) {
+        const line3 = body.createDiv({ cls: 'rtt-live-line' });
+        line3.createSpan({ cls: 'rtt-live-label', text: `${task.detailLabel} ` });
+        appendDurationParts(line3.createSpan({ cls: 'rtt-dur' }), formatReadTimeParts(task.detailSeconds ?? 0, displayMode));
+      }
+
+      this.liveTaskTimes.set(task.id, { element: time, kind: task.kind, key: task.key, pie, deduction });
+
+      const actions = item.createDiv({ cls: 'rtt-live-actions' });
       task.controls(actions);
       this.iconButton(actions, 'arrow-right', t('jumpToPanel'), () => this.setPanel(task.jump), { ghost: true });
     }
@@ -3519,16 +3572,26 @@ export class ActivitySidebarView extends ItemView {
       if (this.liveTaskTimes.size > 0) {
         const now = this.deps.clock.now();
         for (const entry of this.liveTaskTimes.values()) {
+          let seconds: number;
           if (entry.kind === 'manual') {
-            setReadTime(entry.element, selectManualElapsedSeconds(state, now), mode);
+            seconds = selectManualElapsedSeconds(state, now);
           } else if (entry.kind === 'countdown') {
             const plan = state.countdown.plan;
             const position = plan
               ? locatePhase(plan, selectCountdownElapsedSeconds(state, now) + (state.countdown.skippedSeconds ?? 0))
               : null;
-            setReadTime(entry.element, position?.remaining ?? 0, mode);
+            seconds = position?.remaining ?? 0;
           } else {
-            setReadTime(entry.element, state.files.get(entry.key)?.activeSeconds ?? 0, mode);
+            seconds = state.files.get(entry.key)?.activeSeconds ?? 0;
+          }
+          setReadTime(entry.element, seconds, mode);
+          entry.pie?.(seconds);
+          if (entry.deduction) {
+            const file = entry.key ? state.files.get(entry.key) : undefined;
+            const away = file ? Math.max(0, liveWallClockSeconds(file, now) - file.activeSeconds) : 0;
+            const whole = Math.floor(away);
+            entry.deduction.setText(away > 0 ? `-${Math.floor(whole / 60)}分${whole % 60}秒` : '');
+            entry.deduction.toggleClass('is-empty', away <= 0);
           }
         }
       }
