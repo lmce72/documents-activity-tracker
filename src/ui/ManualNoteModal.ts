@@ -18,13 +18,14 @@ export class ManualNoteModal extends Modal {
   constructor(
     app: App,
     private readonly onDone: (note: string | null) => void,
+    private readonly options: { title?: string; description?: string } = {},
   ) {
     super(app);
   }
 
   override onOpen(): void {
-    this.titleEl.setText(t('manualStopTitle'));
-    this.contentEl.createEl('p', { text: t('manualStopDesc') });
+    this.titleEl.setText(this.options.title ?? t('manualStopTitle'));
+    this.contentEl.createEl('p', { text: this.options.description ?? t('manualStopDesc') });
 
     const input = this.contentEl.createEl('textarea', {
       cls: 'rtt-manual-note-input',

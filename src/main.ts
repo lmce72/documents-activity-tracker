@@ -245,7 +245,7 @@ export default class ReadTimeTrackerPlugin extends Plugin {
             discard: () => this.discardPendingLive(),
           },
           storageWarning: () => this.storageWarning,
-          promptNote: (onDone) => new ManualNoteModal(this.app, onDone).open(),
+          promptNote: (onDone, options) => new ManualNoteModal(this.app, onDone, options).open(),
           openRecords: (filePath) => this.openRecords(filePath),
           saveSetting: (patch) => this.updateSettings(patch),
           pluginId: this.manifest.id,

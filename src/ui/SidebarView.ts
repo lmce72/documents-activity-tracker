@@ -228,7 +228,7 @@ export interface SidebarDeps {
   /** storage degradation notice, null when healthy */
   storageWarning: () => string | null;
   /** prompt for the note; null = cancelled */
-  promptNote: (onDone: (note: string | null) => void) => void;
+  promptNote: (onDone: (note: string | null) => void, options?: { title?: string; description?: string }) => void;
   /** open the records panel; null follows the file */
   openRecords: (filePath: string | null) => void;
   /** persist a settings patch and apply it at once */
@@ -862,18 +862,8 @@ export class ActivitySidebarView extends ItemView {
    * action row collapses into an overflow menu.
    */
   private renderPanelTabs(root: HTMLElement): void {
-    //  菜单左侧：计时器入口 + 插件设置；两者都是透明底的图标按钮
-    //  Left of the menu: a timer entry and plugin settings, both transparent icon buttons.
+    //  菜单右侧只留一个透明的设置齿轮 / only a transparent settings gear sits to the right of the menu
     const head = root.createDiv({ cls: 'rtt-panel-head' });
-    const tools = head.createDiv({ cls: 'rtt-panel-tools' });
-    const state = this.deps.store.getState();
-    const manualRunning = state.manual.status !== 'idle';
-    const countdownRunning = state.countdown.status !== 'idle';
-    const timerPanel: Panel = !manualRunning && countdownRunning ? 'countdown' : 'manual';
-    const timer = this.iconButton(tools, countdownRunning && !manualRunning ? 'hourglass' : 'timer', t('panelManual'), () => this.setPanel(timerPanel), { ghost: true });
-    timer.toggleClass('is-live', manualRunning || countdownRunning);
-    this.iconButton(tools, 'settings', t('openPluginSettings'), () => this.openPluginSettings(), { ghost: true });
-
     const picker = head.createDiv({ cls: 'rtt-mobile-panel-picker' });
     const choices: Record<string, string> = { document: t('panelDocument'), manual: t('panelManual'), countdown: t('panelCountdown'), overview: t('panelOverview') };
     new DropdownComponent(picker).addOptions(choices).setValue(this.panel).onChange(value => {
@@ -903,6 +893,9 @@ export class ActivitySidebarView extends ItemView {
       addTab('countdown', 'hourglass', t('panelCountdown'));
     }
     addTab('overview', 'gauge', t('panelOverview'));
+
+    const tools = head.createDiv({ cls: 'rtt-panel-tools' });
+    this.iconButton(tools, 'settings', t('openPluginSettings'), () => this.openPluginSettings(), { ghost: true });
   }
 
   /** 打开本插件的设置页 / open this plugin's settings tab. */
@@ -2521,7 +2514,7 @@ export class ActivitySidebarView extends ItemView {
           this.iconButton(bar, 'flag', t('manualFlag'), () => {
             if (this.deps.manual.flag()) this.render();
           }, { ghost: true });
-          this.iconButton(bar, 'square', t('manualStop'), () => {
+          this.iconButton(bar, 'square', t('manualStopRecorded'), () => {
             this.deps.promptNote(note => {
               if (note === null) return;
               void this.deps.manual.stop(note).then(() => this.render());
@@ -2559,7 +2552,7 @@ export class ActivitySidebarView extends ItemView {
           this.iconButton(bar, 'skip-forward', t('countdownSkip'), () => {
             if (this.deps.countdown.skipPhase()) this.render();
           }, { ghost: true });
-          this.iconButton(bar, 'square', t('manualStop'), () => {
+          this.iconButton(bar, 'square', t('manualStopRecorded'), () => {
             this.deps.promptNote(note => {
               if (note === null) return;
               void this.deps.countdown.stop(note).then(() => this.render());
@@ -2577,11 +2570,14 @@ export class ActivitySidebarView extends ItemView {
 
     const heading = renderSectionHeading(root, 'activity', documentLedgerOnly ? t('parallelSessions') : t('activeTasks'));
     const tools = root.createDiv({ cls: 'rtt-live-all-actions' });
+    this.iconButton(tools, 'trash-2', t('discardAll'), () => {
+      void this.discardAllTimers();
+    }, { ghost: true, danger: true });
     this.iconButton(tools, 'pause', t('pauseAll'), () => {
       void this.deps.service.pauseAll().then(() => this.render());
     }, { ghost: true });
     this.iconButton(tools, 'save', t('saveAll'), () => {
-      void this.deps.service.saveAll('save').then(() => this.render());
+      void this.saveAllTimers();
     }, { ghost: true });
     //  标题右侧放全局按钮，避免再占一行 / global controls ride the heading, not another row
     heading.appendChild(tools);
@@ -2636,6 +2632,66 @@ export class ActivitySidebarView extends ItemView {
       task.controls(actions);
       this.iconButton(actions, 'arrow-right', t('jumpToPanel'), () => this.setPanel(task.jump), { ghost: true });
     }
+  }
+
+  /** 丢弃所有计时 / discard every running timer across the three ledgers. */
+  private async discardAllTimers(): Promise<void> {
+    await this.deps.service.discardAll();
+    this.deps.manual.discard();
+    this.deps.countdown.discard();
+    this.render();
+  }
+
+  /**
+   * 全部保存，按步骤走 / save everything one step at a time.
+   *
+   * 文档会话直接落盘；手动与倒计时要先停下来，而停下来的那一步需要备注框，所以必须逐个询问、
+   * 逐个保存，不能并发弹出多个窗口。提示里带「第 n / 共 m」让用户知道还剩几步。
+   *
+   * Document rounds save directly; the manual timer and countdown have to stop first, and that step
+   * asks for a note. So they are saved one after another — never several dialogs at once — with the
+   * step number in each prompt so the sequence is visible.
+   */
+  private async saveAllTimers(): Promise<void> {
+    const state = this.deps.store.getState();
+    const documents = [...state.files]
+      .filter(([, file]) => file.status === STATUS.TRACKING || file.status === STATUS.PAUSED)
+      .map(([path]) => path);
+    const manualActive = state.manual.status !== 'idle';
+    const countdownActive = state.countdown.status !== 'idle' && state.countdown.plan !== null;
+    const total = documents.length + (manualActive ? 1 : 0) + (countdownActive ? 1 : 0);
+    if (total === 0) return;
+    const settings = this.deps.settings();
+    let step = 0;
+
+    for (const path of documents) {
+      step++;
+      const name = recordName(settings, path, isPluginViewKey(path) ? pluginViewLabel(path) : path.split('/').pop() ?? path);
+      new Notice(`${t('saveAll')} ${step}/${total} · ${name}`, 2000);
+      await this.deps.service.savePath(path, 'save');
+    }
+
+    if (manualActive) {
+      step++;
+      await new Promise<void>(resolve => {
+        this.deps.promptNote(note => {
+          if (note === null) { resolve(); return; }
+          void this.deps.manual.stop(note).then(() => resolve());
+        }, { title: `${t('saveAll')} ${step}/${total}`, description: t('panelManual') });
+      });
+    }
+
+    if (countdownActive) {
+      step++;
+      await new Promise<void>(resolve => {
+        this.deps.promptNote(note => {
+          if (note === null) { resolve(); return; }
+          void this.deps.countdown.stop(note).then(() => resolve());
+        }, { title: `${t('saveAll')} ${step}/${total}`, description: t('panelCountdown') });
+      });
+    }
+
+    this.render();
   }
 
   private renderOverviewPanel(ovLeft: HTMLElement, ovRight: HTMLElement): void {

@@ -426,6 +426,8 @@
 /* 小节标题右侧的动作 / the action at the end of a section heading */
 .rtt-section-heading .rtt-section-action { margin-left: auto; }
 .rtt-live-all-actions { display: flex; gap: 2px; margin-left: auto; }
+/* 「全部丢弃」始终是错误色，不等悬停 / discard-all is red at rest, not only on hover */
+.rtt-live-all-actions .rtt-icon-btn.is-danger { color: var(--text-error); }
 
 /* 总看板：三种计时合并后的运行中列表 / the merged running-task list */
 .rtt-live-tasks { display: flex; flex-direction: column; gap: var(--size-4-1); }

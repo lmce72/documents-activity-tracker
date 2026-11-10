@@ -899,6 +899,18 @@ export class TimerService {
     }
   }
 
+  /** 全部丢弃（仅文档账本）/ discard every document-ledger round. */
+  async discardAll(): Promise<void> {
+    try {
+      for (const filePath of this.activePaths()) {
+        this.deps.store.dispatch({ type: ActionTypes.DISCARD_SESSION, payload: { filePath } });
+      }
+      await this.flushPendingWrites();
+    } catch (error) {
+      this.deps.log.warn('[RTT][service] 全部丢弃失败 / discard all failed:', error);
+    }
+  }
+
   /** 全部暂停 / pause every running round. */
   async pauseAll(): Promise<void> {
     const paths = [...this.deps.store.getState().files]
