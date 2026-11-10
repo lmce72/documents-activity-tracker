@@ -20,16 +20,32 @@ import type { AttributionPolicy, PluginSettings } from './types';
 export const MAX_IDLE_TIMEOUT_SECONDS = 24 * 60 * 60;
 
 /**
+ * 把秒数收进合法区间 / clamp a seconds value into [1, 24h].
  *
- * The UI and the implementation both work in seconds (the original multiplied by 1000),
- * yet this vault's real settings hold `200000` — a legacy value written in milliseconds
- * by an older build, which reads as 55 hours and makes idle detection never fire. The
- * magnitude is used to detect and convert it, then clamped to [1, 24h].
+ * 运行期与用户新输入都走这里：不做"大于 1000 就是毫秒"的猜测 —— 那是旧数据迁移时的一次性
+ * 判断，用户明确输入的 1200 秒就是 1200 秒。
+ * Runtime and fresh user input use this: no "≥1000 means milliseconds" guess here. That heuristic
+ * belongs to the one-time migration of old values; 1200 seconds typed by the user is 1200 seconds.
+ */
+export function clampIdleTimeoutSeconds(raw: unknown): number {
+  const value = typeof raw === 'number' && Number.isFinite(raw) ? raw : DEFAULT_SETTINGS.idleTimeout;
+  if (!Number.isFinite(value)) return DEFAULT_SETTINGS.idleTimeout;
+  return Math.min(Math.max(1, Math.round(value)), MAX_IDLE_TIMEOUT_SECONDS);
+}
+
+/**
+ * 旧数据的毫秒换算 / convert legacy millisecond values.
+ *
+ * The UI and the implementation both work in seconds (the original multiplied by 1000), yet this
+ * vault's real settings hold `200000` — a legacy value written in milliseconds by an older build,
+ * which reads as 55 hours and makes idle detection never fire. The magnitude is used to detect and
+ * convert it once, then clamped to [1, 24h]. Settings saved by the modal carry
+ * `idleTimeoutIsSeconds`, which skips this heuristic.
  */
 export function normalizeIdleTimeoutSeconds(raw: unknown): number {
   const value = typeof raw === 'number' && Number.isFinite(raw) ? raw : DEFAULT_SETTINGS.idleTimeout;
 
-  //  Magnitude check: a value ≥1000 can only be milliseconds (20s written as 20000)
+  //  Magnitude check: a value ≥1000 from the legacy era is milliseconds (20s written as 20000)
   const seconds = value >= 1000 ? value / 1000 : value;
 
   if (!Number.isFinite(seconds) || seconds < 1) return DEFAULT_SETTINGS.idleTimeout;
@@ -84,13 +100,18 @@ export function mergeSettings(loaded: unknown): PluginSettings {
     target[key] = coerce(key, source[key]);
   }
 
-  merged.idleTimeout = normalizeIdleTimeoutSeconds(source.idleTimeout);
+  merged.idleTimeout = source.idleTimeoutIsSeconds === true
+    ? clampIdleTimeoutSeconds(source.idleTimeout)
+    : normalizeIdleTimeoutSeconds(source.idleTimeout);
 
   //  旧配置只有一个布尔值，把它换算成三选之一；缺了新键时才走这条，换过一次之后就以新键为准。
   //  The old config had only a boolean; translate it once. This only runs when the new key is
   //  absent, so after the first save the new key wins.
   const legacyAway = source.countUnfocusedAsReading === true;
-  merged.awayPolicy = normalizePolicy(source.awayPolicy, legacyAway ? 'reading' : 'paused');
+  merged.awayPolicy = normalizePolicy(
+    source.awayPolicy,
+    legacyAway ? 'reading' : DEFAULT_SETTINGS.awayPolicy,
+  );
   merged.idlePolicy = normalizePolicy(source.idlePolicy, 'paused');
   //  The status-bar slots come from a JSON file a user may have hand-edited, so unknown ids
   //  and duplicates are dropped and the array is padded to a fixed width.

@@ -41,6 +41,8 @@ export const ActionTypes = {
   REQUEUE_PENDING_WRITES: 'REQUEUE_PENDING_WRITES',
 
   SET_WINDOW_FOCUS: 'SET_WINDOW_FOCUS',
+  /** 只重置运行目标的计时基准，不结算任何通道 / move tick baselines without settling a channel */
+  RESET_TICK_BASELINE: 'RESET_TICK_BASELINE',
   SET_SPLIT_READING: 'SET_SPLIT_READING',
   /**
    *

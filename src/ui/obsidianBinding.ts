@@ -190,7 +190,19 @@ export function installBindings(deps: BindingDeps): Binding {
    * the write — the WebView may be frozen immediately afterwards and an async write queued behind it
    * would never run.
    */
-  let suspended: boolean | null = null;
+  let suspended: boolean | null = document.visibilityState === 'hidden' ? true : null;
+  /**
+   * 页面是否真的不可见 / whether the page itself is hidden.
+   *
+   * 失焦（blur）只是「离开」；hidden、pagehide 与 Page Lifecycle 冻结才是「最小化/不可见」，
+   * 那段时间不记录。两个状态分开记：先失焦再最小化时要补一条 ignored 边界，先最小化再失焦时
+   * 不能把它改回「离开」。
+   *
+   * Blur is merely "away"; hidden, pagehide and Page Lifecycle freeze mean "minimized/not visible",
+   * which is not recorded. The two are tracked separately: blur then minimize must add an ignored
+   * boundary, while minimize then blur must not downgrade it back to "away".
+   */
+  let pageHidden = document.visibilityState === 'hidden';
   const mobile = new MobileActivity();
   mobile.visible = document.visibilityState === 'visible';
   mobile.focused = document.hasFocus();
@@ -213,19 +225,30 @@ export function installBindings(deps: BindingDeps): Binding {
         .catch((error: unknown) => log.warn('[RTT] Mobile activity update failed:', error));
       return;
     }
-    if (suspended === next) return;
+    //  页面仍 hidden 时的 window-focus 不是恢复：等 visibilitychange 或 pageshow。
+    //  A window-focus while the page is still hidden is not a resume; wait for visibilitychange or pageshow.
+    if (reason === 'window-focus' && document.visibilityState === 'hidden') return;
+    const hiddenSignal = reason === 'visibility-hidden' || reason === 'pagehide' || reason === 'page-freeze';
+    const visibleSignal = reason === 'visibility-visible' || reason === 'pageshow'
+      || reason === 'page-resume' || reason === 'window-focus';
+    const nextPageHidden = hiddenSignal ? true : visibleSignal ? false : pageHidden;
+    //  同一次挂起可能由多个来源报告；只有「挂起状态或页面可见性真的变了」才处理。
+    //  Several sources report one suspend; only act when the suspended state or visibility changed.
+    if (suspended === next && pageHidden === nextPageHidden) return;
     suspended = next;
-    log.info('[RTT][binding] 活动状态 / activity state:', next ? 'suspended' : 'active', reason);
+    pageHidden = nextPageHidden;
+    log.info('[RTT][binding] 活动状态 / activity state:', next ? 'suspended' : 'active', reason,
+      pageHidden ? 'hidden' : 'visible');
 
     if (next) {
       void service
         .setSplitReading(false)
-        .then(() => service.onWindowFocusChange(false))
+        .then(() => service.onWindowFocusChange(false, pageHidden))
         .then(() => service.flushPendingWrites())
         .catch((error: unknown) => log.warn('[RTT] 挂起处理失败 / suspend handling failed:', error));
     } else {
       void service
-        .onWindowFocusChange(true)
+        .onWindowFocusChange(true, false)
         .catch((error: unknown) => log.warn('[RTT] 恢复处理失败 / resume handling failed:', error));
     }
   };
@@ -235,7 +258,10 @@ export function installBindings(deps: BindingDeps): Binding {
     setSuspended(false, 'window-focus');
   });
   plugin.registerDomEvent(window, 'blur', () => {
-    setSuspended(true, 'window-blur');
+    //  最小化通常先 blur 再 hidden；若 blur 时页面已经不可见，直接按隐藏处理，不先写一段「离开」。
+    //  Minimizing usually blurs before hiding; if the page is already hidden at blur time, treat it as
+    //  hidden directly instead of opening a brief "away" boundary first.
+    setSuspended(true, document.visibilityState === 'hidden' ? 'visibility-hidden' : 'window-blur');
   });
 
   //  Minimising or switching virtual desktops fires visibilitychange but not blur
@@ -378,7 +404,7 @@ export function installBindings(deps: BindingDeps): Binding {
     if (destroyed) return;
     try {
       if (Platform.isMobile) setSuspended(!document.hasFocus(), 'startup');
-      else void service.onWindowFocusChange(document.hasFocus());
+      else void service.onWindowFocusChange(document.hasFocus(), document.visibilityState === 'hidden');
     } catch (error) {
       log.warn('[RTT][binding] 初始焦点探测失败 / initial focus probe failed:', error);
     }

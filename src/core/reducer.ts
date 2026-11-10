@@ -987,6 +987,13 @@ export function createTimerReducer(deps: ReducerDeps) {
         return refreshTickBaseline({ ...state, isIdle: false }, deps.now());
       }
 
+      //  最小化/隐藏恢复：隐藏期间 tick 已停，回到可见时不得把这段间隔结算进任何通道。
+      //  Return from a minimized or hidden window: ticks stopped while hidden, so the gap must not be
+      //  settled into any channel when the page becomes visible again.
+      case ActionTypes.RESET_TICK_BASELINE: {
+        return refreshTickBaseline(state, deps.now());
+      }
+
       //  ----------------------------------------------------------------------
       // pending-write queue
       //  ----------------------------------------------------------------------

@@ -19,8 +19,14 @@ import type { PluginSettings } from './types';
 export const DEFAULT_SETTINGS: PluginSettings = {
   filterMode: 'blacklist',
   filterPatterns: '',
-  idleTimeoutEnabled: true,
+  //  空闲判定默认关：它是一套需要用户主动开启的机制，不该替所有人决定"多久算走神"。
+  //  Idle detection is off by default: it is an opt-in mechanism, and the plugin should not decide
+  //  for everyone how long "still" has to be before it counts.
+  idleTimeoutEnabled: false,
   idleTimeout: 20,
+  //  旧数据可能把秒写成毫秒；新界面保存后置 true，加载时不再按毫秒换算
+  //  Legacy data may hold milliseconds; the current UI sets this once it saves in seconds.
+  idleTimeoutIsSeconds: false,
   minReadSeconds: 20,
   timeDisplayMode: 'compact',
   autoStartMode: 'manual',
@@ -46,10 +52,10 @@ export const DEFAULT_SETTINGS: PluginSettings = {
   manualShowMilliseconds: false,
   manualRecordDocActivity: true,
   countUnfocusedAsReading: false,
-  //  默认「算作暂停」：既不算阅读，也仍然留在合计里 —— 与旧的「不计入阅读但计入总时长」一致
-  //  Default "counts as paused": not reading, still in the total — matching the old behaviour of
-  //  "not reading but still recorded".
-  awayPolicy: 'paused',
+  //  窗口失焦有争议（窗口还在屏幕上，只是没被聚焦）：交给用户决定，默认不记录。
+  //  Out-of-window time is debatable (the window is still on screen, just not focused): the user
+  //  decides, and the default is "do not record".
+  awayPolicy: 'ignored',
   idlePolicy: 'paused',
   countPluginViewsAsReading: true,
   mobileMultiWindow: false,

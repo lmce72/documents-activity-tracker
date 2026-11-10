@@ -328,6 +328,84 @@ describe('TimerService — 窗口失焦 / window blur', () => {
   });
 });
 
+describe('TimerService — 最小化 / hidden page', () => {
+  it('隐藏期间不累计任何通道，恢复后从当下继续', async () => {
+    const ctx = setup({ autoStartMode: 'always', minReadSeconds: 0, idleTimeoutEnabled: false });
+    await ctx.open(FILE);
+    await ctx.advance(2);
+    const beforeHide = ctx.store.getState().files.get(FILE)!.activeSeconds;
+
+    await ctx.service.onWindowFocusChange(false, true);
+    const atHide = ctx.store.getState().files.get(FILE)!.activeSeconds;
+    expect(atHide).toBe(beforeHide);
+
+    await ctx.advance(5);
+    const hidden = ctx.store.getState().files.get(FILE)!;
+    expect(hidden.activeSeconds).toBe(atHide);
+    expect(hidden.unfocusedSeconds).toBe(0);
+    expect(hidden.idleSeconds).toBe(0);
+
+    const boundary = ctx.events().find((event) => event.type === 'blur')!;
+    expect((boundary as { reason?: string }).reason).toBe('window-hidden');
+    expect((boundary as { unfocusedDisposition?: string }).unfocusedDisposition).toBe('ignored');
+
+    await ctx.service.onWindowFocusChange(true, false);
+    await ctx.advance(2);
+    expect(ctx.store.getState().files.get(FILE)?.activeSeconds).toBe(atHide + 2);
+  });
+
+  it('先失焦再最小化：离开段保留，隐藏段不记录', async () => {
+    const ctx = setup({ autoStartMode: 'always', minReadSeconds: 0, idleTimeoutEnabled: false });
+    await ctx.open(FILE);
+    await ctx.advance(2);
+    await ctx.service.onWindowFocusChange(false);
+    await ctx.advance(3);
+
+    await ctx.service.onWindowFocusChange(false, true);
+    await ctx.advance(4);
+
+    const file = ctx.store.getState().files.get(FILE)!;
+    expect(file.unfocusedSeconds).toBe(3);
+    const reasons = ctx.events()
+      .filter((event) => event.type === 'blur')
+      .map((event) => (event as { reason?: string }).reason);
+    expect(reasons).toEqual(['window-blur', 'window-hidden']);
+  });
+
+  it('从隐藏回到可见但仍未聚焦时按离开记录', async () => {
+    const ctx = setup({ autoStartMode: 'always', minReadSeconds: 0, idleTimeoutEnabled: false });
+    await ctx.open(FILE);
+    await ctx.advance(1);
+    const beforeHide = ctx.store.getState().files.get(FILE)!.activeSeconds;
+
+    await ctx.service.onWindowFocusChange(false, true);
+    await ctx.advance(3);
+    await ctx.service.onWindowFocusChange(false, false);
+    await ctx.advance(2);
+
+    const file = ctx.store.getState().files.get(FILE)!;
+    expect(file.activeSeconds).toBe(beforeHide);
+    expect(file.unfocusedSeconds).toBe(2);
+    const reasons = ctx.events()
+      .filter((event) => event.type === 'blur')
+      .map((event) => (event as { reason?: string }).reason);
+    expect(reasons).toEqual(['window-hidden', 'window-visible-unfocused']);
+  });
+
+  it('暂停中的会话不因失焦被改判', async () => {
+    const ctx = setup({ autoStartMode: 'always', minReadSeconds: 0, idleTimeoutEnabled: false });
+    await ctx.open(FILE);
+    await ctx.advance(2);
+    await ctx.service.togglePausePath(FILE);
+
+    await ctx.service.onWindowFocusChange(false);
+    await ctx.advance(3);
+
+    expect(ctx.store.getState().files.get(FILE)?.status).toBe(STATUS.PAUSED);
+    expect(ctx.events().filter((event) => event.type === 'blur')).toEqual([]);
+  });
+});
+
 describe('TimerService — 丢弃后不再自动开始 / no auto-start after an explicit discard', () => {
   it('显式丢弃后，切走再切回同一文件不会自动开表', async () => {
     const ctx = setup({ autoStartMode: 'always', minReadSeconds: 0 });

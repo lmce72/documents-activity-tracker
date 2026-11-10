@@ -2647,3 +2647,10 @@ body:not(.is-mobile) .view-content.is-overview.is-wide .rtt-stats-bar.is-dense >
     font-size: var(--font-ui-smaller);
     line-height: 1.3;
 }
+
+/* 空闲秒数输入的单位 / unit after the idle-seconds input */
+.rtt-idle-unit {
+    color: var(--text-muted);
+    font-size: var(--font-ui-smaller);
+    margin-left: var(--size-2-1);
+}

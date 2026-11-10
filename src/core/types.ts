@@ -38,6 +38,17 @@ export interface PluginSettings {
   filterPatterns: string;
   idleTimeoutEnabled: boolean;
   idleTimeout: number;
+  /**
+   * 这个 `idleTimeout` 是否已由新界面按秒写入 / whether `idleTimeout` was written as seconds by the
+   * current UI.
+   *
+   * 旧版本的 `idleTimeout` 可能是毫秒（如 200000）；新界面保存时置 true，加载时便不再套用
+   * "≥1000 视为毫秒"的迁移猜测。缺省 false 让旧数据仍走一次换算。
+   * Older `idleTimeout` values may be milliseconds (e.g. 200000). The current UI sets this to true
+   * when it saves, so loading no longer applies the "≥1000 is milliseconds" migration guess. The
+   * default false keeps one conversion pass for legacy data.
+   */
+  idleTimeoutIsSeconds: boolean;
   /** min session seconds */
   minReadSeconds: number;
   /** 'compact' | 'precise' */
@@ -388,6 +399,20 @@ export function liveWallClockSeconds(file: TimerFileState, nowMs: number): numbe
   const pending = file.status === 'paused' && file.pauseStartTimestamp !== null
     ? Math.max(0, Math.floor((nowMs - file.pauseStartTimestamp) / 1000)) : 0;
   return wallClockSeconds(file) + pending;
+}
+
+/**
+ * 运行卡上扣减的秒数 / seconds to deduct on the live card.
+ *
+ * 只算脱离窗口。主动暂停与空闲各有自己的图标和「今日暂停 / 今日空闲」统计，把它们也算进来会
+ * 让这个数字在暂停或久坐不动时继续增长，看起来像计时没有停。暂停与空闲仍完整进入账本。
+ *
+ * Out-of-window only. A deliberate pause and focused-but-idle time each have their own icon and
+ * their own "Paused today" / "Idle today" totals; including them here makes the figure keep growing
+ * while paused or still, which reads as if the clock never stopped. Both still reach the ledger.
+ */
+export function liveDeductionSeconds(file: TimerFileState): number {
+  return Math.max(0, file.unfocusedSeconds);
 }
 
 //  ============================================================================
@@ -750,6 +775,7 @@ export type TimerAction =
       type: Extract<ActionType, 'SET_WINDOW_FOCUS'>;
       payload: { focused: boolean };
     }
+  | { type: Extract<ActionType, 'RESET_TICK_BASELINE'> }
   | { type: Extract<ActionType, 'SET_SPLIT_READING'>; payload: { filePath: string; enabled: boolean } }
   | { type: Extract<ActionType, 'UNBIND_FILE'> }
   | {

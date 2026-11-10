@@ -12,6 +12,7 @@ import { describe, expect, it } from 'bun:test';
 import { ActionTypes } from '../src/core/constants';
 import { DEFAULT_SETTINGS } from '../src/core/defaults';
 import { createInitialState } from '../src/core/reducer';
+import { clampIdleTimeoutSeconds, mergeSettings } from '../src/core/settings';
 import { buildFileRecords, computeSessionDurations } from '../src/core/timeline';
 import { listIdleIntervals, listUnfocusedIntervals } from '../src/core/unfocused';
 import type { TimelineEvent } from '../src/core/types';
@@ -41,6 +42,22 @@ function setup() {
   });
   return { clock, store, history, service };
 }
+
+describe('空闲默认值 / idle defaults', () => {
+  it('空闲超时默认关闭，需在离开/空闲弹窗里主动开启', () => {
+    expect(DEFAULT_SETTINGS.idleTimeoutEnabled).toBe(false);
+  });
+
+  it('新界面写入的秒数不会被当成毫秒，旧值仍换算一次', () => {
+    //  用户明确输入 1200 秒 / a value explicitly typed as seconds
+    expect(mergeSettings({ idleTimeout: 1200, idleTimeoutIsSeconds: true }).idleTimeout).toBe(1200);
+    //  旧数据 200000ms -> 200s / legacy milliseconds convert once
+    expect(mergeSettings({ idleTimeout: 200000 }).idleTimeout).toBe(200);
+    expect(clampIdleTimeoutSeconds(1200)).toBe(1200);
+    expect(clampIdleTimeoutSeconds(0)).toBe(1);
+    expect(clampIdleTimeoutSeconds(999999)).toBe(24 * 60 * 60);
+  });
+});
 
 describe('listIdleIntervals / 空闲时段', () => {
   it('一对 idle / idle-end 组成一段', () => {

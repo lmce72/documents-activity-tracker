@@ -1,6 +1,6 @@
-import { Modal, Setting, setIcon, type App } from 'obsidian';
+import { Modal, Setting, setIcon, setTooltip, type App, type TextComponent } from 'obsidian';
 import { t } from '../core/i18n';
-import { attributionPolicy } from '../core/settings';
+import { attributionPolicy, clampIdleTimeoutSeconds } from '../core/settings';
 import { formatDurationWithSeconds } from '../core/time';
 import { listIdleIntervals, listUnfocusedIntervals } from '../core/unfocused';
 import type { AttributionPolicy, PluginSettings } from '../core/types';
@@ -18,9 +18,15 @@ interface AwayIdleDeps {
 }
 export class AwayIdleModal extends Modal {
   private awayExpanded = false;
+  /** 关闭弹窗或失焦时提交尚未落盘的秒数 / commit typed seconds on close or blur */
+  private commitIdleSeconds: (() => void) | null = null;
   constructor(app: App, private readonly deps: AwayIdleDeps, private readonly day: string) { super(app); }
   override onOpen(): void { this.titleEl.setText(t('awaySectionTitle')); this.render(); }
-  override onClose(): void { this.contentEl.empty(); }
+  override onClose(): void {
+    this.commitIdleSeconds?.();
+    this.commitIdleSeconds = null;
+    this.contentEl.empty();
+  }
   private render(): void {
     this.contentEl.empty();
     const root = this.contentEl;
@@ -28,6 +34,11 @@ export class AwayIdleModal extends Modal {
 
     const settings = this.deps.settings();
     const policy = attributionPolicy(settings);
+    const idleOn = settings.idleTimeoutEnabled === true;
+    let secondsText: TextComponent | null = null;
+    let idlePolicySetting: Setting | null = null;
+    let committedSeconds = settings.idleTimeout;
+    this.commitIdleSeconds = null;
 
     new Setting(section)
       .setName(t('awayPolicyLabel'))
@@ -46,9 +57,78 @@ export class AwayIdleModal extends Modal {
           }),
       );
 
+    //  空闲超时与它的秒数从设置页搬到这里：它决定的就是下面这些空闲段有没有、怎么算。
+    //  The idle timeout and its seconds moved here from the settings tab: this is the feature those
+    //  numbers describe, and changing it beside the idle rows makes the effect visible at once.
     new Setting(section)
+      .setName(t('idleEnabled'))
+      .setDesc(t('idleEnabledDesc'))
+      .addToggle((toggle) =>
+        toggle
+          .setValue(idleOn)
+          .onChange((value) => {
+            void this.deps
+              .saveSetting({ idleTimeoutEnabled: value })
+              .then(() => {
+                this.deps.onChanged();
+                //  原地更新，不整页重建：重建会丢掉键盘焦点与弹窗滚动位置
+                //  Update in place: a rebuild would drop keyboard focus and the modal's scroll position.
+                secondsText?.setDisabled(!value);
+                idlePolicySetting?.setDesc(value ? t('idlePolicyDesc') : t('idlePolicyDescOff'));
+              })
+              .catch((error: unknown) => {
+                this.deps.log.warn('[RTT] Idle toggle update failed:', error);
+                this.render();
+              });
+          }),
+      )
+      .addText((text) => {
+        secondsText = text;
+        text
+          .setValue(String(settings.idleTimeout))
+          .setPlaceholder(t('idleTimeout'))
+          .setDisabled(!idleOn);
+        text.inputEl.setAttribute('aria-label', t('idleTimeout'));
+        text.inputEl.setAttribute('inputmode', 'numeric');
+        setTooltip(text.inputEl, t('idleTimeoutDesc'));
+
+        const unit = createSpan({ cls: 'rtt-idle-unit', text: t('second') });
+        setTooltip(unit, t('idleTimeoutDesc'));
+        text.inputEl.after(unit);
+
+        //  离开输入框或回车才提交：边打边存会把清空时的 NaN 写成 1 秒。
+        //  Commit on blur or Enter only: saving per keystroke turns an empty field into one second.
+        const commit = (): void => {
+          const parsed = parseInt(text.inputEl.value, 10);
+          if (!Number.isFinite(parsed)) {
+            text.setValue(String(committedSeconds));
+            return;
+          }
+          const seconds = clampIdleTimeoutSeconds(parsed);
+          text.setValue(String(seconds));
+          if (seconds === committedSeconds) return;
+          committedSeconds = seconds;
+          void this.deps
+            .saveSetting({ idleTimeout: seconds, idleTimeoutIsSeconds: true })
+            .then(() => this.deps.onChanged())
+            .catch((error: unknown) => {
+              committedSeconds = this.deps.settings().idleTimeout;
+              this.deps.log.warn('[RTT] Idle timeout update failed:', error);
+            });
+        };
+        this.commitIdleSeconds = commit;
+        text.inputEl.addEventListener('blur', commit);
+        text.inputEl.addEventListener('keydown', (event) => {
+          if (event.key !== 'Enter') return;
+          event.preventDefault();
+          commit();
+          text.inputEl.blur();
+        });
+      });
+
+    idlePolicySetting = new Setting(section)
       .setName(t('idlePolicyLabel'))
-      .setDesc(t('idlePolicyDesc'))
+      .setDesc(idleOn ? t('idlePolicyDesc') : t('idlePolicyDescOff'))
       .addDropdown((dropdown) =>
         dropdown
           .addOption('reading', t('policyReading'))

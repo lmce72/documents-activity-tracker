@@ -30,10 +30,9 @@ const events: TimelineEvent[] = [
   { time:'2026-09-15 10:01:20', type:'save', file:FILE, duration:80, activeSeconds:20, unfocusedSeconds:60 },
 ];
 describe('split reading and reversible blur classification', () => {
-  it('away time defaults to paused; the three-way policy decides, and the old boolean migrates', () => {
-    //  默认：离开窗口算作暂停 —— 不算阅读，但仍留在合计里
-    //  Default: away counts as paused — not reading, still in the total
-    expect(DEFAULT_SETTINGS.awayPolicy).toBe('paused');
+  it('away time defaults to not recorded; the three-way policy decides, and the old boolean migrates', () => {
+    //  默认：窗口失焦不记录 —— 有争议，交给用户决定 / default: blur is not recorded; the user decides
+    expect(DEFAULT_SETTINGS.awayPolicy).toBe('ignored');
     expect(countsUnfocusedAsReading(DEFAULT_SETTINGS)).toBe(false);
 
     //  新键优先 / the new key wins
@@ -42,7 +41,7 @@ describe('split reading and reversible blur classification', () => {
 
     //  旧配置只有布尔值：迁移时换算 / an older config has only the boolean, translated on load
     expect(mergeSettings({ countUnfocusedAsReading: true }).awayPolicy).toBe('reading');
-    expect(mergeSettings({ countUnfocusedAsReading: false }).awayPolicy).toBe('paused');
+    expect(mergeSettings({ countUnfocusedAsReading: false }).awayPolicy).toBe('ignored');
   });
   it('toggle is prospective, keeps reading while blurred and resets after save', async () => {
     const ctx=setup(); await ctx.service.startCurrent(); await ctx.advance(5);
@@ -112,6 +111,16 @@ it('closed live intervals can be moved into paused and back without changing wal
   await ctx.service.classifyUnfocused(interval.index,interval.from,'unfocused');
   expect(ctx.store.getState().files.get(FILE)?.pausedSeconds).toBe(0);
   expect(ctx.store.getState().files.get(FILE)?.unfocusedSeconds).toBe(10);
+});
+
+it('hidden intervals are not offered for away reclassification', () => {
+  const hidden: TimelineEvent[] = [
+    { time:'2026-09-15 10:00:00', type:'start', file:FILE, state:'tracking' },
+    { time:'2026-09-15 10:00:10', type:'blur', file:FILE, state:'inactive', reason:'window-hidden', unfocusedDisposition:'ignored' },
+    { time:'2026-09-15 10:01:10', type:'focus', file:FILE, state:'tracking' },
+    { time:'2026-09-15 10:01:20', type:'save', file:FILE, duration:20, activeSeconds:20 },
+  ];
+  expect(listUnfocusedIntervals(hidden)).toHaveLength(0);
 });
 
 it('ongoing manual pause grows in display totals and is included when saved directly', async () => {

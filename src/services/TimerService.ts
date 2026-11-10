@@ -18,8 +18,8 @@ import { isTrackableTarget } from '../core/filters';
 import { isPluginViewKey } from '../core/activePath';
 import type { Logger } from '../core/logger';
 import {
+  clampIdleTimeoutSeconds,
   isDocumentRecordingEnabled,
-  normalizeIdleTimeoutSeconds,
 } from '../core/settings';
 import { eventFileRefs } from '../core/migration';
 import { classifyUnfocusedInterval, listUnfocusedIntervals } from '../core/unfocused';
@@ -82,6 +82,17 @@ function awayDisposition(
 
 export class TimerService {
   private mobileBackground = false;
+  /**
+   * 桌面端页面是否被隐藏（最小化/遮挡/Page Lifecycle 冻结）。
+   *
+   * 隐藏期间 `tick` 直接返回，任何通道都不累计；回到可见时只重置基准，绝不把隐藏间隔结算成
+   * 离开或阅读。移动端不走这条：移动端退到后台就是「不计」。
+   *
+   * Whether the desktop page is hidden (minimized, occluded or frozen). While hidden `tick` returns
+   * without counting into any channel; returning only resets the baseline, never settles the hidden
+   * gap as away or reading. Mobile does not use this: backgrounding there simply means "not counted".
+   */
+  private pageHidden = false;
   private lifecycleRevision = 0;
   private foregroundResumePath: string | null = null;
   /** 因操作追踪面板而自动暂停的目标 / the target auto-paused while the tracker itself is focused */
@@ -215,7 +226,7 @@ export class TimerService {
    * and only then count a tick.
    */
   async tick(): Promise<void> {
-    if (this.mobileBackground) return;
+    if (this.mobileBackground || this.pageHidden) return;
     const revision = this.lifecycleRevision;
     if (!isDocumentRecordingEnabled(this.deps.settings())) return;
 
@@ -393,7 +404,7 @@ export class TimerService {
       return;
     }
 
-    const timeoutMs = normalizeIdleTimeoutSeconds(settings.idleTimeout) * 1000;
+    const timeoutMs = clampIdleTimeoutSeconds(settings.idleTimeout) * 1000;
     const idleMs = this.deps.clock.now() - state.lastActivityTime;
 
     if (idleMs > timeoutMs) {
@@ -535,7 +546,7 @@ export class TimerService {
 
   /** The body of {@link onActivePathChange}; see there for why it is serialised. */
   private async applyActivePathChange(): Promise<void> {
-    if (this.mobileBackground) return;
+    if (this.mobileBackground || this.pageHidden) return;
     const revision = this.lifecycleRevision;
     if (!isDocumentRecordingEnabled(this.deps.settings())) return;
 
@@ -653,70 +664,112 @@ export class TimerService {
   /**
    * The window focus changed.
    *
-   * Blur no longer stops counting: the reducer routes subsequent ticks into
-   * `unfocusedSeconds`. This method dispatches the change and logs a blur/focus event so
-   * the event stream still records when the window was not in front.
+   * A plain blur is "away": the reducer routes subsequent ticks into `unfocusedSeconds`, and the
+   * event stream gets a blur boundary with the configured away disposition. A hidden page
+   * (minimized, occluded or frozen) is different: its time is **not recorded** — a boundary with
+   * `unfocusedDisposition: 'ignored'` is written, `tick` stops, and leaving hidden only resets the
+   * baseline, so no part of that gap can be derived as away or reading.
+   *
+   * 普通失焦＝离开：后续 tick 进 `unfocusedSeconds`，并写下带离开口径的 blur 边界。页面隐藏
+   * （最小化/被遮挡/冻结）则是**不记录**：写 `ignored` 边界、停止 tick，回到可见时只重置基准，
+   * 这段间隔既不会算成离开，也不会算成阅读。
+   *
+   * `hidden` is desktop-only. Mobile backgrounding is handled by `onMobileBackgroundChange`, where
+   * the only question is whether the app is in front.
    */
-  async onWindowFocusChange(focused: boolean): Promise<void> {
+  async onWindowFocusChange(focused: boolean, hidden = false): Promise<void> {
     if (this.mobileBackground) return;
-    const revision = this.lifecycleRevision;
-    if (!isDocumentRecordingEnabled(this.deps.settings())) return;
 
     try {
       const before = this.deps.store.getState();
-      if (before.isWindowFocused === focused) return;
+      const wasHidden = this.pageHidden;
+      this.pageHidden = hidden;
+      const focusChanged = before.isWindowFocused !== focused;
+      const hiddenChanged = wasHidden !== hidden;
+      //  隐藏态变化会让已排队的工作区操作失效，避免它们在后台启动一轮会话。
+      //  A visibility change invalidates queued workspace work so it cannot open a round in background.
+      if (hiddenChanged) this.lifecycleRevision++;
+      const revision = this.lifecycleRevision;
+      //  即使追踪被关闭，也要记住页面当前是否隐藏：重新开启时不应在后台自动开表。
+      //  Remember the page's visibility even while tracking is off, so re-enabling cannot auto-start
+      //  a round in the background.
+      if (!isDocumentRecordingEnabled(this.deps.settings())) return;
+      //  离开隐藏态且仍未聚焦：隐藏段结束，从这一刻起重新按离开口径记录
+      //  Leaving hidden while still unfocused: the hidden stretch ends and away tracking resumes here.
+      const leavingHiddenUnfocused = wasHidden && !hidden && !focused;
+      //  焦点或页面可见性任一变化都需要写一条边界；只有两者都没变才是重复事件。
+      //  Either a focus change or a visibility change needs a boundary; only when neither moved is
+      //  this a duplicate report.
+      const needsBoundary = focusChanged || hiddenChanged;
+
+      //  隐藏期间 tick 已停；恢复时先把基准移到当下，后面的焦点结算才不会把整段隐藏时间补进
+      //  离开或阅读通道。
+      //  Ticks stopped while hidden; move the baseline first so the focus settle cannot bank the whole
+      //  hidden gap as away or reading.
+      if (wasHidden && !hidden) {
+        this.deps.store.dispatch({ type: ActionTypes.RESET_TICK_BASELINE });
+      }
+
+      if (!needsBoundary) return;
 
       //  Drain the queue before appending the boundary event, for the same reason as in
       //  onActivePathChange: observations must follow the session events they came after.
       await this.flushPendingWrites();
       if (!this.isCurrentLifecycle(revision)) return;
 
-      this.deps.store.dispatch({ type: ActionTypes.SET_WINDOW_FOCUS, payload: { focused } });
+      if (focusChanged) {
+        this.deps.store.dispatch({ type: ActionTypes.SET_WINDOW_FOCUS, payload: { focused } });
+      }
 
-      //  并行模式下每个进行中的会话都要写边界 / every running session gets its own boundary
+      //  并行模式下每个进行中的会话都要写边界；暂停的会话不写 —— 暂停段不能被窗口焦点改判。
+      //  Every running session gets its own boundary in parallel mode. Paused sessions are skipped:
+      //  their pause stretch must not be reclassified by a window-focus change.
       const focusPaths = this.parallelTracking()
-        ? [...before.files].filter(([, file]) => file.status === STATUS.TRACKING || file.status === STATUS.PAUSED).map(([path]) => path)
+        ? [...before.files].filter(([, file]) => file.status === STATUS.TRACKING).map(([path]) => path)
         : before.activeFilePath ? [before.activeFilePath] : [];
       for (const filePath of focusPaths) {
         const file = this.deps.store.getState().files.get(filePath);
+        if (!file || file.status !== STATUS.TRACKING) continue;
 
-        //  Only a session in progress has a boundary worth recording
-        if (file && (file.status === STATUS.TRACKING || file.status === STATUS.PAUSED)) {
-          /**
-           * 回到窗口时可能仍然空闲 / regaining focus does not mean the user is back.
-           *
-           * 失焦期间空闲判定被跳过（输入事件也一起停了），所以回来那一刻 `isIdle` 往往还是 true。
-           * 这时若照常写一条 `focus` 事件，事件流会把"回来了但还没动"的那段算成专注 —— 实时计数
-           * 记的是空闲，落盘后的账却是阅读，两边从此对不上。写 `idle` 事件，让推导也知道这一段是空闲。
-           *
-           * Idle detection is skipped while the window is unfocused (input events stop with it), so
-           * `isIdle` is usually still true the moment focus returns. Writing a `focus` event there
-           * would have the event stream count "back, but not yet moving" as active — the live counters
-           * say idle, the settled record says reading, and the two stop agreeing. An `idle` event
-           * keeps the derivation honest.
-           */
-          const stillIdle = focused
-            && this.deps.store.getState().isIdle
-            && file.status === STATUS.TRACKING;
+        /**
+         * 回到窗口时可能仍然空闲 / regaining focus does not mean the user is back.
+         *
+         * 失焦期间空闲判定被跳过（输入事件也一起停了），所以回来那一刻 `isIdle` 往往还是 true。
+         * 这时若照常写一条 `focus` 事件，事件流会把"回来了但还没动"的那段算成专注 —— 实时计数
+         * 记的是空闲，落盘后的账却是阅读，两边从此对不上。写 `idle` 事件，让推导也知道这一段是空闲。
+         *
+         * Idle detection is skipped while the window is unfocused (input events stop with it), so
+         * `isIdle` is usually still true the moment focus returns. Writing a `focus` event there
+         * would have the event stream count "back, but not yet moving" as active — the live counters
+         * say idle, the settled record says reading, and the two stop agreeing. An `idle` event
+         * keeps the derivation honest.
+         */
+        const stillIdle = focused
+          && this.deps.store.getState().isIdle
+          && file.status === STATUS.TRACKING;
 
-          this.appendEvent({
-            time: this.deps.clock.nowFull(),
-            type: focused ? (stillIdle ? 'idle' : 'focus') : 'blur',
-            file: filePath,
-            state: focused
-              ? file.status === STATUS.TRACKING
-                ? stillIdle ? 'idle' : 'tracking'
-                : 'pausing'
-              : 'inactive',
-            reason: focused
-              ? stillIdle ? 'window-focus-idle' : 'window-focus'
-              : 'window-blur',
-            ...(!focused ? { unfocusedDisposition: awayDisposition(file) } : {}),
-          });
-        }
+        this.appendEvent({
+          time: this.deps.clock.nowFull(),
+          type: focused ? (stillIdle ? 'idle' : 'focus') : 'blur',
+          file: filePath,
+          state: focused ? (stillIdle ? 'idle' : 'tracking') : 'inactive',
+          reason: focused
+            ? stillIdle ? 'window-focus-idle' : 'window-focus'
+            : hidden ? 'window-hidden' : leavingHiddenUnfocused ? 'window-visible-unfocused' : 'window-blur',
+          ...(!focused
+            ? { unfocusedDisposition: hidden ? 'ignored' as const : awayDisposition(file) }
+            : {}),
+        });
       }
 
       await this.flushPendingWrites();
+
+      //  从隐藏态回来时补一次路径对齐：启动即最小化、或隐藏期间布局变了，会话要能重新接上。
+      //  Reconcile the path after leaving hidden: a startup while minimized, or a layout change while
+      //  hidden, must be able to rebind the session.
+      if (focused && wasHidden) {
+        void this.onActivePathChange();
+      }
     } catch (error) {
       this.deps.log.warn('[RTT][service] 处理窗口焦点失败 / focus handling failed:', error);
     }
@@ -897,7 +950,7 @@ export class TimerService {
   }
 
   async autoStartStartup(fallbackPath: string | null): Promise<void> {
-    if (this.mobileBackground) return;
+    if (this.mobileBackground || this.pageHidden) return;
     const settings = this.deps.settings();
     if (!isDocumentRecordingEnabled(settings)) return;
     const revision = this.lifecycleRevision;

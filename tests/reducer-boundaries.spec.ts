@@ -3,7 +3,7 @@ import { ActionTypes, STATUS } from '../src/core/constants';
 import { DEFAULT_SETTINGS } from '../src/core/defaults';
 import { createInitialState, createTimerReducer } from '../src/core/reducer';
 import { computeSessionDurations } from '../src/core/timeline';
-import { liveWallClockSeconds, type TimerAction } from '../src/core/types';
+import { liveDeductionSeconds, liveWallClockSeconds, type TimerAction } from '../src/core/types';
 import { TimerService } from '../src/services/TimerService';
 import { TimerStore } from '../src/services/TimerStore';
 import { CapturingLogger, FakeClock, testDeps } from './helpers/fake-clock';
@@ -99,6 +99,60 @@ describe('parallel focus boundaries / 并行焦点边界', () => {
       }
     });
   }
+});
+
+describe('live deduction / 运行卡扣减', () => {
+  it('counts out-of-window time only', () => {
+    const ctx = setup();
+    ctx.startFile(FIRST);
+    ctx.clock.advanceSeconds(3);
+    ctx.dispatch({ type: ActionTypes.SET_WINDOW_FOCUS, payload: { focused: false } });
+    ctx.clock.advanceSeconds(4);
+    ctx.dispatch({ type: ActionTypes.SET_WINDOW_FOCUS, payload: { focused: true } });
+
+    const file = ctx.getState().files.get(FIRST)!;
+    expect(file.unfocusedSeconds).toBe(4);
+    expect(liveDeductionSeconds(file)).toBe(4);
+  });
+
+  it('never counts focused-but-idle time', () => {
+    const ctx = setup();
+    ctx.startFile(FIRST);
+    ctx.clock.advanceSeconds(1);
+    ctx.dispatch({ type: ActionTypes.SET_IDLE });
+    for (let second = 0; second < 3; second++) {
+      ctx.clock.advanceSeconds(1);
+      ctx.dispatch({ type: ActionTypes.TICK, payload: { filePath: FIRST } });
+    }
+
+    const file = ctx.getState().files.get(FIRST)!;
+    expect(file.idleSeconds).toBe(3);
+    expect(liveDeductionSeconds(file)).toBe(0);
+  });
+
+  it('freezes while deliberately paused instead of counting the pause', () => {
+    const ctx = setup();
+    ctx.startFile(FIRST);
+    ctx.clock.advanceSeconds(3);
+    ctx.dispatch({ type: ActionTypes.SET_WINDOW_FOCUS, payload: { focused: false } });
+    ctx.clock.advanceSeconds(4);
+    ctx.dispatch({ type: ActionTypes.SET_WINDOW_FOCUS, payload: { focused: true } });
+
+    const file = ctx.getState().files.get(FIRST)!;
+    expect(file.unfocusedSeconds).toBe(4);
+    expect(liveDeductionSeconds(file)).toBe(4);
+
+    ctx.dispatch({ type: ActionTypes.TOGGLE_PAUSE, payload: { filePath: FIRST } });
+    const frozen = liveDeductionSeconds(ctx.getState().files.get(FIRST)!);
+    ctx.clock.advanceSeconds(10);
+    //  暂停不进入扣减：橙色数字停在离开窗口的秒数，不再增长
+    //  A pause never enters the deduction: the orange figure stays at out-of-window seconds.
+    expect(liveDeductionSeconds(ctx.getState().files.get(FIRST)!)).toBe(frozen);
+
+    ctx.dispatch({ type: ActionTypes.TOGGLE_PAUSE, payload: { filePath: FIRST } });
+    expect(ctx.getState().files.get(FIRST)?.pausedSeconds).toBe(10);
+    expect(liveDeductionSeconds(ctx.getState().files.get(FIRST)!)).toBe(frozen);
+  });
 });
 
 describe('paused day rollover / 暂停跨日', () => {

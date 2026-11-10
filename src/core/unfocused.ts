@@ -26,6 +26,10 @@ export function listUnfocusedIntervals(events: readonly TimelineEvent[]): Unfocu
     if (event.type === 'start' || event.type === 'save' || event.type === 'auto-save') discarded.delete(event.file);
     if (discarded.has(event.file)) continue;
     if (event.type !== 'blur' && !event.unfocusedDisposition && event.state !== 'inactive') continue;
+    //  最小化/隐藏段不是「离开」：它已经明确不记录，不出现在可改判的离开列表里。
+    //  A hidden/minimized stretch is not "away": it is explicitly not recorded and does not appear
+    //  among the reclassifiable away intervals.
+    if (event.type === 'blur' && event.reason === 'window-hidden') continue;
     const fromMs = parseSessionStartTime(event.time)?.getTime();
     const toMs = next ? parseSessionStartTime(next.time)?.getTime() : undefined;
     const seconds = fromMs !== undefined && toMs !== undefined ? Math.max(0, (toMs - fromMs) / 1000) : 0;

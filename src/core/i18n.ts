@@ -36,9 +36,9 @@ export const I18N = {
     filterPatternsDesc: '每行或逗号分隔一条规则。路径前缀：Templates/   正则：/^Daily\\//',
     filterPickTooltip: '从 Vault 选择路径',
     idleEnabled: '启用空闲超时',
-    idleEnabledDesc: '关闭后无论是否有交互都持续计时，直至切换标签页或手动舍弃',
+    idleEnabledDesc: '超过设定秒数没有输入时，按「空闲」记录；关闭后不做空闲判定。',
     idleTimeout: '空闲超时（秒）',
-    idleTimeoutDesc: '无交互多少秒后暂停计时，最小 1 秒，默认 20 秒',
+    idleTimeoutDesc: '空闲判定的秒数；开启空闲超时后生效',
     minRead: '起步阈值（秒）',
     minReadDesc: '单次会话低于此秒数时不写入记录，0 表示不限制，默认 20 秒',
     displayMode: '时长显示模式',
@@ -246,6 +246,7 @@ export const I18N = {
     awayPolicyDesc: '对没有单独归类过的时段生效（包括已有的）；逐段改过的以那一行为准。',
     idlePolicyLabel: '空闲超时时',
     idlePolicyDesc: '窗口有焦点但没有输入。以前这段被直接丢弃，现在单独记录并按这里归类。',
+    idlePolicyDescOff: '空闲超时已关闭；这里只影响已有的空闲记录。',
     policyReading: '计入阅读',
     policyPaused: '计入暂停',
     policyIgnored: '不记录',
@@ -254,7 +255,7 @@ export const I18N = {
     awayIdleHint: '空闲时段（有焦点但无输入）按上面的空闲口径归类',
     awayKindIdle: '空闲',
     unfocusedMoved: '失焦归类已移到侧栏文档面板的「离开与空闲」区块。',
-    settingCountUnfocusedMoved: '「离开窗口时算作什么」已移到侧栏文档面板的「离开与空闲」区块，可在那里逐段调整。',
+    settingCountUnfocusedMoved: '「离开 / 空闲」的口径与空闲超时开关已移到侧栏文档面板的「离开与空闲」区块，可在那里逐段调整。',
     ovCountdown: '倒计时',
 
     // 未保存计时的恢复 / unsaved timer recovery
@@ -494,10 +495,9 @@ export const I18N = {
     filterPatternsDesc: 'One rule per line or comma-separated. Prefix: Templates/   Regex: /^Daily\\//',
     filterPickTooltip: 'Pick from Vault',
     idleEnabled: 'Enable idle timeout',
-    idleEnabledDesc:
-      'When off, timer runs continuously until you switch tabs or discard manually',
+    idleEnabledDesc: 'Record focused-but-idle time after the set number of seconds without input. Off disables idle detection.',
     idleTimeout: 'Idle timeout (seconds)',
-    idleTimeoutDesc: 'Pause after N seconds without interaction. Min 1s, default 20s',
+    idleTimeoutDesc: 'Seconds without input before a stretch counts as idle; applies when idle detection is on',
     minRead: 'Min session threshold (seconds)',
     minReadDesc: 'Sessions shorter than this are not saved. 0 = no limit, default 20s',
     displayMode: 'Duration display mode',
@@ -661,6 +661,7 @@ export const I18N = {
     awayPolicyDesc: 'Applies to every stretch that was never classified by hand — past ones included; a row changed below keeps its own choice.',
     idlePolicyLabel: 'When input stops',
     idlePolicyDesc: 'The window has focus but nothing is happening. This used to be discarded outright; it is now recorded and attributed here.',
+    idlePolicyDescOff: 'Idle detection is off; this only affects existing idle stretches.',
     policyReading: 'Count as reading',
     policyPaused: 'Count as paused',
     policyIgnored: 'Do not record',
@@ -669,7 +670,7 @@ export const I18N = {
     awayIdleHint: 'Idle stretches (focused, no input) follow the idle policy above',
     awayKindIdle: 'Idle',
     unfocusedMoved: 'Blur classification moved to the document panel’s "Away and idle" block.',
-    settingCountUnfocusedMoved: '"What away time counts as" moved to that block, where it can also be adjusted stretch by stretch.',
+    settingCountUnfocusedMoved: 'Away / idle attribution and the idle timeout switch moved to the sidebar document panel’s “Away and idle” block, where stretches can also be adjusted one by one.',
     ovCountdown: 'Countdown',
 
     // unsaved timer recovery

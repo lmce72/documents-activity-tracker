@@ -106,7 +106,7 @@ import {
   getTodaySeconds,
   getTodaySessionCount,
 } from '../core/timeline';
-import { liveWallClockSeconds } from '../core/types';
+import { liveDeductionSeconds } from '../core/types';
 import type {
   FileRecord,
   PluginSettings,
@@ -2559,7 +2559,7 @@ export class ActivitySidebarView extends ItemView {
       name: string;
       /** 第二行里跟在名字后的内容（轮次 / 开始时刻 / 段进度） */
       suffix?: string;
-      /** 未计入读数的秒数，显示为橙色扣减 / seconds outside reading, drawn as an orange deduction */
+      /** 本轮脱离窗口的秒数，显示为橙色扣减 / seconds out of window, drawn as an orange deduction */
       deductionSeconds?: number;
       /** 第三行：标签 + 时长 / third line: label plus a duration */
       detailLabel?: string;
@@ -2587,7 +2587,7 @@ export class ActivitySidebarView extends ItemView {
         icon: isView ? 'app-window' : 'file-text',
         name: recordName(settings, path, isView ? pluginViewLabel(path) : path.split('/').pop() ?? path),
         suffix: t('statusRound').replace('{n}', String(getTodaySessionCount(this.cachedEvents(), path))),
-        deductionSeconds: Math.max(0, liveWallClockSeconds(file, now) - file.activeSeconds),
+        deductionSeconds: liveDeductionSeconds(file),
         detailLabel: t('statusFileToday'),
         detailSeconds: getTodaySeconds(
           this.cachedEvents(), file, path, undefined,
@@ -3709,14 +3709,16 @@ export class ActivitySidebarView extends ItemView {
       // unit are separate nodes, and only rebuilding them keeps the muted-unit styling.
       const file = filePath ? state.files.get(filePath) : undefined;
 
-      // 主计时只显示有效阅读秒数，失焦或暂停时冻结；负数独立累计未阅读时长。
-      // The headline freezes while away or paused; the deduction keeps counting separately.
+      // 主计时只显示有效阅读秒数，失焦或暂停时冻结；扣减只统计脱离窗口，主动暂停与空闲不计入，
+      // 否则暂停或久坐不动时那个橙色数字会一直增长，看起来像计时没停。
+      // The headline freezes while away or paused; the deduction covers out-of-window time only, never
+      // a deliberate pause or focused-idle — otherwise the orange figure keeps growing while stopped.
       if (this.liveNodes.session) {
         setReadTime(this.liveNodes.session, file?.activeSeconds ?? 0, mode);
       }
 
       if (this.liveNodes.unfocused) {
-        const away = file ? liveWallClockSeconds(file, this.deps.clock.now()) - file.activeSeconds : 0;
+        const away = file ? liveDeductionSeconds(file) : 0;
         const seconds = Math.floor(away);
         this.liveNodes.unfocused.setText(away > 0 ? `-${Math.floor(seconds / 60)}分${seconds % 60}秒` : '');
 
@@ -3770,7 +3772,7 @@ export class ActivitySidebarView extends ItemView {
           entry.pie?.(seconds);
           if (entry.deduction) {
             const file = entry.key ? state.files.get(entry.key) : undefined;
-            const away = file ? Math.max(0, liveWallClockSeconds(file, now) - file.activeSeconds) : 0;
+            const away = file ? liveDeductionSeconds(file) : 0;
             const whole = Math.floor(away);
             entry.deduction.setText(away > 0 ? `-${Math.floor(whole / 60)}分${whole % 60}秒` : '');
             entry.deduction.toggleClass('is-empty', away <= 0);

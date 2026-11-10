@@ -123,28 +123,13 @@ export class ReadTimeSettingTab extends PluginSettingTab {
         }),
       );
 
-    new Setting(containerEl)
-      .setName(t('idleTimeout'))
-      .setDesc(t('idleTimeoutDesc'))
-      .addToggle((toggle) =>
-        toggle.setValue(settings.idleTimeoutEnabled !== false).onChange((value) => {
-          this.save({ idleTimeoutEnabled: value });
-        }),
-      )
-      .addText((text) =>
-        text.setValue(String(settings.idleTimeout)).onChange((value) => {
-          const parsed = parseInt(value, 10);
-          this.save({
-            idleTimeout: Number.isFinite(parsed) ? Math.max(1, parsed) : 1,
-          });
-        }),
-      );
-
     //  「离开窗口算作什么」搬到了侧栏文档面板的「离开与空闲」区块：改这个判断时，人正看着它影响的
-    //  那几个数字，隔着一层设置页去改既看不见效果，也容易忘了自己设过什么。
+    //  那几个数字，隔着一层设置页去改既看不见效果，也容易忘了自己设过什么。空闲超时的开关与秒数
+    //  也在同一个弹窗里，设置页不再重复。
     //  "What away time counts as" moved to the document panel's "away and idle" block: the judgement is
     //  made while looking at the numbers it moves, and a settings page both hides the effect and is
-    //  easy to forget.
+    //  easy to forget. The idle switch and seconds live in the same modal; the settings tab no longer
+    //  duplicates them.
     containerEl.createEl('p', {
       cls: 'setting-item-description',
       text: t('settingCountUnfocusedMoved'),
