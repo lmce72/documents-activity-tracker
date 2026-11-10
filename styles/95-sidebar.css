@@ -378,7 +378,9 @@
    One row of coloured blocks: a block only carries its round/segment number; names and durations
    live in the legend below. */
 .rtt-cd-flow .pele-block text {
-    fill: var(--text-on-accent);
+    /* 深色主题下 text-on-accent 是深色，压在饱和色块上看不清；改用正常前景色
+       In the dark theme text-on-accent is dark and vanishes on saturated fills; use normal fg. */
+    fill: var(--text-normal);
     font-weight: var(--font-medium);
 }
 
@@ -406,6 +408,7 @@
 }
 
 .rtt-cd-key { display: inline-flex; align-items: center; gap: 4px; }
+.rtt-cd-key-index { color: var(--text-normal); font-variant-numeric: tabular-nums; }
 .rtt-cd-key-time { color: var(--text-faint); font-variant-numeric: tabular-nums; }
 
 .rtt-cd-key::before {

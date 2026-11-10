@@ -2126,6 +2126,9 @@ export class ActivitySidebarView extends ItemView {
         //  The number lives inside its block, so the legend keeps only the duration; the aria-label
         //  still names the segment for screen readers.
         key.setAttribute('aria-label', `${t('countdownSegmentN').replace('{n}', String(index + 1))} ${duration}`);
+        //  只留数字，不再写「第 n 段」；时间轴块内也是同一个数字
+        //  The number alone, without the "phase n" words; the timeline block carries the same number.
+        key.createSpan({ cls: 'rtt-cd-key-index', text: String(index + 1) });
         key.createSpan({ cls: 'rtt-cd-key-time', text: duration });
       });
     } else if (legend) {
