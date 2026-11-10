@@ -52,6 +52,8 @@ export interface TimerServiceDeps {
   getOpenPaths: () => string[];
   /** 每个分屏当前的活动标签目标 / the active target of each split */
   getSplitTargets: () => string[];
+  /** 焦点是否在插件自己的视图上 / whether the plugin's own view has focus */
+  isOwnViewFocused?: () => boolean;
 }
 
 /** why a session closed. */
@@ -82,6 +84,8 @@ export class TimerService {
   private mobileBackground = false;
   private lifecycleRevision = 0;
   private foregroundResumePath: string | null = null;
+  /** 因操作追踪面板而自动暂停的目标 / the target auto-paused while the tracker itself is focused */
+  private toolPausedPath: string | null = null;
 
   private isCurrentLifecycle(revision: number): boolean {
     return revision === this.lifecycleRevision && !this.mobileBackground;
@@ -534,6 +538,34 @@ export class TimerService {
       if (this.parallelTracking()) {
         await this.syncParallelTargets();
         return;
+      }
+
+      //  追踪面板是控制面，不是过程目标：聚焦它时把当前一轮自动暂停，回到内容再续上。
+      //  The tracker is a control surface, not a process target: focusing it auto-pauses the
+      //  current round, and returning to content resumes it.
+      if (this.deps.isOwnViewFocused?.() === true) {
+        const state = this.deps.store.getState();
+        const active = state.activeFilePath;
+        const file = active ? state.files.get(active) : undefined;
+        if (active && file?.status === STATUS.TRACKING) {
+          await this.togglePausePath(active);
+          this.toolPausedPath = active;
+        }
+        return;
+      }
+
+      //  离开面板：若回到刚才那个目标就续上；去别处则按正常的切换收尾。
+      //  Leaving the panel: resume the same target, or settle it like a normal switch.
+      if (this.toolPausedPath) {
+        const pausedPath = this.toolPausedPath;
+        this.toolPausedPath = null;
+        if (toPath === pausedPath) {
+          const pausedFile = this.deps.store.getState().files.get(pausedPath);
+          if (pausedFile?.status === STATUS.PAUSED) {
+            await this.togglePausePath(pausedPath);
+            return;
+          }
+        }
       }
 
       if (fromPath === toPath) return;

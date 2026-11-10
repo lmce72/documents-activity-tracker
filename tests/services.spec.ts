@@ -34,6 +34,7 @@ function setup(overrides: Partial<PluginSettings> = {}) {
 
   let activePath: string | null = null;
   let openPaths: string[] = [];
+  let ownViewFocus = false;
 
   const service = new TimerService({
     store,
@@ -44,6 +45,7 @@ function setup(overrides: Partial<PluginSettings> = {}) {
     getActivePath: () => activePath,
     getOpenPaths: () => openPaths,
     getSplitTargets: () => openPaths,
+    isOwnViewFocused: () => ownViewFocus,
   });
 
   let idCounter = 0;
@@ -63,6 +65,9 @@ function setup(overrides: Partial<PluginSettings> = {}) {
     settings,
     service,
     manual,
+    setOwnFocus: (focused: boolean) => {
+      ownViewFocus = focused;
+    },
     setActive: (path: string | null) => {
       activePath = path;
     },
@@ -652,6 +657,27 @@ it('start resolves a just-focused plugin view rather than the previous note', as
  expect(ctx.store.getState().activeFilePath).toBe('view:rss-dashboard-view');
  expect(ctx.store.getState().files.get('view:rss-dashboard-view')?.status).toBe('tracking');
  expect(ctx.store.getState().files.get(FILE)?.activeSeconds).toBe(0);
+});
+
+describe('TimerService — 操作面板时的自动暂停 / tool focus pauses', () => {
+  it('聚焦追踪面板自动暂停，回到同一目标续上', async () => {
+    const ctx = setup({ autoStartMode: 'always', minReadSeconds: 0, idleTimeoutEnabled: false });
+    await ctx.open(FILE);
+    await ctx.advance(2);
+
+    ctx.setOwnFocus(true);
+    await ctx.service.onActivePathChange();
+    expect(ctx.store.getState().files.get(FILE)?.status).toBe(STATUS.PAUSED);
+    const pausedAt = ctx.store.getState().files.get(FILE)?.activeSeconds ?? 0;
+    await ctx.advance(2);
+    expect(ctx.store.getState().files.get(FILE)?.activeSeconds).toBe(pausedAt);
+
+    ctx.setOwnFocus(false);
+    await ctx.service.onActivePathChange();
+    expect(ctx.store.getState().files.get(FILE)?.status).toBe(STATUS.TRACKING);
+    await ctx.advance(2);
+    expect(ctx.store.getState().files.get(FILE)?.activeSeconds).toBe(pausedAt + 2);
+  });
 });
 
 describe('TimerService — 并行记录 / parallel tracking', () => {

@@ -187,6 +187,7 @@ export default class ReadTimeTrackerPlugin extends Plugin {
       getActiveTitle: () => this.binding?.getActiveTitle() ?? null,
       getOpenPaths: () => this.binding?.getOpenPaths() ?? [],
       getSplitTargets: () => this.binding?.getSplitTargets() ?? [],
+      isOwnViewFocused: () => this.binding?.isOwnViewFocused() ?? false,
     });
 
     this.manualService = new ManualTimerService({

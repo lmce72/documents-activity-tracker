@@ -57,6 +57,8 @@ export interface Binding {
    * Returns deduplicated targets (file paths or `view:` keys).
    */
   getSplitTargets(): string[];
+  /** 焦点是否落在插件自己的视图上 / whether the focused view belongs to this plugin. */
+  isOwnViewFocused(): boolean;
   getActiveTitle(): string | null;
   /** markdown paths currently open */
   getOpenPaths(): string[];
@@ -85,12 +87,18 @@ export function installBindings(deps: BindingDeps): Binding {
    * focused plugin view and is recorded as such; non-reading chrome (file explorer, search) still
    * resolves to nothing.
    */
+  const isOwnViewFocused = (): boolean => {
+    const type = app.workspace.activeLeaf?.view?.getViewType();
+    return !!type && ownViewTypes.has(type);
+  };
+
   const getActivePath = (): string | null => {
     const focused = app.workspace.activeLeaf?.view;
     if (!focused) return null;
     if (focused instanceof MarkdownView) return focused.file?.path ?? null;
     const type = focused.getViewType();
-    if (!type || NON_READING_VIEW_TYPES.includes(type)) return null;
+    //  插件自己的视图是控制面，不是过程目标 / our own view is a control surface, not a target
+    if (!type || ownViewTypes.has(type) || NON_READING_VIEW_TYPES.includes(type)) return null;
     return pluginViewKey(type);
   };
 
@@ -127,9 +135,7 @@ export function installBindings(deps: BindingDeps): Binding {
       //  A plugin view has no file, but its leaf is the evidence that the target is still open. With
       //  parallel tracking every open readable view counts, not only the active one.
       const type = view.getViewType();
-      //  追踪面板自己也是插件视图，过程模式会把它当作目标；它同样要算「还开着」
-      //  The tracker panel is a plugin view too and process mode may target it, so it counts as open.
-      if (!type || NON_READING_VIEW_TYPES.includes(type)) return;
+      if (!type || ownViewTypes.has(type) || NON_READING_VIEW_TYPES.includes(type)) return;
       paths.push(pluginViewKey(type));
     });
     return paths;
@@ -400,6 +406,7 @@ export function installBindings(deps: BindingDeps): Binding {
     getActiveTitle,
     getOpenPaths,
     getSplitTargets,
+    isOwnViewFocused,
     destroy(): void {
       destroyed = true;
       window.clearInterval(timer);
