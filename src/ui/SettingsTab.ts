@@ -34,6 +34,26 @@ export class ReadTimeSettingTab extends PluginSettingTab {
   }
 
   override display(): void {
+    //  设置页经常整块重建（开关、模式、状态栏槽位改变后都要重排），而 `empty()` 会把滚动位置
+    //  一并清零 —— 用户每改一次就被弹回页首。重建前记录本元素及所有可滚动祖先的位置，建完还原。
+    //  The tab is rebuilt wholesale after toggles and dropdowns, and `empty()` resets scrolling — the
+    //  user is thrown back to the top after every edit. Record this element and its scrollable
+    //  ancestors before rebuilding, then put every position back.
+    const scrollers: Array<{ element: HTMLElement; top: number }> = [];
+    for (let element: HTMLElement | null = this.containerEl; element; element = element.parentElement) {
+      scrollers.push({ element, top: element.scrollTop });
+    }
+    try {
+      this.renderSettings();
+    } finally {
+      for (const { element, top } of scrollers) {
+        if (element.isConnected) element.scrollTop = top;
+      }
+    }
+  }
+
+  /** 真正构建设置项；滚动位置由 {@link display} 负责保持 / builds the tab; `display` keeps the scroll. */
+  private renderSettings(): void {
     const { containerEl } = this;
     containerEl.empty();
 
