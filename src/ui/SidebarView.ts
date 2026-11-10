@@ -986,10 +986,9 @@ export class ActivitySidebarView extends ItemView {
     //  Top: the numbers for now (grid + current session); bottom: the day's shape and ranking
     this.renderDocumentStats(left, records, settings);
     this.renderCurrentSession(left, filePath, records);
-    //  文档账本里同样可能有多个并行目标：当前这张卡之外，其余会话逐行列出来
-    //  The document ledger can run several targets too: every session besides the current card is
-    //  listed as its own row.
-    this.renderActiveTasks(left, true, filePath);
+    //  并行会话统一在总看板的「正在进行」里列出，文档面板不再重复一个分区
+    //  Parallel sessions live in the overview's "running now" list; the document panel does not
+    //  repeat a section for them.
     this.renderAwaySection(left);
     this.renderDocumentHeatmap(right, records);
     this.renderTodayList(right, records);
@@ -1621,8 +1620,13 @@ export class ActivitySidebarView extends ItemView {
   }
 
   private renderAwaySection(root: HTMLElement): void {
-    const button = root.createEl('button', { cls: 'rtt-view-all-btn', text: t('awaySectionTitle') });
-    button.addEventListener('click', () => this.openAwayModal());
+    //  设置项样式而不是一条无上下文的文字按钮 / a setting row, not a bare text button
+    new Setting(root)
+      .setName(t('awaySettingsTitle'))
+      .setDesc(t('awaySettingsDesc'))
+      .addButton(button => button
+        .setButtonText(t('settingsAction'))
+        .onClick(() => this.openAwayModal()));
   }
 
   /** manual timer controls. */
