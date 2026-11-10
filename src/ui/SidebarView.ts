@@ -34,6 +34,8 @@ import { DropdownComponent, ItemView, Notice, Setting, setIcon, setTooltip, type
 
 import { STATUS } from '../core/constants';
 import {
+  durationPartsNonZero,
+  formatDurationNonZero,
   formatDurationParts,
   formatLocalFull,
   formatDurationWithSeconds,
@@ -2092,7 +2094,7 @@ export class ActivitySidebarView extends ItemView {
     const template = t('countdownPlanSummary').replace('{count}', String(plan.phases.length));
     const [before = '', after = ''] = template.split('{total}');
     summary.createSpan({ text: `${t(modeLabelKey(plan.mode))} · ${before}` });
-    appendDurationParts(summary, formatDurationParts(total));
+    appendDurationParts(summary, durationPartsNonZero(total));
     if (after) summary.createSpan({ text: after });
 
     //  方案画成一行色块时间轴：起点固定为「现在」，终点是理想状态下的预计完成时刻。
@@ -2119,8 +2121,12 @@ export class ActivitySidebarView extends ItemView {
       plan.phases.forEach((phase, index) => {
         const key = legend.createSpan({ cls: 'rtt-cd-key' });
         key.setCssProps({ '--rtt-key-color': this.countdownPhaseColor(index, this.countdownColorSeed(plan)) });
-        key.createSpan({ text: t('countdownSegmentN').replace('{n}', String(index + 1)) });
-        key.createSpan({ cls: 'rtt-cd-key-time', text: formatDurationWithSeconds(phase.seconds) });
+        const duration = formatDurationNonZero(phase.seconds);
+        //  段号已经写在块里，图例只留时长；读屏仍能听到第几段
+        //  The number lives inside its block, so the legend keeps only the duration; the aria-label
+        //  still names the segment for screen readers.
+        key.setAttribute('aria-label', `${t('countdownSegmentN').replace('{n}', String(index + 1))} ${duration}`);
+        key.createSpan({ cls: 'rtt-cd-key-time', text: duration });
       });
     } else if (legend) {
       //  番茄钟/单段按类别汇总 / pomodoro and single-phase plans total by kind
@@ -2130,7 +2136,7 @@ export class ActivitySidebarView extends ItemView {
       for (const kind of kinds) {
         const key = legend.createSpan({ cls: `rtt-cd-key rtt-cd-key-${kind}` });
         key.createSpan({ text: t(phaseLabelKey(kind)) });
-        key.createSpan({ cls: 'rtt-cd-key-time', text: formatDurationWithSeconds(totals.get(kind) ?? 0) });
+        key.createSpan({ cls: 'rtt-cd-key-time', text: formatDurationNonZero(totals.get(kind) ?? 0) });
       }
     }
     this.countdownFlow = {
@@ -2188,8 +2194,12 @@ export class ActivitySidebarView extends ItemView {
     const columns = spans.reduce((sum, span) => sum + span, 0);
     const lines = ['block-beta', `    columns ${columns}`];
     schedule.forEach((item, index) => {
-      //  只留阶段名：条太窄，完整时长已经写在摘要里 / name only: bars are narrow and the summary has durations
-      lines.push(`    p${index}["${item.label.split(' · ')[0]}"]:${spans[index]}`);
+      //  块内写轮数/段号：不规则是第几段，番茄钟是第几轮，单段倒计时固定 1
+      //  The block carries its round/segment number: nth irregular phase, nth pomodoro cycle, or 1.
+      const number = plan.mode === 'interval'
+        ? String(item.phaseIndex + 1)
+        : plan.mode === 'pomodoro' ? String(Math.floor(item.phaseIndex / 2) + 1) : '1';
+      lines.push(`    p${index}["${number}"]:${spans[index]}`);
     });
     if (plan.mode === 'interval') {
       //  每一段一个颜色，按段号取色：重绘时颜色不跳，相邻段也尽量不同

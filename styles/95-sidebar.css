@@ -374,10 +374,13 @@
     height: auto;
 }
 
-/* 一行色块时间轴：块内文字按容器缩得太小，读名交给下方图例
-   One row of coloured blocks: labels scale below legibility in the narrow column, so the legend
-   below carries the names. */
-.rtt-cd-flow .pele-block text { display: none; }
+/* 一行色块时间轴：块内只放轮数/段号，名称与时长交给下方图例
+   One row of coloured blocks: a block only carries its round/segment number; names and durations
+   live in the legend below. */
+.rtt-cd-flow .pele-block text {
+    fill: var(--text-on-accent);
+    font-weight: var(--font-medium);
+}
 
 .rtt-cd-range {
     display: flex;

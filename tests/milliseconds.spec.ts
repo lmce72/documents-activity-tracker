@@ -10,6 +10,7 @@ import { describe, expect, it } from 'bun:test';
 
 import { buildCountdownPlan } from '../src/core/countdown';
 import { createInitialState } from '../src/core/reducer';
+import { formatDurationNonZero } from '../src/core/time';
 import {
   selectCountdownElapsedMs,
   selectCountdownElapsedSeconds,
@@ -124,5 +125,15 @@ describe('倒计时 / countdown', () => {
     const session = await countdown.stop('');
     expect(session?.durationMs).toBe(1250);
     expect(session?.durationSeconds).toBe(1);
+  });
+});
+
+describe('时长显示 / duration display', () => {
+  it('省略数值为 0 的单位', () => {
+    expect(formatDurationNonZero(1500)).toBe('25分');
+    expect(formatDurationNonZero(3600)).toBe('1小时');
+    expect(formatDurationNonZero(3660)).toBe('1小时1分');
+    expect(formatDurationNonZero(65)).toBe('1分5秒');
+    expect(formatDurationNonZero(0)).toBe('0秒');
   });
 });

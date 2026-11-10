@@ -169,6 +169,25 @@ export function formatDurationParts(seconds: number): DurationPart[] {
   ];
 }
 
+/**
+ * 去掉数值为 0 的单位 / drop units whose value is zero.
+ *
+ * 「25 分 0 秒」把注意力分给了一个没有信息的单位；方案摘要与图例只需要「25 分」。全为 0 时
+ * 仍保留一个「0 秒」，否则什么也读不到。
+ * "25 min 0 s" spends attention on a unit carrying nothing; summaries and legends need "25 min".
+ * When every part is zero, one "0 s" stays so there is something to read.
+ */
+export function durationPartsNonZero(seconds: number): DurationPart[] {
+  const parts = formatDurationParts(seconds);
+  const nonZero = parts.filter((part) => Number(part.value) !== 0);
+  return nonZero.length > 0 ? nonZero : parts;
+}
+
+/** Seconds to a compact duration with zero-valued units omitted. */
+export function formatDurationNonZero(seconds: number): string {
+  return durationPartsNonZero(seconds).map((part) => `${part.value}${part.unit}`).join('');
+}
+
 /** Seconds to a human-readable duration. */
 export function formatReadTime(seconds: number, mode: string = 'compact'): string {
   return formatReadTimeParts(seconds, mode)
