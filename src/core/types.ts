@@ -53,6 +53,15 @@ export interface PluginSettings {
    * the sidebar lists every running one. Desktop only — mobile lifecycle handling assumes one.
    */
   parallelTracking: boolean;
+  /**
+   * 单线程计时模式 / single-thread timing.
+   *
+   * 开启后只跟随当前获得焦点的文档或视图：切走时上一段结束，切回来再开新的一轮。
+   * 关闭（默认）则多个目标并行计时。仅桌面端有效。
+   * On, only the focused document or view is timed: switching ends the previous round and coming
+   * back starts a new one. Off (default) runs targets in parallel. Desktop only.
+   */
+  singleThreadTracking: boolean;
   useIconize: boolean;
   dataFilePath: string;
   /**

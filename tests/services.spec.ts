@@ -674,6 +674,22 @@ describe('TimerService — 并行记录 / parallel tracking', () => {
       event.type === 'start' && (event.time === '2026-09-15 10:00:00' || event.parallel === true))).toBe(true);
   });
 
+  it('单线程模式换目标会结束上一段', async () => {
+    const ctx = setup({ parallelTracking: true, singleThreadTracking: true, autoStartMode: 'always', minReadSeconds: 0, idleTimeoutEnabled: false });
+    await ctx.open(FILE);
+    await ctx.advance(2);
+
+    ctx.setActive(OTHER);
+    ctx.setOpen([FILE, OTHER]);
+    await ctx.service.onActivePathChange();
+    await ctx.advance(2);
+
+    const state = ctx.store.getState();
+    expect(state.activeFilePath).toBe(OTHER);
+    expect(state.files.get(FILE)?.status).toBe(STATUS.IDLE);
+    expect(state.files.get(OTHER)?.status).toBe(STATUS.TRACKING);
+  });
+
   it('并行启动为所有已打开目标建立会话', async () => {
     const ctx = setup({ parallelTracking: true, autoStartMode: 'always', minReadSeconds: 0, idleTimeoutEnabled: false });
     ctx.setActive(FILE);

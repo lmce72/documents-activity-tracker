@@ -77,12 +77,14 @@ export class ReadTimeSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName(t('parallelTracking'))
-      .setDesc(t('parallelTrackingDesc'))
+      .setName(t('singleThreadTracking'))
+      .setDesc(t('singleThreadTrackingDesc'))
       .addToggle(toggle => toggle
-        .setValue(settings.parallelTracking !== false)
+        .setValue(settings.singleThreadTracking === true)
         .onChange(async (value) => {
-          await this.deps.save({ parallelTracking: value });
+          //  关掉单线程即回到并行；parallelTracking 一并扶正，旧配置不会把开关卡在单线程
+          //  Off means parallel; parallelTracking is re-armed so an old config cannot pin single mode.
+          await this.deps.save({ singleThreadTracking: value, parallelTracking: true });
         }));
 
     new Setting(containerEl)

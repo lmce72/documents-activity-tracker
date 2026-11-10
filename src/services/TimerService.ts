@@ -95,7 +95,10 @@ export class TimerService {
    * mobile.
    */
   private parallelTracking(): boolean {
-    return !this.deps.isMobile && this.deps.settings().parallelTracking === true;
+    const settings = this.deps.settings();
+    return !this.deps.isMobile
+      && settings.singleThreadTracking !== true
+      && settings.parallelTracking !== false;
   }
 
   /** Close the reading round before the WebView can freeze; background has no live tail. */
