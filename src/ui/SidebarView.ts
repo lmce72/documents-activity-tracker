@@ -9,7 +9,7 @@ import { visitNodes } from './processList';
 import { AwayIdleModal } from './AwayIdleModal';
 import { renderHint } from './hintCallout';
 import { renderSectionHeading } from './sectionHeading';
-import { loadPele, type PeleMounted } from './pele';
+import { loadPele, type PeleMounted, type PeleMountOptions } from './pele';
 import { activityRuns } from '../core/activityRuns';
 /**
  * Sidebar view
@@ -1889,7 +1889,13 @@ export class ActivitySidebarView extends ItemView {
   private countdownPreview: CountdownPlan | null = null;
 
   /** 方案流程图 / the plan's flow diagram. */
-  private countdownFlow: { container: HTMLElement; mounted: PeleMounted | null; source: string; phase: number | null } | null = null;
+  private countdownFlow: {
+    container: HTMLElement;
+    mounted: PeleMounted | null;
+    source: string;
+    phase: number | null;
+    options: PeleMountOptions;
+  } | null = null;
 
   /** countdown controls: the ring and its buttons. */
   private renderCountdownControls(root: HTMLElement): void {
@@ -2048,12 +2054,21 @@ export class ActivitySidebarView extends ItemView {
       : locatePhase(plan, selectCountdownElapsedSeconds(state, this.deps.clock.now()) + (state.countdown.skippedSeconds ?? 0));
     const flow = root.createDiv({ cls: 'rtt-cd-flow' });
     const source = this.countdownFlowSource(plan, position);
-    this.countdownFlow = { container: flow, mounted: null, source, phase: position && !position.completed ? position.index : null };
+    this.countdownFlow = {
+      container: flow,
+      mounted: null,
+      source,
+      phase: position && !position.completed ? position.index : null,
+      //  字号与内边距压小；番茄钟强制横向，一圈两节点比八段竖排矮得多
+      //  Smaller type and padding; pomodoro stays horizontal — one cycle beats eight stacked nodes.
+      options: { zoom: false, fontSize: 12, padding: 4, autoDirection: plan.mode !== 'pomodoro' },
+    };
     void this.mountCountdownFlow(flow, source);
   }
 
   /** 把方案转成 Mermaid flowchart 源码 / turn the plan into Mermaid flowchart source. */
   private countdownFlowSource(plan: CountdownPlan, position: CountdownPosition | null): string {
+    if (plan.mode === 'pomodoro') return this.pomodoroFlowSource(plan, position);
     const lines = ['flowchart LR'];
     plan.phases.forEach((phase, index) => {
       const label = phase.kind === 'segment'
@@ -2070,13 +2085,53 @@ export class ActivitySidebarView extends ItemView {
     return lines.join('\n');
   }
 
+  /**
+   * 番茄钟只画一圈 / one pomodoro cycle, not every repeat.
+   *
+   * 八段其实是同一组「专注 + 休息」重复四次；把四次展开成八个节点，高度翻四倍却没有任何新信息。
+   * 这里画一圈，轮数写在子图标题上；当前轮与段用 ▶/✓ 标出。
+   *
+   * Eight phases are the same focus-and-break pair four times over: unrolling them quadruples the
+   * height without adding information. One cycle is drawn, the repeat count sits on the subgraph
+   * title, and ▶/✓ still mark the current round and phase.
+   */
+  private pomodoroFlowSource(plan: CountdownPlan, position: CountdownPosition | null): string {
+    const cycles = Math.max(1, Math.round(plan.phases.length / 2));
+    const running = position !== null && !position.completed;
+    const cycleIndex = running ? Math.floor(position.index / 2) : null;
+    const inCycle = running ? position.index % 2 : null;
+    const labelOf = (phaseIndex: number, slot: number): string => {
+      const phase = plan.phases[phaseIndex];
+      if (!phase) return '';
+      const label = phase.kind === 'segment'
+        ? t('countdownSegmentN').replace('{n}', String(phaseIndex + 1))
+        : t(phaseLabelKey(phase.kind));
+      const mark = inCycle === null ? '' : slot < inCycle ? '✓ ' : slot === inCycle ? '▶ ' : '';
+      return `${mark}${label} · ${formatDurationWithSeconds(phase.seconds)}`;
+    };
+    const focus = labelOf(0, 0);
+    const rest = labelOf(1, 1);
+    if (cycles <= 1) {
+      return rest
+        ? `flowchart LR\n  n0["${focus}"]\n  n1["${rest}"]\n  n0 --> n1`
+        : `flowchart LR\n  n0["${focus}"]`;
+    }
+    const title = `↻ ×${cycles} 轮${cycleIndex === null ? '' : ` · 第 ${cycleIndex + 1} 轮`}`;
+    return [
+      'flowchart LR',
+      `  subgraph cycle["${title}"]`,
+      `    n0["${focus}"] --> n1["${rest}"]`,
+      '  end',
+    ].join('\n');
+  }
+
   /** 挂载/更新流程图 / mount the flow chart, then let phase changes update it in place. */
   private async mountCountdownFlow(container: HTMLElement, source: string): Promise<void> {
     const pele = await loadPele();
     const flow = this.countdownFlow;
     if (!pele || !flow || flow.container !== container || !container.isConnected) return;
     try {
-      flow.mounted = pele.mount(container, flow.source || source, { zoom: false });
+      flow.mounted = pele.mount(container, flow.source || source, flow.options);
     } catch (error) {
       this.deps.log.warn('[RTT][sidebar] 方案流程图渲染失败 / plan flow render failed:', error);
     }

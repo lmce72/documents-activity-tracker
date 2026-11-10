@@ -20,6 +20,12 @@ export interface PeleMounted {
 export interface PeleMountOptions {
   /** 侧栏里不需要缩放控件 / no zoom controls in a narrow sidebar */
   zoom?: boolean | 'auto';
+  /** 基础字号（像素）/ base label size in pixels */
+  fontSize?: number;
+  /** 图形四周留白（像素）/ space around the diagram in pixels */
+  padding?: number;
+  /** 窄容器是否自动转竖向 / whether a narrow container may switch to a vertical layout */
+  autoDirection?: boolean;
   onError?: (error: unknown) => void;
 }
 
