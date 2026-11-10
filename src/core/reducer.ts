@@ -31,6 +31,7 @@ import {
   liveWallClockSeconds,
   type CountdownTimerState,
   type ManualTimerState,
+  type SessionState,
   type SessionStateMap,
   type TimerAction,
   type TimerFileState,
@@ -76,25 +77,51 @@ function gapToSeconds(gapMs: number): number {
   return Math.max(1, Math.round(gapMs / 1000));
 }
 
+/** 当前运行通道 / one shared channel decision for ticks and transition boundaries. */
+function runningSessionState(
+  file: TimerFileState,
+  state: Pick<TimerState, 'isWindowFocused' | 'isIdle'>,
+): SessionState {
+  if (!state.isWindowFocused && !file.splitReading) return 'inactive';
+  return state.isIdle ? 'idle' : 'tracking';
+}
+
+/** 切换前结算旧通道；休眠和时钟回拨只重置基准。
+ * Settle the channel being left; sleep and clock corrections only reset the baseline.
+ */
+function settleTrackingGap(file: TimerFileState, state: TimerState, now: number): TimerFileState {
+  if (file.status !== STATUS.TRACKING) return file;
+  const gap = file.lastTickTimestamp === null ? 0 : now - file.lastTickTimestamp;
+  const limit = state.isWindowFocused ? TICK_GAP_LIMIT_MS : UNFOCUSED_GAP_LIMIT_MS;
+  const seconds = gap >= 0 && gap <= limit
+    ? state.isWindowFocused ? Math.round(gap / 1000) : gapToSeconds(gap)
+    : 0;
+  const channel = runningSessionState(file, state);
+  return {
+    ...file,
+    activeSeconds: file.activeSeconds + (channel === 'tracking' ? seconds : 0),
+    unfocusedSeconds: file.unfocusedSeconds + (channel === 'inactive' ? seconds : 0),
+    idleSeconds: (file.idleSeconds ?? 0) + (channel === 'idle' ? seconds : 0),
+    lastTickTimestamp: now,
+  };
+}
+
 /**
- * Reset the active file's tick baseline.
+ * 重置所有运行目标的基准 / reset every running target's tick baseline.
  *
  * Used when counting resumes after idle. Without it, the first tick afterwards would
  * bank the whole idle stretch as a gap; the gap-integrating unfocused channel is
  * especially prone to this, silently turning idle time into reading time.
  */
 function refreshTickBaseline(state: TimerState, now: number): TimerState {
-  const path = state.activeFilePath;
-  if (!path) return state;
-
-  const file = state.files.get(path);
-  if (!file || file.status !== STATUS.TRACKING || file.lastTickTimestamp === null) {
-    return state;
-  }
-
   const newFiles = new Map(state.files);
-  newFiles.set(path, { ...file, lastTickTimestamp: now });
-  return { ...state, files: newFiles };
+  let changed = false;
+  for (const [path, file] of state.files) {
+    if (file.status !== STATUS.TRACKING || file.lastTickTimestamp === null) continue;
+    newFiles.set(path, { ...file, lastTickTimestamp: now });
+    changed = true;
+  }
+  return changed ? { ...state, files: newFiles } : state;
 }
 
 /** An idle manual-timer state. */
@@ -229,13 +256,12 @@ export function createTimerReducer(deps: ReducerDeps) {
         //  一段只归一类：窗口失焦优先（那是更强的信号），其次是有焦点但空闲，最后才是专注
         //  One stretch, one channel: being out of the window wins (the stronger signal), then
         //  focused-but-idle, then active.
-        const countsAsActive = focused || file.splitReading === true;
-        const isIdle = state.isIdle && countsAsActive;
+        const channel = runningSessionState(file, state);
 
         let nextFile: TimerFileState;
-        if (!countsAsActive) {
+        if (channel === 'inactive') {
           nextFile = { ...file, unfocusedSeconds: file.unfocusedSeconds + gained };
-        } else if (isIdle) {
+        } else if (channel === 'idle') {
           nextFile = { ...file, idleSeconds: (file.idleSeconds ?? 0) + gained };
         } else {
           nextFile = { ...file, activeSeconds: file.activeSeconds + gained };
@@ -250,7 +276,7 @@ export function createTimerReducer(deps: ReducerDeps) {
           //  unfocused time for active time. Idle gets its own state for the same reason.
           sessionObject: {
             ...(file.sessionObject ?? {}),
-            [timeStr]: !countsAsActive ? 'inactive' : isIdle ? 'idle' : 'tracking',
+            [timeStr]: channel,
           },
         });
 
@@ -269,41 +295,18 @@ export function createTimerReducer(deps: ReducerDeps) {
         const { focused } = action.payload;
         if (state.isWindowFocused === focused) return state;
 
-        const leavingFocused = state.isWindowFocused;
         const currentTime = deps.now();
-        const activePath = state.activeFilePath;
-        const file = activePath ? state.files.get(activePath) : undefined;
-
-        //  Only a running, unpaused, non-idle session has a gap worth settling
-        const shouldSettle = !!file && file.status === STATUS.TRACKING && (!state.isIdle || !!file.splitReading && !state.isWindowFocused);
-
-        if (!shouldSettle || !file || file.lastTickTimestamp === null) {
-          return { ...state, isWindowFocused: focused };
-        }
-
-        const gap = currentTime - file.lastTickTimestamp;
-        const limit = leavingFocused ? TICK_GAP_LIMIT_MS : UNFOCUSED_GAP_LIMIT_MS;
         const newFiles = new Map(state.files);
+        const nextState = { ...state, isWindowFocused: focused };
+        const timeStr = deps.nowFull();
 
-        if (gap > limit) {
-
-          //  A gap beyond the limit means sleep: reset the baseline, settle nothing
-          newFiles.set(activePath!, { ...file, lastTickTimestamp: currentTime });
-        } else if (leavingFocused || file.splitReading) {
-
-          //  The focused channel ticks reliably at 1Hz, so rounding is enough
-          newFiles.set(activePath!, {
-            ...file,
-            activeSeconds: file.activeSeconds + Math.round(gap / 1000),
-            lastTickTimestamp: currentTime,
-          });
-        } else {
-
-          //  The unfocused channel banks the whole throttled stretch
-          newFiles.set(activePath!, {
-            ...file,
-            unfocusedSeconds: file.unfocusedSeconds + gapToSeconds(gap),
-            lastTickTimestamp: currentTime,
+        // 窗口焦点属于所有并行目标，不能只结算当前高亮目标。
+        // Window focus applies to every parallel target, not only the highlighted one.
+        for (const [path, file] of state.files) {
+          if (file.status !== STATUS.TRACKING) continue;
+          newFiles.set(path, {
+            ...settleTrackingGap(file, state, currentTime),
+            sessionObject: { ...file.sessionObject, [timeStr]: runningSessionState(file, nextState) },
           });
         }
 
@@ -324,16 +327,11 @@ export function createTimerReducer(deps: ReducerDeps) {
         const file = state.files.get(filePath);
         if (filePath !== state.activeFilePath || !file || file.status === STATUS.IDLE || !!file.splitReading === enabled) return state;
         const now = deps.now();
-        const gap = file.lastTickTimestamp === null ? 0 : now - file.lastTickTimestamp;
-        const limit = state.isWindowFocused ? TICK_GAP_LIMIT_MS : UNFOCUSED_GAP_LIMIT_MS;
-        const seconds = file.status === STATUS.TRACKING && (!state.isIdle || !state.isWindowFocused) && gap >= 0 && gap <= limit ? Math.round(gap / 1000) : 0;
-        const reading = state.isWindowFocused || file.splitReading;
+        const nextFile = { ...settleTrackingGap(file, state, now), splitReading: enabled };
         const files = new Map(state.files);
-        files.set(filePath, { ...file, splitReading: enabled,
-          activeSeconds: file.activeSeconds + (reading ? seconds : 0),
-          unfocusedSeconds: file.unfocusedSeconds + (reading ? 0 : seconds),
+        files.set(filePath, { ...nextFile,
           lastTickTimestamp: now,
-          sessionObject: { ...file.sessionObject, [deps.nowFull()]: file.status === STATUS.PAUSED ? 'pausing' : state.isWindowFocused || enabled ? 'tracking' : 'inactive' },
+          sessionObject: { ...file.sessionObject, [deps.nowFull()]: file.status === STATUS.PAUSED ? 'pausing' : runningSessionState(nextFile, state) },
         });
         return { ...state, files };
       }
@@ -600,7 +598,8 @@ export function createTimerReducer(deps: ReducerDeps) {
       //  只跳过"还要等多久"，不碰已计时长 / skip the wait, never the time already lived
       case ActionTypes.COUNTDOWN_SKIP: {
         if (state.countdown.status === MANUAL_STATUS.IDLE) return state;
-        const seconds = Math.max(0, Math.round(action.payload.seconds));
+        if (!Number.isFinite(action.payload.seconds)) return state;
+        const seconds = Math.max(0, action.payload.seconds);
         if (seconds === 0) return state;
         return {
           ...state,
@@ -883,6 +882,8 @@ export function createTimerReducer(deps: ReducerDeps) {
 
         const newFiles = new Map(state.files);
         const newPendingWrites = [...state.pendingWrites];
+        const currentTime = deps.now();
+        const startTime = deps.nowFull();
         let changed = false;
 
         for (const [filePath, file] of state.files) {
@@ -893,7 +894,7 @@ export function createTimerReducer(deps: ReducerDeps) {
           // close yesterday's session
           const closedSession: SessionStateMap = {
             ...file.sessionObject,
-            [deps.nowFull()]: 'saved',
+            [startTime]: 'saved',
           };
           newPendingWrites.push({
             type: 'session',
@@ -905,12 +906,15 @@ export function createTimerReducer(deps: ReducerDeps) {
             activeSeconds: file.activeSeconds,
             unfocusedSeconds: file.unfocusedSeconds,
             idleSeconds: file.idleSeconds ?? 0,
-            totalSeconds: liveWallClockSeconds(file, deps.now()),
+            totalSeconds: liveWallClockSeconds(file, currentTime),
           });
 
-          // if tracking, open a fresh session
+          // 暂停也必须续开，否则恢复后缺少 start，阅读记录会丢失。
+          // Paused sessions also need a new start or resumed reading disappears from history.
           const stillTracking = file.status === STATUS.TRACKING;
-          const startTime = deps.nowFull();
+          const stillPaused = file.status === STATUS.PAUSED;
+          const stillOpen = stillTracking || stillPaused;
+          const sessionState = stillPaused ? 'pausing' : runningSessionState({ ...file, splitReading: false }, state);
           newFiles.set(filePath, {
             ...file,
             sessionStartTime: startTime,
@@ -920,21 +924,21 @@ export function createTimerReducer(deps: ReducerDeps) {
             idleSeconds: 0,
             pausedSeconds: 0,
             pausedRanges: [],
-            pauseStartTimestamp: null,
-            lastTickTimestamp: stillTracking ? deps.now() : null,
-            sessionObject: stillTracking
+            pauseStartTimestamp: stillPaused ? currentTime : null,
+            lastTickTimestamp: stillTracking ? currentTime : null,
+            sessionObject: stillOpen
               ? {
-                  [deps.nowFull()]: state.isWindowFocused ? 'tracking' : 'inactive',
+                  [startTime]: sessionState,
                 }
               : null,
           });
 
-          if (stillTracking) {
+          if (stillOpen) {
             newPendingWrites.push({
               type: 'timeline-start',
               filePath,
               time: startTime,
-              state: 'tracking',
+              state: sessionState,
               //  跨日续开：多个并行目标都会续，彼此不得互相截断
               //  Rollover restarts every running target; they must not supersede each other.
               parallel: true,

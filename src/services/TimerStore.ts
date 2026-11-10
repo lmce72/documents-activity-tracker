@@ -47,7 +47,7 @@ export class TimerStore {
         this.notifyListeners();
       }
     } catch (error) {
-      console.error('[RTT][TimerStore] dispatch 失败 / failed:', error, action);
+      this.deps.log.warn('[RTT][TimerStore] dispatch 失败 / failed:', error, action);
     }
   }
 
@@ -66,7 +66,7 @@ export class TimerStore {
       } catch (error) {
 
         //  One failing subscriber must not affect the others
-        console.error('[RTT][TimerStore] 订阅者执行错误 / listener error:', error);
+        this.deps.log.warn('[RTT][TimerStore] 订阅者执行错误 / listener error:', error);
       }
     });
   }

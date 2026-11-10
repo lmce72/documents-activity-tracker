@@ -62,6 +62,16 @@ export interface PluginSettings {
    * back starts a new one. Off (default) runs targets in parallel. Desktop only.
    */
   singleThreadTracking: boolean;
+  /**
+   * 无感模式 / ambient mode.
+   *
+   * 过程模式的无人值守形态：跟随焦点自动记录、切换即保存，界面不显示运行卡与计时控件。
+   * 只有自动计时为 `always` 时才生效，否则按过程模式运行 —— 无感不能静默停表。
+   * The unattended form of process mode: follows focus, saves on every switch, and hides the live
+   * cards and controls. Only active while `autoStartMode` is `always`; otherwise it falls back to
+   * process mode rather than silently stopping the clock.
+   */
+  ambientTracking: boolean;
   useIconize: boolean;
   dataFilePath: string;
   /**

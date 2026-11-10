@@ -232,7 +232,37 @@ describe('CountdownTimerService / 计时与落库', () => {
     expect(session?.plannedSeconds).toBe(60);
     expect(session?.completed).toBe(true);
     expect(session?.mode).toBe('down');
+    expect(session?.endTime).toBe('2026-09-15 10:01:00');
     expect(history.getCountdownSessions()).toHaveLength(1);
+  });
+
+  it('跳段保留毫秒，完成后等待备注不会延长记录', async () => {
+    const { clock, countdown } = setup();
+    countdown.start(buildCountdownPlan(config({ downMinutes: 25 })));
+    clock.advance(120_500);
+    countdown.skipPhase();
+    clock.advanceSeconds(90);
+    const session = await countdown.stop('late note');
+    expect(session?.durationMs).toBe(120_500);
+    expect(session?.endTime).toBe('2026-09-15 10:02:00');
+  });
+
+  it('完成后的暂停和继续不延长结束时间，完成前的暂停保留', async () => {
+    const { clock, countdown } = setup();
+    countdown.start(buildCountdownPlan(config({ downMinutes: 1 })));
+    clock.advanceSeconds(20);
+    countdown.pause();
+    clock.advanceSeconds(30);
+    countdown.resume();
+    clock.advanceSeconds(50);
+    countdown.pause();
+    clock.advanceSeconds(20);
+    countdown.resume();
+    clock.advanceSeconds(10);
+    const session = await countdown.stop('');
+    expect(session?.durationSeconds).toBe(60);
+    expect(session?.endTime).toBe('2026-09-15 10:01:30');
+    expect(session?.pauses).toEqual([{ from: '2026-09-15 10:00:20', to: '2026-09-15 10:00:50' }]);
   });
 
   it('提前停止记的是实际时长，并标明未完成', async () => {

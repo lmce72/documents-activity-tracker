@@ -104,6 +104,7 @@ export class StatusBarMetrics {
     this.unsubscribe = null;
     this.closeMenu();
     this.deps.el.empty();
+    this.renderedSignature = '';
   }
 
   /** Recompute and repaint. */
@@ -270,7 +271,9 @@ export class StatusBarMetrics {
     const doc = this.deps.el.ownerDocument;
     const onDown = (event: MouseEvent): void => {
       const target = event.target as Node | null;
-      if (target && menu.contains(target)) return;
+      //  入口按钮由 click 自己切换；mousedown 提前关闭会令同一次点击又打开菜单。
+      //  Let the trigger toggle itself; closing on mousedown would reopen it on the following click.
+      if (target && this.deps.el.contains(target)) return;
       this.closeMenu();
     };
     const onKey = (event: KeyboardEvent): void => {

@@ -79,7 +79,7 @@ export default class ReadTimeTrackerPlugin extends Plugin {
    * The second hand keeps running while the note dialog is open; without this gate it would open a
    * new dialog every second.
    */
-  private countdownFinishing = false;
+  private countdownFinishing: ReturnType<TimerStore['getState']>['countdown'] | null = null;
 
   /**
    * 上次重载留下的未保存计时 / unsaved runs left by the previous reload.
@@ -103,12 +103,22 @@ export default class ReadTimeTrackerPlugin extends Plugin {
   private history!: HistoryStore;
 
   private storageWarning: string | null = null;
+  /** 卸载须等待初始化退出，避免旧实例重新注册资源 / prevent late startup after unload. */
+  private unloading = false;
+  private initialization: Promise<void> | null = null;
+  private settingsUpdates: Promise<void> = Promise.resolve();
 
-  override async onload(): Promise<void> {
+  override onload(): Promise<void> {
+    this.initialization = this.initialize();
+    return this.initialization;
+  }
+
+  private async initialize(): Promise<void> {
     this.debug = false;
     this.log = this.debug ? consoleLogger : silentLogger;
 
     await this.loadSettings();
+    if (this.unloading) return;
 
     this.timerStore = new TimerStore(
       {
@@ -175,6 +185,7 @@ export default class ReadTimeTrackerPlugin extends Plugin {
       history = new VolatileHistoryStore();
     }
     this.history = history;
+    if (this.unloading) return;
 
     this.timerService = new TimerService({
       isMobile: Platform.isMobile,
@@ -219,6 +230,7 @@ export default class ReadTimeTrackerPlugin extends Plugin {
 
     // Close the previous process's session before startup bindings may create a new one.
     await this.timerService.recoverUnfinishedSessions();
+    if (this.unloading) return;
 
     this.binding = installBindings({
       mobileMultiWindow: () => this.settings.mobileMultiWindow === true,
@@ -460,6 +472,7 @@ export default class ReadTimeTrackerPlugin extends Plugin {
     //  store is unavailable the worst case is one extra auto-open — so it is not worth
     //  raising the install floor for.
     this.app.workspace.onLayoutReady(() => {
+      if (this.unloading) return;
       const HINT_KEY = 'rtt_sidebar_hint_shown';
       try {
         if (window.localStorage.getItem(HINT_KEY)) return;
@@ -484,16 +497,33 @@ export default class ReadTimeTrackerPlugin extends Plugin {
    * Exactly one definition: the old monolith declared two, the later shadowing the
    * former, so the timer service was never destroyed.
    */
-  override async onunload(): Promise<void> {
+  override onunload(): void {
+    this.unloading = true;
+    this.statusBar?.stop();
+    this.statusBar = null;
+    this.binding?.destroy();
+    this.binding = null;
+    void this.cleanup();
+  }
+
+  private async cleanup(): Promise<void> {
     try {
-      this.statusBar?.stop();
-      this.statusBar = null;
-      this.binding?.destroy();
-      this.binding = null;
+      await this.initialization;
+    } catch (error) {
+      this.log.warn('[RTT] 初始化未完成 / initialization failed:', error);
+    }
+    try {
+      await this.settingsUpdates;
+      this.persistLiveSnapshot();
       await this.timerService?.shutdown();
-      await this.sqlite?.close();
     } catch (error) {
       this.log.warn('[RTT] 卸载收尾失败 / unload cleanup failed:', error);
+    } finally {
+      try {
+        await this.sqlite?.close();
+      } catch (error) {
+        this.log.warn('[RTT] 关闭存储失败 / storage close failed:', error);
+      }
     }
   }
 
@@ -542,7 +572,19 @@ export default class ReadTimeTrackerPlugin extends Plugin {
   }
 
   /** persist a settings patch and apply it now. */
-  private async updateSettings(patch: Partial<PluginSettings>): Promise<void> {
+  private updateSettings(patch: Partial<PluginSettings>): Promise<void> {
+    if (this.unloading) return Promise.resolve();
+    //  文本输入可并发触发保存；按顺序写入及应用，避免旧写入覆盖新设置。
+    //  Text input can overlap saves; serialize persistence and effects so older writes cannot win.
+    const update = this.settingsUpdates.then(() => this.applySettings(patch));
+    this.settingsUpdates = update.catch((error: unknown) => {
+      this.log.warn('[RTT] 设置保存失败 / settings save failed:', error);
+      new Notice(error instanceof Error ? error.message : 'Could not save tracker settings');
+    });
+    return update;
+  }
+
+  private async applySettings(patch: Partial<PluginSettings>): Promise<void> {
     this.settings = { ...this.settings, ...patch };
     await this.saveData(this.settings);
 
@@ -560,12 +602,8 @@ export default class ReadTimeTrackerPlugin extends Plugin {
         this.log.warn('[RTT] 共享设置写入失败 / failed to write shared settings:', error);
       }
     }
+    if (this.unloading) return;
 
-    //  Turning document tracking off must actually stop it, or the timer keeps counting
-    //  in the background with no UI to show it.
-    if (patch.documentTrackingEnabled === false) {
-      await this.timerService.saveCurrent('auto-save');
-    }
     if (patch.manualTimerEnabled === false) {
       this.manualService.discard();
     }
@@ -590,7 +628,7 @@ export default class ReadTimeTrackerPlugin extends Plugin {
     //  still counting until the user switched tabs by hand — that is where "settings do not take effect
     //  immediately" comes from. So the binding is re-aligned and the sidebar refreshed unconditionally
     //  here (onActivePathChange early-returns when from === to, so calling it again is safe).
-    await this.timerService.onActivePathChange();
+    await this.timerService.onSettingsChange();
     this.refreshSidebar();
   }
 
@@ -661,13 +699,22 @@ export default class ReadTimeTrackerPlugin extends Plugin {
    * no reason to throw it away.
    */
   private checkCountdownFinish(): void {
-    if (this.countdownFinishing) return;
+    const completedRun = this.timerStore.getState().countdown;
+    if (this.countdownFinishing?.startTimestamp === completedRun.startTimestamp
+      && this.countdownFinishing.plan === completedRun.plan) return;
+    this.countdownFinishing = null;
     if (this.settings.countdownTimerEnabled === false) return;
     if (!this.countdownService.isComplete()) return;
 
-    this.countdownFinishing = true;
+    this.countdownFinishing = completedRun;
 
     const finish = (note: string): void => {
+      //  备注框可能跨过丢弃/重开；旧备注只能结束原来那轮 / an old prompt must not stop a new run.
+      const current = this.timerStore.getState().countdown;
+      if (this.unloading || current.startTimestamp !== completedRun.startTimestamp || current.plan !== completedRun.plan) {
+        if (this.countdownFinishing === completedRun) this.countdownFinishing = null;
+        return;
+      }
       void this.countdownService
         .stop(note)
         .then((session) => {
@@ -681,7 +728,7 @@ export default class ReadTimeTrackerPlugin extends Plugin {
           );
         })
         .finally(() => {
-          this.countdownFinishing = false;
+          if (this.countdownFinishing === completedRun) this.countdownFinishing = null;
         });
     };
 
@@ -792,7 +839,11 @@ export default class ReadTimeTrackerPlugin extends Plugin {
 
     const now = systemClock.now();
     try {
-      if (pending.manual) {
+      const state = this.timerStore.getState();
+      const restoreManual = !!pending.manual && state.manual.status === MANUAL_STATUS.IDLE;
+      const restoreCountdown = !!pending.countdown && state.countdown.status === MANUAL_STATUS.IDLE;
+      if (!restoreManual && !restoreCountdown) return;
+      if (pending.manual && restoreManual) {
         const entry = pending.manual;
         this.timerStore.dispatch({
           type: ActionTypes.MANUAL_RESTORE,
@@ -806,7 +857,7 @@ export default class ReadTimeTrackerPlugin extends Plugin {
         });
       }
 
-      if (pending.countdown) {
+      if (pending.countdown && restoreCountdown) {
         const entry = pending.countdown;
         this.timerStore.dispatch({
           type: ActionTypes.COUNTDOWN_RESTORE,
@@ -822,7 +873,14 @@ export default class ReadTimeTrackerPlugin extends Plugin {
         });
       }
 
-      this.pendingLive = null;
+      //  忙碌的计时器拒绝恢复时，保留那份残留 / keep entries whose running timer prevented restore.
+      const remaining: LiveSnapshot = {
+        version: pending.version,
+        savedAt: pending.savedAt,
+        ...(!restoreManual && pending.manual ? { manual: pending.manual } : {}),
+        ...(!restoreCountdown && pending.countdown ? { countdown: pending.countdown } : {}),
+      };
+      this.pendingLive = remaining.manual || remaining.countdown ? remaining : null;
       new Notice(t('recoveryRestored'), 6000);
       this.persistLiveSnapshot();
       this.refreshSidebar();

@@ -119,6 +119,8 @@ export class SqliteStore implements HistoryStore {
 
   /** whether there are unsaved changes */
   private dirty = false;
+  /** 每次内存写入递增，防止异步落盘清掉期间的新改动 / protects changes made during asynchronous I/O. */
+  private mutationVersion = 0;
   /** the coalescing flush timer */
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
   /** serialises flushes so two exports cannot interleave */
@@ -161,7 +163,7 @@ export class SqliteStore implements HistoryStore {
     //  在构造函数体里建，而不是字段初始化器：字段初始化跑在参数属性赋值之前，那时 this.log 还是 undefined
     //  Built in the constructor body rather than a field initializer: initializers run before the
     //  parameter properties are assigned, when this.log is still undefined.
-    this.pending = new PendingBuffer(log);
+    this.pending = new PendingBuffer(log, dbPath);
   }
 
   /** 设定落盘闸门 / set the flush gate. */
@@ -223,8 +225,8 @@ export class SqliteStore implements HistoryStore {
     //  erase whatever the other device wrote into the file in the meantime.
     const buffered = await this.pending.read();
     if (buffered && buffered.bytes.byteLength > 0) {
-      this.mergeSnapshot(new Uint8Array(buffered.bytes));
-      await this.pending.clear();
+      //  合并失败时保留唯一的暂存；只有文件确实写成后才清除 / preserve recovery data until a successful file write.
+      this.mergeSnapshot(new Uint8Array(buffered.bytes), true);
       this.log.info('[RTT][sqlite] 已把浏览器暂存并入 / merged the browser buffer in');
     }
 
@@ -576,6 +578,7 @@ export class SqliteStore implements HistoryStore {
 
   /** Mark dirty and schedule a coalesced flush. */
   private markDirty(): void {
+    this.mutationVersion++;
     this.dirty = true;
     if (this.flushTimer !== null) return;
 
@@ -872,6 +875,7 @@ export class SqliteStore implements HistoryStore {
         //  Not the moment: the whole database goes into the browser's own store and the vault file is
         //  not touched at all. Not "park it in memory for later" — that loses it on a crash.
         let stored = false;
+        let storedVersion = this.mutationVersion;
         if (!allowed) {
           try {
             await this.pending.write(payload);
@@ -893,6 +897,7 @@ export class SqliteStore implements HistoryStore {
           await this.reconcileWithDisk(options.throwOnError === true);
 
           const finalBytes = this.db.export();
+          storedVersion = this.mutationVersion;
           const finalPayload = finalBytes.buffer.slice(
             finalBytes.byteOffset,
             finalBytes.byteOffset + finalBytes.byteLength,
@@ -902,7 +907,8 @@ export class SqliteStore implements HistoryStore {
           await this.pending.clear();
           this.buffered = false;
         }
-        this.dirty = false;
+        //  I/O 期间追加的事件不在刚写出的快照中 / events appended during I/O need another flush.
+        this.dirty = this.mutationVersion !== storedVersion;
         this.flushErrorReported = false;
       } catch (error) {
 

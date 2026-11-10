@@ -113,6 +113,19 @@ export function isTrackingEnabled(settings: PluginSettings): boolean {
 }
 
 /**
+ * 无感模式是否真的生效 / whether ambient mode is actually in effect.
+ *
+ * 它不是独立的计时引擎，而是过程模式的界面与交互变体，前提是自动计时全程开启 —— 否则切走
+ * 再回来不会自动续上，界面又没有控件，用户会以为还在记录。
+ * It is not a separate timing engine but a UI/interaction variant of process mode, and it requires
+ * always-on auto-start: without it, returning to a target would not resume while the UI shows no
+ * controls — the user would believe timing is still running.
+ */
+export function isAmbientTracking(settings: PluginSettings): boolean {
+  return settings.ambientTracking === true && settings.autoStartMode === 'always';
+}
+
+/**
  * whether document activity should be recorded right now.
  *
  * The **conjunction** of two switches that mean different things and must not be merged:

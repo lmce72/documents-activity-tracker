@@ -23,6 +23,7 @@ import {
 } from '../core/countdown';
 import type { Logger } from '../core/logger';
 import { selectCountdownElapsedMs, selectCountdownElapsedSeconds } from '../core/selectors';
+import { formatLocalFull, parseSessionStartTime } from '../core/time';
 import type {
   CountdownPlan,
   CountdownSession,
@@ -111,7 +112,8 @@ export class CountdownTimerService {
       if (state.countdown.status === MANUAL_STATUS.IDLE) return false;
       const position = this.position();
       if (!position || position.completed) return false;
-      const seconds = Math.max(0, position.phaseSeconds - position.phaseElapsed);
+      const effectiveSeconds = this.elapsedMs() / 1000 + this.deps.store.getState().countdown.skippedSeconds;
+      const seconds = Math.max(0, position.remaining - (effectiveSeconds - Math.floor(effectiveSeconds)));
       if (seconds === 0) return false;
       this.deps.store.dispatch({ type: ActionTypes.COUNTDOWN_SKIP, payload: { seconds } });
       return true;
@@ -225,9 +227,33 @@ export class CountdownTimerService {
       //  Completion follows the effective position; the saved duration is real time only, with the
       //  skipped waits left out.
       const position = locatePhase(plan, durationMs / 1000 + (countdown.skippedSeconds ?? 0));
-      const endTime = this.deps.clock.nowFull();
       const plannedSeconds = planTotalSeconds(plan);
-      const actualSeconds = Math.min(Math.floor(durationMs / 1000), plannedSeconds);
+      // 跳段缩短实际等待，备注框停留不能再次计入已完成的方案。 / Skips shorten the real run; note-entry time is excluded.
+      const actualMs = Math.min(durationMs, Math.max(0, plannedSeconds - countdown.skippedSeconds) * 1000);
+      const pauses = [
+        ...countdown.pauses,
+        ...(countdown.pauseStartFull.length > 0
+          ? [{ from: countdown.pauseStartFull, to: this.deps.clock.nowFull() }]
+          : []),
+      ];
+      // 从尾部扣除超出的活动时间，并跨过暂停段。 / Remove excess active time from the tail, crossing pauses.
+      let endMs = this.deps.clock.now();
+      let excess = durationMs - actualMs;
+      if (position.completed) {
+        const ranges = pauses.flatMap(pause => {
+          const from = parseSessionStartTime(pause.from)?.getTime();
+          const to = parseSessionStartTime(pause.to)?.getTime();
+          return from !== undefined && to !== undefined && to > from ? [{ from, to }] : [];
+        }).sort((a, b) => b.to - a.to);
+        for (const pause of ranges) {
+          const activeTail = Math.max(0, endMs - pause.to);
+          if (excess < activeTail) break;
+          excess -= activeTail;
+          endMs = Math.min(endMs, pause.from);
+        }
+        endMs -= excess;
+      }
+      const endTime = formatLocalFull(new Date(endMs));
 
       const session: CountdownSession = {
         id: this.deps.newId(),
@@ -235,19 +261,15 @@ export class CountdownTimerService {
         startTime: countdown.startedAt || endTime,
         endTime,
         plannedSeconds,
-        durationSeconds: actualSeconds,
-        durationMs: Math.min(durationMs, plannedSeconds * 1000),
+        durationSeconds: Math.floor(actualMs / 1000),
+        durationMs: actualMs,
         completed: position.completed,
         note,
-        flags: [...countdown.flags],
+        flags: countdown.flags.filter(flag => (flag.atMs ?? flag.atSeconds * 1000) <= actualMs),
         //  同正计时：结束那一刻仍停着的话，补上这段未闭合的暂停
         //  As with the count-up: a pause still open at stop time is closed here
-        pauses: [
-          ...countdown.pauses,
-          ...(countdown.pauseStartFull.length > 0
-            ? [{ from: countdown.pauseStartFull, to: endTime }]
-            : []),
-        ],
+        pauses: pauses.flatMap(pause => pause.from < endTime
+          ? [{ from: pause.from, to: pause.to < endTime ? pause.to : endTime }] : []),
         phases: [...plan.phases],
       };
 

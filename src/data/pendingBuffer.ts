@@ -28,11 +28,13 @@ export interface PendingSnapshot {
   bytes: ArrayBuffer;
   /** 写入时刻（毫秒）/ when it was buffered, in milliseconds */
   savedAt: number;
+  /** 旧格式没有归属字段 / legacy snapshots omitted their database identity. */
+  databasePath?: string;
 }
 
 const DB_NAME = 'documents-activity-tracker';
 const STORE_NAME = 'pending';
-const KEY = 'database';
+const LEGACY_KEY = 'database';
 
 /**
  * IndexedDB 的 Promise 包装 / a promise wrapper over IndexedDB.
@@ -47,7 +49,15 @@ const KEY = 'database';
 export class PendingBuffer {
   private openFailed = false;
 
-  constructor(private readonly log: Logger) {}
+  constructor(
+    private readonly log: Logger,
+    /** 数据路径也是暂存身份，切换数据库不得混入旧库 / switching databases must not import another buffer. */
+    private readonly databasePath: string,
+  ) {}
+
+  private get key(): string {
+    return `database:${this.databasePath}`;
+  }
 
   /** 打开那个小库 / open the small database. */
   private open(): Promise<IDBDatabase> {
@@ -73,19 +83,56 @@ export class PendingBuffer {
 
   /** 读出暂存，没有就 null / read what is buffered, or null. */
   async read(): Promise<PendingSnapshot | null> {
+    let db: IDBDatabase | null = null;
     try {
-      const db = await this.open();
+      const opened = await this.open();
+      db = opened;
       const value = await new Promise<PendingSnapshot | null>((resolve, reject) => {
-        const tx = db.transaction(STORE_NAME, 'readonly');
-        const request = tx.objectStore(STORE_NAME).get(KEY);
-        request.onsuccess = () => resolve((request.result as PendingSnapshot | undefined) ?? null);
+        const tx = opened.transaction(STORE_NAME, 'readwrite');
+        const store = tx.objectStore(STORE_NAME);
+        let snapshot: PendingSnapshot | null = null;
+        const parse = (raw: unknown): PendingSnapshot => {
+          if (!raw || typeof raw !== 'object' || !('bytes' in raw) || !(raw.bytes instanceof ArrayBuffer)
+            || !('savedAt' in raw) || typeof raw.savedAt !== 'number' || !Number.isFinite(raw.savedAt)
+            || ('databasePath' in raw && raw.databasePath !== this.databasePath)) {
+            throw new Error('数据库暂存无效或归属不符 / invalid or mismatched pending snapshot');
+          }
+          return { bytes: raw.bytes, savedAt: raw.savedAt, databasePath: this.databasePath };
+        };
+        const read = (raw: unknown): void => {
+          try { snapshot = parse(raw); }
+          catch (error) { tx.abort(); reject(error); }
+        };
+        const request = store.get(this.key);
+        request.onsuccess = () => {
+          const scoped: unknown = request.result;
+          if (scoped !== undefined) { read(scoped); return; }
+
+          //  旧快照没有归属，只能沿用首次启动的当前配置；原子转存避免升级丢失未落盘数据。
+          //  Legacy ownership is unknowable: retain the existing first-start recovery behavior,
+          //  atomically claiming it for the currently configured database without losing its bytes.
+          const legacy = store.get(LEGACY_KEY);
+          legacy.onsuccess = () => {
+            const raw: unknown = legacy.result;
+            if (raw === undefined) return;
+            read(raw);
+            if (!snapshot) return;
+            store.put(snapshot, this.key);
+            store.delete(LEGACY_KEY);
+          };
+          legacy.onerror = () => reject(legacy.error ?? new Error('IndexedDB legacy read failed'));
+        };
         request.onerror = () => reject(request.error ?? new Error('IndexedDB read failed'));
+        tx.oncomplete = () => resolve(snapshot);
+        tx.onerror = () => reject(tx.error ?? new Error('IndexedDB read failed'));
+        tx.onabort = () => reject(tx.error ?? new Error('IndexedDB read aborted'));
       });
-      db.close();
       return value;
     } catch (error) {
       this.reportUnavailable(error);
       return null;
+    } finally {
+      db?.close();
     }
   }
 
@@ -95,7 +142,7 @@ export class PendingBuffer {
       const db = await this.open();
       await new Promise<void>((resolve, reject) => {
         const tx = db.transaction(STORE_NAME, 'readwrite');
-        tx.objectStore(STORE_NAME).put({ bytes, savedAt: Date.now() }, KEY);
+        tx.objectStore(STORE_NAME).put({ bytes, savedAt: Date.now(), databasePath: this.databasePath }, this.key);
         tx.oncomplete = () => resolve();
         tx.onerror = () => reject(tx.error ?? new Error('IndexedDB write failed'));
       });
@@ -112,7 +159,7 @@ export class PendingBuffer {
       const db = await this.open();
       await new Promise<void>((resolve, reject) => {
         const tx = db.transaction(STORE_NAME, 'readwrite');
-        tx.objectStore(STORE_NAME).delete(KEY);
+        tx.objectStore(STORE_NAME).delete(this.key);
         tx.oncomplete = () => resolve();
         tx.onerror = () => reject(tx.error ?? new Error('IndexedDB clear failed'));
       });

@@ -2033,7 +2033,7 @@ body.is-mobile .workspace-leaf-content[data-type="documents-activity-tracker-sid
     padding-bottom: calc(var(--safe-area-inset-bottom, 0px) + var(--mobile-toolbar-height, 52px) + 8px);
 }
 
-/* ── 移动端设置行折行 / setting rows wrap on mobile ────────────────────────
+/* ── 移动端与窄侧栏共用设置行折行 / shared wrapping for mobile and narrow sidebars ──
  *
  * 窄屏下 Obsidian 的 <select> 独占 162px，把 setting-item-info 挤到 50px，文字变成一字一行。
  * 手机上让说明占满一行、控件落到下一行右对齐：标签完整、下拉也够点。
@@ -2042,22 +2042,26 @@ body.is-mobile .workspace-leaf-content[data-type="documents-activity-tracker-sid
  * label breaks one character per line. On mobile the text takes a full row and the control drops to
  * the next one, right-aligned: the label stays readable and the control stays tappable.
  */
-body.is-mobile .workspace-leaf-content[data-type="documents-activity-tracker-sidebar"] .setting-item {
+body.is-mobile .workspace-leaf-content[data-type="documents-activity-tracker-sidebar"] .setting-item,
+.workspace-leaf-content[data-type="documents-activity-tracker-sidebar"] .view-content:not(.is-wide) .setting-item {
     flex-wrap: wrap;
-    gap: 4px 8px;
+    gap: var(--size-4-1) var(--size-4-2);
 }
 
-body.is-mobile .workspace-leaf-content[data-type="documents-activity-tracker-sidebar"] .setting-item-info {
+body.is-mobile .workspace-leaf-content[data-type="documents-activity-tracker-sidebar"] .setting-item-info,
+.workspace-leaf-content[data-type="documents-activity-tracker-sidebar"] .view-content:not(.is-wide) .setting-item-info {
     flex: 1 1 100%;
     min-width: 0;
 }
 
-body.is-mobile .workspace-leaf-content[data-type="documents-activity-tracker-sidebar"] .setting-item-control {
+body.is-mobile .workspace-leaf-content[data-type="documents-activity-tracker-sidebar"] .setting-item-control,
+.workspace-leaf-content[data-type="documents-activity-tracker-sidebar"] .view-content:not(.is-wide) .setting-item-control {
     flex: 1 1 100%;
     justify-content: flex-end;
 }
 
-body.is-mobile .workspace-leaf-content[data-type="documents-activity-tracker-sidebar"] .setting-item-control select {
+body.is-mobile .workspace-leaf-content[data-type="documents-activity-tracker-sidebar"] .setting-item-control select,
+.workspace-leaf-content[data-type="documents-activity-tracker-sidebar"] .view-content:not(.is-wide) .setting-item-control select {
     max-width: 100%;
 }
 
@@ -2607,6 +2611,9 @@ body:not(.is-mobile) .view-content.is-overview.is-wide .rtt-stats-bar.is-dense >
 .rtt-mobile-panel-picker, .rtt-mobile-source-picker { display: none; }
 .is-mobile .rtt-panel-tabs, .is-mobile .rtt-overview-chart > .rtt-hm-legend { display: none; }
 .is-mobile .rtt-mobile-panel-picker, .is-mobile .rtt-mobile-source-picker { display: block; margin-bottom: var(--size-4-2); }
+.is-mobile .rtt-mobile-panel-picker, .is-mobile .rtt-mobile-source-picker { position: relative; }
+/* 原生下拉的隐藏测量副本不能撑出横向滚动。 / The host's hidden measuring select must stay inside the picker. */
+.is-mobile :is(.rtt-mobile-panel-picker, .rtt-mobile-source-picker) .is-measuring { inset-inline-start: 0; top: 0; }
 .is-mobile .rtt-panel-head > .rtt-mobile-panel-picker { flex: 1 1 auto; min-width: 0; margin-bottom: 0; }
 .is-mobile .rtt-mobile-panel-picker select, .is-mobile .rtt-mobile-source-picker select { width: 100%; max-width: 100%; }
 .is-mobile .view-content.is-wide .rtt-panel-cols { grid-template-columns: minmax(0, 1fr); }
@@ -2614,3 +2621,29 @@ body:not(.is-mobile) .view-content.is-overview.is-wide .rtt-stats-bar.is-dense >
 .is-mobile .rtt-vtl-body.has-actions > .rtt-vtl-range,
 .is-mobile .rtt-vtl-body.has-actions > .rtt-vtl-title,
 .is-mobile .rtt-vtl-body.has-actions > .rtt-vtl-meta { padding-right: calc(var(--rtt-action-count, 1) * var(--size-4-8)); }
+
+/* 无感模式：一行弱指示 + 接管 / ambient: one quiet line plus takeover */
+.rtt-ambient-card {
+    display: flex;
+    align-items: center;
+    gap: var(--size-4-2);
+    padding: var(--size-4-2) var(--size-4-3);
+    border-radius: var(--radius-s);
+    background: var(--background-secondary);
+}
+
+.rtt-ambient-icon { display: flex; align-items: center; color: var(--text-faint); }
+.rtt-ambient-icon svg { width: 16px; height: 16px; }
+.rtt-ambient-body { flex: 1 1 auto; min-width: 0; }
+.rtt-ambient-title { color: var(--text-normal); font-size: var(--font-ui-small); }
+.rtt-ambient-desc { color: var(--text-muted); font-size: var(--font-ui-smaller); line-height: 1.3; }
+.rtt-ambient-takeover { flex: 0 0 auto; font-size: var(--font-ui-smaller); }
+
+/* 模式说明：并集口径与无感前置条件 / union rule and ambient prerequisite */
+.rtt-mode-hint {
+    margin-top: calc(var(--size-4-1) * -1);
+    padding: 0 var(--size-4-4) var(--size-4-2);
+    color: var(--text-faint);
+    font-size: var(--font-ui-smaller);
+    line-height: 1.3;
+}

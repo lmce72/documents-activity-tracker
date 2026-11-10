@@ -6,7 +6,7 @@
  *
  */
 
-import { PluginSettingTab, Setting, type App, type Plugin } from 'obsidian';
+import { Notice, PluginSettingTab, Setting, type App, type Plugin } from 'obsidian';
 
 import { t } from '../core/i18n';
 import { metricById, normalizeSelection, optionsForSlot } from '../core/statusMetrics';
@@ -30,6 +30,13 @@ export class ReadTimeSettingTab extends PluginSettingTab {
     private readonly deps: SettingsTabDeps,
   ) {
     super(app, plugin);
+  }
+
+  /** 控件回调保持 void，保存失败在界面提示 / keep SDK callbacks void and surface save failures. */
+  private save(patch: Partial<PluginSettings>, onSaved?: () => void): void {
+    void this.deps.save(patch).then(() => onSaved?.()).catch((error: unknown) => {
+      new Notice(error instanceof Error ? error.message : 'Could not save tracker settings');
+    });
   }
 
   override display(): void {
@@ -67,9 +74,8 @@ export class ReadTimeSettingTab extends PluginSettingTab {
       .addToggle((toggle) =>
         toggle
           .setValue(settings.documentTrackingEnabled !== false)
-          .onChange(async (value) => {
-            await this.deps.save({ documentTrackingEnabled: value });
-            this.display();
+          .onChange((value) => {
+            this.save({ documentTrackingEnabled: value }, () => { this.display(); });
           }),
       );
 
@@ -79,9 +85,8 @@ export class ReadTimeSettingTab extends PluginSettingTab {
       .addToggle((toggle) =>
         toggle
           .setValue(settings.manualTimerEnabled !== false)
-          .onChange(async (value) => {
-            await this.deps.save({ manualTimerEnabled: value });
-            this.display();
+          .onChange((value) => {
+            this.save({ manualTimerEnabled: value }, () => { this.display(); });
           }),
       );
 
@@ -96,8 +101,13 @@ export class ReadTimeSettingTab extends PluginSettingTab {
           .addOption('return-only', t('autoStartReturnOnly'))
           .addOption('manual', t('autoStartManual'))
           .setValue(settings.autoStartMode)
-          .onChange(async (value) => {
-            await this.deps.save({ autoStartMode: value });
+          .onChange((value) => {
+            // 无感模式依赖全自动，读取最新设置以免闭包过期 / ambient requires Always; read current settings.
+            const leftAmbient = this.deps.settings().ambientTracking === true && value !== 'always';
+            this.save({
+              autoStartMode: value,
+              ...(leftAmbient ? { ambientTracking: false, singleThreadTracking: true } : {}),
+            }, () => { if (leftAmbient) new Notice(t('ambientExited')); });
           }),
       );
 
@@ -105,9 +115,9 @@ export class ReadTimeSettingTab extends PluginSettingTab {
       .setName(t('minRead'))
       .setDesc(t('minReadDesc'))
       .addText((text) =>
-        text.setValue(String(settings.minReadSeconds)).onChange(async (value) => {
+        text.setValue(String(settings.minReadSeconds)).onChange((value) => {
           const parsed = parseInt(value, 10);
-          await this.deps.save({
+          this.save({
             minReadSeconds: Number.isFinite(parsed) ? Math.max(0, parsed) : 0,
           });
         }),
@@ -117,14 +127,14 @@ export class ReadTimeSettingTab extends PluginSettingTab {
       .setName(t('idleTimeout'))
       .setDesc(t('idleTimeoutDesc'))
       .addToggle((toggle) =>
-        toggle.setValue(settings.idleTimeoutEnabled !== false).onChange(async (value) => {
-          await this.deps.save({ idleTimeoutEnabled: value });
+        toggle.setValue(settings.idleTimeoutEnabled !== false).onChange((value) => {
+          this.save({ idleTimeoutEnabled: value });
         }),
       )
       .addText((text) =>
-        text.setValue(String(settings.idleTimeout)).onChange(async (value) => {
+        text.setValue(String(settings.idleTimeout)).onChange((value) => {
           const parsed = parseInt(value, 10);
-          await this.deps.save({
+          this.save({
             idleTimeout: Number.isFinite(parsed) ? Math.max(1, parsed) : 1,
           });
         }),
@@ -145,14 +155,16 @@ export class ReadTimeSettingTab extends PluginSettingTab {
       .setDesc(t('settingMobileMultiWindowDesc'))
       .addToggle(toggle => toggle
         .setValue(settings.mobileMultiWindow === true)
-        .onChange(value => { void this.deps.save({ mobileMultiWindow: value }); }));
+        .onChange(value => { this.save({ mobileMultiWindow: value }); }));
 
     new Setting(containerEl)
       .setName(t('settingCountPluginViews'))
       .setDesc(t('settingCountPluginViewsDesc'))
       .addToggle(toggle => toggle
         .setValue(settings.countPluginViewsAsReading !== false)
-        .onChange(async value => { await this.deps.save({ countPluginViewsAsReading: value }); }));
+        .onChange((value) => {
+          this.save({ countPluginViewsAsReading: value });
+        }));
 
     // 倒计时 / countdown ──────────────────────────────────────────
     //
@@ -171,9 +183,8 @@ export class ReadTimeSettingTab extends PluginSettingTab {
       .addToggle((toggle) =>
         toggle
           .setValue(settings.countdownTimerEnabled !== false)
-          .onChange(async (value) => {
-            await this.deps.save({ countdownTimerEnabled: value });
-            this.display();
+          .onChange((value) => {
+            this.save({ countdownTimerEnabled: value }, () => { this.display(); });
           }),
       );
 
@@ -185,8 +196,8 @@ export class ReadTimeSettingTab extends PluginSettingTab {
       .setName(t('countdownPromptNote'))
       .setDesc(t('countdownPromptNoteDesc'))
       .addToggle((toggle) =>
-        toggle.setValue(settings.countdownPromptNote === true).onChange(async (value) => {
-          await this.deps.save({ countdownPromptNote: value });
+        toggle.setValue(settings.countdownPromptNote === true).onChange((value) => {
+          this.save({ countdownPromptNote: value });
         }),
       );
 
@@ -199,8 +210,8 @@ export class ReadTimeSettingTab extends PluginSettingTab {
       .addToggle((toggle) =>
         toggle
           .setValue(settings.flushOnSessionEnd !== false)
-          .onChange(async (value) => {
-            await this.deps.save({ flushOnSessionEnd: value });
+          .onChange((value) => {
+            this.save({ flushOnSessionEnd: value });
           }),
       );
 
@@ -210,8 +221,8 @@ export class ReadTimeSettingTab extends PluginSettingTab {
       .addToggle((toggle) =>
         toggle
           .setValue(settings.flushOnQuit !== false)
-          .onChange(async (value) => {
-            await this.deps.save({ flushOnQuit: value });
+          .onChange((value) => {
+            this.save({ flushOnQuit: value });
           }),
       );
 
@@ -221,8 +232,8 @@ export class ReadTimeSettingTab extends PluginSettingTab {
       .addToggle((toggle) =>
         toggle
           .setValue(settings.flushOnInterval === true)
-          .onChange(async (value) => {
-            await this.deps.save({ flushOnInterval: value });
+          .onChange((value) => {
+            this.save({ flushOnInterval: value });
           }),
       );
 
@@ -232,8 +243,8 @@ export class ReadTimeSettingTab extends PluginSettingTab {
       .addToggle((toggle) =>
         toggle
           .setValue(settings.perDeviceSettings === true)
-          .onChange(async (value) => {
-            await this.deps.save({ perDeviceSettings: value });
+          .onChange((value) => {
+            this.save({ perDeviceSettings: value });
           }),
       );
 
@@ -244,13 +255,11 @@ export class ReadTimeSettingTab extends PluginSettingTab {
         text_
           .setPlaceholder('5')
           .setValue(String(settings.flushIntervalMinutes ?? 5))
-          .onChange(async (value) => {
+          .onChange((value) => {
             const parsed = Number.parseInt(value, 10);
-
-            //  少于 1 分钟的写盘频率没有意义，也挡住了手滑输 0
-            //  Sub-minute writes are pointless, and this also catches an accidental 0
+            // 少于一分钟的写盘频率没有意义 / sub-minute flush intervals are not useful.
             const minutes = Number.isFinite(parsed) ? Math.max(1, parsed) : 5;
-            await this.deps.save({ flushIntervalMinutes: minutes });
+            this.save({ flushIntervalMinutes: minutes });
           }),
       );
 
@@ -263,8 +272,8 @@ export class ReadTimeSettingTab extends PluginSettingTab {
           .addOption('compact', t('displayCompact'))
           .addOption('precise', t('displayPrecise'))
           .setValue(settings.timeDisplayMode)
-          .onChange(async (value) => {
-            await this.deps.save({ timeDisplayMode: value });
+          .onChange((value) => {
+            this.save({ timeDisplayMode: value });
           }),
       );
 
@@ -272,8 +281,8 @@ export class ReadTimeSettingTab extends PluginSettingTab {
       .setName(t('useIconize'))
       .setDesc(t('useIconizeDesc'))
       .addToggle((toggle) =>
-        toggle.setValue(settings.useIconize !== false).onChange(async (value) => {
-          await this.deps.save({ useIconize: value });
+        toggle.setValue(settings.useIconize !== false).onChange((value) => {
+          this.save({ useIconize: value });
         }),
       );
 
@@ -293,8 +302,8 @@ export class ReadTimeSettingTab extends PluginSettingTab {
       .setName(t('settingStatusBarIcons'))
       .setDesc(t('settingStatusBarIconsDesc'))
       .addToggle((toggle) =>
-        toggle.setValue(settings.statusBarIconsOnly === true).onChange(async (value) => {
-          await this.deps.save({ statusBarIconsOnly: value });
+        toggle.setValue(settings.statusBarIconsOnly === true).onChange((value) => {
+          this.save({ statusBarIconsOnly: value });
         }),
       );
 
@@ -308,11 +317,10 @@ export class ReadTimeSettingTab extends PluginSettingTab {
             const metric = metricById(id);
             if (metric) dropdown.addOption(id, t(metric.labelKey));
           }
-          dropdown.setValue(value).onChange(async (next) => {
-            const updated = [...slots];
+          dropdown.setValue(value).onChange((next) => {
+            const updated = normalizeSelection(this.deps.settings().statusBarMetrics);
             updated[index] = next;
-            await this.deps.save({ statusBarMetrics: updated });
-            this.display();
+            this.save({ statusBarMetrics: updated }, () => { this.display(); });
           });
         });
     });
@@ -326,8 +334,8 @@ export class ReadTimeSettingTab extends PluginSettingTab {
           .addOption('blacklist', t('filterModeBlacklist'))
           .addOption('whitelist', t('filterModeWhitelist'))
           .setValue(settings.filterMode)
-          .onChange(async (value) => {
-            await this.deps.save({ filterMode: value });
+          .onChange((value) => {
+            this.save({ filterMode: value });
           }),
       );
 
@@ -338,8 +346,8 @@ export class ReadTimeSettingTab extends PluginSettingTab {
         text.inputEl.rows = 6;
         text
           .setValue(settings.filterPatterns)
-          .onChange(async (value) => {
-            await this.deps.save({ filterPatterns: value });
+          .onChange((value) => {
+            this.save({ filterPatterns: value });
           });
       });
 
@@ -348,8 +356,8 @@ export class ReadTimeSettingTab extends PluginSettingTab {
       .setName(t('dataPath'))
       .setDesc(t('dataPathDesc'))
       .addText((text) =>
-        text.setValue(settings.dataFilePath).onChange(async (value) => {
-          await this.deps.save({ dataFilePath: value.trim() });
+        text.setValue(settings.dataFilePath).onChange((value) => {
+          this.save({ dataFilePath: value.trim() });
         }),
       );
 

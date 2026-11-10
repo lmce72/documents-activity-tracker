@@ -221,6 +221,8 @@ describe('窗口焦点双通道 / window-focus channels', () => {
   it('失焦期间写入的会话状态是 inactive，焦点期间是 tracking', () => {
     const ctx = setup();
     startTracking(ctx);
+    // 先保留一秒真实专注段；同秒焦点变化应覆盖零长度边界。 / Preserve a real focused second before blur.
+    tick(ctx, 1);
     setFocus(ctx, false);
     tick(ctx, 1);
 

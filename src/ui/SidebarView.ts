@@ -49,6 +49,7 @@ import {
   attributionPolicy,
   countsPluginViewsAsReading,
   countsUnfocusedAsReading,
+  isAmbientTracking,
   recordName,
 } from '../core/settings';
 import type { Logger } from '../core/logger';
@@ -337,6 +338,8 @@ export class ActivitySidebarView extends ItemView {
   /** structural signature, to avoid per-second re-render */
   private signature = '';
   private unsubscribe: (() => void) | null = null;
+  /** 关闭后的异步回调不能重建视图 / late callbacks must not repaint a closed view. */
+  private closed = true;
 
   /** nodes updated in place every second */
   private liveNodes: LiveNodes = {};
@@ -370,6 +373,7 @@ export class ActivitySidebarView extends ItemView {
   }
 
   override async onOpen(): Promise<void> {
+    this.closed = false;
 
     //  The panel switcher lives at the top of the content area rather than in topbar
     //  actions: icon-only glyphs are ambiguous in a narrow sidebar and collapse into the
@@ -475,6 +479,7 @@ export class ActivitySidebarView extends ItemView {
   }
 
   override async onClose(): Promise<void> {
+    this.closed = true;
     this.stopLiveClock();
     this.unsubscribe?.();
     this.unsubscribe = null;
@@ -482,6 +487,14 @@ export class ActivitySidebarView extends ItemView {
     this.widthObserver = null;
     this.nameTicker?.destroy();
     this.nameTicker = null;
+    this.calendarDismiss?.();
+    this.calendarDismiss = null;
+    this.calendarOpen = false;
+    this.countdownFlow?.mounted?.destroy();
+    this.countdownFlow = null;
+    this.placeOverviewDetail = null;
+    this.liveNodes = {};
+    this.liveTaskTimes.clear();
   }
 
   /**
@@ -729,6 +742,12 @@ export class ActivitySidebarView extends ItemView {
       //  happens to trigger a re-render.
       settings.countUnfocusedAsReading,
       settings.countPluginViewsAsReading,
+      //  模式决定运行卡是无感的一行，还是带控件的完整列表
+      //  The mode decides between ambient's single line and the full list of cards with controls.
+      settings.ambientTracking,
+      settings.autoStartMode,
+      settings.singleThreadTracking,
+      settings.parallelTracking,
       //  版本号而不是长度：SQLite 的 getEvents() 会把整张表读出来解析一遍，每秒一次太贵
       //  A revision rather than a length: SQLite getEvents() reads and parses the whole table, which
       //  is too expensive once a second.
@@ -780,6 +799,7 @@ export class ActivitySidebarView extends ItemView {
   //  ==========================================================================
 
   private render(): void {
+    if (this.closed) return;
     try {
       const root = this.contentEl;
 
@@ -985,12 +1005,18 @@ export class ActivitySidebarView extends ItemView {
     //  上：此刻的数字（四宫格 + 当前状态）；下：这一天的形状与排名
     //  Top: the numbers for now (grid + current session); bottom: the day's shape and ranking
     this.renderDocumentStats(left, records, settings);
-    //  文档账本（文档 + 插件视图）的并行会话都归在同一个「正在进行」标题下
-    //  Every document-ledger session — documents and plugin views — sits under one "running now".
-    const liveHeading = renderSectionHeading(left, 'activity', t('activeTasks'));
-    this.renderAllTimersTools(liveHeading);
-    this.renderCurrentSession(left, filePath, records);
-    this.renderActiveTasks(left, true, filePath, false);
+    if (isAmbientTracking(settings)) {
+      //  无感：收起运行卡与计时控件，只留一行弱指示和「接管」入口
+      //  Ambient hides the live cards and controls, leaving one quiet line and a takeover entry.
+      this.renderAmbientStatus(left);
+    } else {
+      //  文档账本（文档 + 插件视图）的并行会话都归在同一个「正在进行」标题下
+      //  Every document-ledger session — documents and plugin views — sits under one "running now".
+      const liveHeading = renderSectionHeading(left, 'activity', t('activeTasks'));
+      this.renderAllTimersTools(liveHeading);
+      this.renderCurrentSession(left, filePath, records);
+      this.renderActiveTasks(left, true, filePath, false);
+    }
     //  计时模式只在追踪计时面板里改，设置页不再重复
     //  The timing mode lives here; the settings tab no longer duplicates it.
     this.renderTrackingMode(left);
@@ -1625,20 +1651,81 @@ export class ActivitySidebarView extends ItemView {
     new AwayIdleModal(this.app, { ...this.deps, onChanged: () => this.refresh() }, this.deps.clock.today()).open();
   }
 
-  /** 追踪计时的过程 / 并行模式 / tracking timer's process or parallel mode. */
+  /**
+   * 无感的弱指示与接管入口 / ambient's quiet indicator and takeover entry.
+   *
+   * 无感不是"没有界面"：完全不给入口，用户想暂停或写备注时只能去翻设置。这里留一行状态，
+   * 写明它正在自动记录，并把「接管」放在同一行 —— 点一下就回到过程模式，运行卡随之出现。
+   * Ambient is not "no UI": without any entry, pausing or adding a note would mean digging through
+   * settings. One quiet line states that it records automatically and carries "Take over" — one
+   * click returns to process mode and the live card appears.
+   */
+  private renderAmbientStatus(root: HTMLElement): void {
+    const settings = this.deps.settings();
+    if (!isAmbientTracking(settings) || settings.documentTrackingEnabled === false) return;
+
+    const card = root.createDiv({ cls: 'rtt-ambient-card' });
+    setIcon(card.createDiv({ cls: 'rtt-ambient-icon' }), 'eye-off');
+    const body = card.createDiv({ cls: 'rtt-ambient-body' });
+    body.createDiv({ cls: 'rtt-ambient-title', text: t('ambientActive') });
+    body.createDiv({ cls: 'rtt-ambient-desc', text: t('ambientDesc') });
+
+    const takeOver = card.createEl('button', {
+      cls: 'rtt-ambient-takeover',
+      text: t('ambientTakeover'),
+    });
+    setTooltip(takeOver, t('ambientTakeoverDesc'));
+    takeOver.addEventListener('click', () => {
+      //  接管后必须是过程模式：只关无感而保留 singleThread=false 会退回并行
+      //  Takeover must land in process mode: clearing ambient alone with singleThread=false falls back to parallel.
+      void this.deps.saveSetting({ ambientTracking: false, singleThreadTracking: true })
+        .then(() => this.render());
+    });
+  }
+
+  /** 追踪计时的过程 / 并行 / 无感模式 / tracking timer's process, parallel or ambient mode. */
   private renderTrackingMode(root: HTMLElement): void {
     const settings = this.deps.settings();
+    const mode = settings.ambientTracking === true
+      ? 'ambient'
+      : settings.singleThreadTracking === true ? 'single' : 'parallel';
+
     new Setting(root)
       .setName(t('timingMode'))
       .setDesc(t('timingModeDesc'))
       .addDropdown(dropdown => dropdown
         .addOption('parallel', t('timingModeParallel'))
         .addOption('single', t('timingModeSingle'))
-        .setValue(settings.singleThreadTracking === true ? 'single' : 'parallel')
+        .addOption('ambient', t('timingModeAmbient'))
+        .setValue(mode)
         .onChange(value => {
-          void this.deps.saveSetting({ singleThreadTracking: value === 'single', parallelTracking: true })
+          //  前置校验：无感依赖「全程」自动计时，其他模式切回来不会自动续上
+          //  Precondition: ambient relies on always-on auto-start; other modes do not resume on return.
+          if (value === 'ambient' && settings.autoStartMode !== 'always') {
+            new Notice(t('ambientNeedsAuto'));
+            this.render();
+            return;
+          }
+          const patch = value === 'ambient'
+            ? { ambientTracking: true, singleThreadTracking: true, parallelTracking: true }
+            : { ambientTracking: false, singleThreadTracking: value === 'single', parallelTracking: true };
+          //  离开并行时先收尾其它分屏的会话，否则它们停在 TRACKING 却不再计时
+          //  Leaving parallel settles the other splits: otherwise they stay TRACKING but stop ticking.
+          void this.deps.saveSetting(patch)
+            .then(() => value === 'parallel' ? undefined : this.deps.service.settleOtherTargets())
             .then(() => this.render());
         }));
+
+    //  并集口径只在并行时出现：用户看到的是"同时计时"，总额却不是相加
+    //  The union rule appears only for parallel: the UI shows concurrent sessions, but totals are not a sum.
+    if (mode === 'parallel') {
+      root.createDiv({ cls: 'rtt-mode-hint', text: t('timingUnionHint') });
+    }
+    //  前置条件一直可见，用户不必试错才知道为什么无感不可用
+    //  The prerequisite stays visible, so the user need not fail once to learn why ambient is unavailable.
+    if (settings.autoStartMode !== 'always') {
+      root.createDiv({ cls: 'rtt-mode-hint', text: t('ambientNeedsAuto') });
+    }
   }
 
   private renderAwaySection(root: HTMLElement): void {
@@ -2484,8 +2571,12 @@ export class ActivitySidebarView extends ItemView {
       controls: (bar: HTMLElement) => void;
     }
     const tasks: Task[] = [];
+    //  无感时文档/视图会话不上列表：总看板只保留手动计时与倒计时
+    //  Ambient keeps document/view sessions off the list; the overview shows manual and countdown only.
+    const ambient = isAmbientTracking(settings);
 
     for (const [path, file] of state.files) {
+      if (ambient) break;
       if (excludePath === path) continue;
       if (file.status !== STATUS.TRACKING && file.status !== STATUS.PAUSED) continue;
       const isView = isPluginViewKey(path);
@@ -2745,6 +2836,9 @@ export class ActivitySidebarView extends ItemView {
 
     //  最先显示正在进行的任务：三种计时合并成一张列表，各自带本计时器的操作
     //  Running tasks come first: the three ledgers share one list, each with its own controls.
+    //  无感的文档会话收成一行状态，手动/倒计时仍照常列出
+    //  Ambient document sessions collapse into one status line; manual and countdown still list.
+    this.renderAmbientStatus(ovLeft);
     this.renderActiveTasks(ovLeft);
 
     //  上：合计；下：日导航 + 热力图 + 明细 —— 导航必须跟着它描述的那张图走

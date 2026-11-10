@@ -16,6 +16,7 @@ import { ManualTimerService } from '../src/services/ManualTimerService';
 import { TimerService } from '../src/services/TimerService';
 import { CapturingLogger, FakeClock, testDeps } from './helpers/fake-clock';
 import { MemoryHistory } from './helpers/memory-history';
+import { readLastSeen } from '../src/data/liveTimerSnapshot';
 
 const FILE = 'Notes/alpha.md';
 const OTHER = 'Notes/beta.md';
@@ -185,6 +186,87 @@ describe('TimerService — 会话落盘 / flushing sessions', () => {
     await ctx.service.tick();
     expect(ctx.store.getState().pendingWrites).toHaveLength(0);
     expect(ctx.types()).toContain('save');
+  });
+});
+
+describe('parallel session boundaries / 并行会话边界', () => {
+  it('saving or discarding one target preserves the surviving recovery heartbeat', async () => {
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'window');
+    const raw = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => raw.get(key) ?? null,
+      setItem: (key: string, value: string) => { raw.set(key, value); },
+      removeItem: (key: string) => { raw.delete(key); },
+    };
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: { localStorage: storage } });
+    try {
+      const ctx = setup({ parallelTracking: true, autoStartMode: 'always', minReadSeconds: 0 });
+      await ctx.open(FILE);
+      await ctx.open(OTHER);
+      await ctx.advance(6);
+      await ctx.service.savePath(FILE);
+      expect(readLastSeen(storage)?.files?.map(file => file.filePath)).toEqual([OTHER]);
+      await ctx.service.discardPath(OTHER);
+      expect(readLastSeen(storage)).toBeNull();
+    } finally {
+      if (descriptor) Object.defineProperty(globalThis, 'window', descriptor);
+      else Reflect.deleteProperty(globalThis, 'window');
+    }
+  });
+
+  it('workspace sync preserves a user pause', async () => {
+    const ctx = setup({ parallelTracking: true, autoStartMode: 'always', minReadSeconds: 0 });
+    await ctx.open(FILE);
+    await ctx.open(OTHER);
+    await ctx.service.pauseAll();
+    await ctx.service.onActivePathChange();
+    await ctx.advance(2);
+    expect(ctx.store.getState().files.get(FILE)?.status).toBe(STATUS.PAUSED);
+    expect(ctx.store.getState().files.get(OTHER)?.status).toBe(STATUS.PAUSED);
+    expect(ctx.types().filter(type => type === 'resume')).toHaveLength(0);
+  });
+
+  it('split targets obey the same exclusion rules as the focused target', async () => {
+    const ctx = setup({ parallelTracking: true, autoStartMode: 'always', filterPatterns: 'Notes/beta.md' });
+    ctx.setOpen([FILE, OTHER]);
+    ctx.setActive(FILE);
+    await ctx.service.onActivePathChange();
+    expect(ctx.store.getState().files.get(FILE)?.status).toBe(STATUS.TRACKING);
+    expect(ctx.store.getState().files.has(OTHER)).toBe(false);
+  });
+
+  it('shutdown saves all targets and rejects later workspace callbacks', async () => {
+    const ctx = setup({ parallelTracking: true, autoStartMode: 'always', minReadSeconds: 0 });
+    await ctx.open(FILE);
+    await ctx.open(OTHER);
+    await ctx.advance(3);
+    await ctx.service.shutdown();
+    await ctx.service.onActivePathChange();
+    expect(ctx.events().flatMap(event => event.type === 'auto-save' ? [event.file] : []).sort()).toEqual([FILE, OTHER]);
+    expect(ctx.store.getState().files.get(FILE)?.status).toBe(STATUS.IDLE);
+    expect(ctx.store.getState().files.get(OTHER)?.status).toBe(STATUS.IDLE);
+  });
+
+  it('disabling recording closes all parallel targets', async () => {
+    const ctx = setup({ parallelTracking: true, autoStartMode: 'always', minReadSeconds: 0 });
+    await ctx.open(FILE);
+    await ctx.open(OTHER);
+    await ctx.advance(2);
+    ctx.settings.documentTrackingEnabled = false;
+    await ctx.service.onSettingsChange();
+    expect(ctx.store.getState().files.get(FILE)?.status).toBe(STATUS.IDLE);
+    expect(ctx.store.getState().files.get(OTHER)?.status).toBe(STATUS.IDLE);
+    expect(ctx.events().flatMap(event => event.type === 'auto-save' ? [event.file] : []).sort()).toEqual([FILE, OTHER]);
+  });
+
+  it('saving one idle target does not leave the remaining target idle after input', async () => {
+    const ctx = setup({ parallelTracking: true, autoStartMode: 'always', minReadSeconds: 0, idleTimeoutEnabled: true, idleTimeout: 1 });
+    await ctx.open(FILE);
+    await ctx.open(OTHER);
+    await ctx.advance(3);
+    await ctx.service.savePath(FILE);
+    ctx.service.markUserActivity();
+    expect(ctx.events().flatMap(event => event.type === 'idle-end' ? [event.file] : [])).toEqual([OTHER]);
   });
 });
 
@@ -742,5 +824,72 @@ describe('TimerService — 并行记录 / parallel tracking', () => {
     expect(ctx.store.getState().files.get(FILE)?.status).toBe(STATUS.IDLE);
     expect(ctx.store.getState().files.get(OTHER)?.status).toBe(STATUS.IDLE);
     expect(ctx.history.getEvents().filter(event => event.type === 'save')).toHaveLength(2);
+  });
+});
+
+describe('TimerService — 无感模式 / ambient mode', () => {
+  it('无感只跟随焦点目标，切换时上一段收尾', async () => {
+    const ctx = setup({
+      ambientTracking: true,
+      parallelTracking: true,
+      singleThreadTracking: false,
+      autoStartMode: 'always',
+      minReadSeconds: 0,
+      idleTimeoutEnabled: false,
+    });
+    await ctx.open(FILE);
+    await ctx.advance(2);
+
+    ctx.setActive(OTHER);
+    ctx.setOpen([FILE, OTHER]);
+    await ctx.service.onActivePathChange();
+    await ctx.advance(2);
+
+    const state = ctx.store.getState();
+    expect(state.activeFilePath).toBe(OTHER);
+    expect(state.files.get(FILE)?.status).toBe(STATUS.IDLE);
+    expect(state.files.get(OTHER)?.status).toBe(STATUS.TRACKING);
+  });
+
+  it('无感缺少「全程」自动计时时退回过程模式，不会静默停表', async () => {
+    const ctx = setup({
+      ambientTracking: true,
+      parallelTracking: true,
+      singleThreadTracking: false,
+      autoStartMode: 'start-only',
+      minReadSeconds: 0,
+      idleTimeoutEnabled: false,
+    });
+    await ctx.open(FILE);
+    await ctx.advance(2);
+
+    ctx.setActive(OTHER);
+    ctx.setOpen([FILE, OTHER]);
+    await ctx.service.onActivePathChange();
+
+    const state = ctx.store.getState();
+    expect(state.activeFilePath).toBe(OTHER);
+    //  无感标记仍强制单目标：上一段结束，而不是并行留在后台
+    //  The ambient flag still forces a single target: the previous round ends instead of running on.
+    expect(state.files.get(FILE)?.status).toBe(STATUS.IDLE);
+    expect(state.files.get(OTHER)?.status).toBe(STATUS.TRACKING);
+  });
+
+  it('离开并行时收尾其它目标，保留焦点目标', async () => {
+    const ctx = setup({ parallelTracking: true, autoStartMode: 'always', minReadSeconds: 0, idleTimeoutEnabled: false });
+    await ctx.open(FILE);
+    ctx.setActive(OTHER);
+    ctx.setOpen([FILE, OTHER]);
+    await ctx.service.onActivePathChange();
+    await ctx.advance(2);
+
+    //  切成单目标后由面板调用：其它目标自动保存，焦点目标继续
+    //  After switching to single-target the panel calls this: other targets auto-save, the focused one continues.
+    ctx.settings.singleThreadTracking = true;
+    await ctx.service.settleOtherTargets();
+
+    const state = ctx.store.getState();
+    expect(state.files.get(FILE)?.status).toBe(STATUS.IDLE);
+    expect(state.files.get(OTHER)?.status).toBe(STATUS.TRACKING);
   });
 });

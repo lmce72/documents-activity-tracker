@@ -30,6 +30,20 @@ declare module 'node:crypto' {
   };
 }
 
+declare module 'node:vm' {
+  export class Script {
+    constructor(source: string);
+    runInNewContext(context: Record<string, unknown>): unknown;
+  }
+}
+
+declare const Bun: {
+  build(options: { entrypoints: string[]; target: 'node'; format: 'cjs'; external: string[]; write: boolean }): Promise<{
+    success: boolean;
+    outputs: Array<{ text(): Promise<string> }>;
+  }>;
+};
+
 declare const process: {
   env: Record<string, string | undefined>;
   argv: string[];

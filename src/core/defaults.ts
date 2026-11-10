@@ -29,6 +29,9 @@ export const DEFAULT_SETTINGS: PluginSettings = {
   parallelTracking: true,
   //  过程模式（单线程）为默认：只计时当前聚焦的视图 / process mode is the default
   singleThreadTracking: true,
+  //  无感默认关：它要求自动计时全程开启，不该悄悄改变所有人的界面
+  //  Ambient is off by default: it needs always-on auto-start and must not change everyone's UI
+  ambientTracking: false,
   useIconize: true,
   dataFilePath: '',
   todayTotalDisplay: 'idle',
