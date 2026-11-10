@@ -991,6 +991,9 @@ export class ActivitySidebarView extends ItemView {
     this.renderAllTimersTools(liveHeading);
     this.renderCurrentSession(left, filePath, records);
     this.renderActiveTasks(left, true, filePath, false);
+    //  计时模式只在追踪计时面板里改，设置页不再重复
+    //  The timing mode lives here; the settings tab no longer duplicates it.
+    this.renderTrackingMode(left);
     this.renderAwaySection(left);
     this.renderDocumentHeatmap(right, records);
     this.renderTodayList(right, records);
@@ -1619,6 +1622,22 @@ export class ActivitySidebarView extends ItemView {
 
   private openAwayModal(): void {
     new AwayIdleModal(this.app, { ...this.deps, onChanged: () => this.refresh() }, this.deps.clock.today()).open();
+  }
+
+  /** 追踪计时的过程 / 并行模式 / tracking timer's process or parallel mode. */
+  private renderTrackingMode(root: HTMLElement): void {
+    const settings = this.deps.settings();
+    new Setting(root)
+      .setName(t('timingMode'))
+      .setDesc(t('timingModeDesc'))
+      .addDropdown(dropdown => dropdown
+        .addOption('parallel', t('timingModeParallel'))
+        .addOption('single', t('timingModeSingle'))
+        .setValue(settings.singleThreadTracking === true ? 'single' : 'parallel')
+        .onChange(value => {
+          void this.deps.saveSetting({ singleThreadTracking: value === 'single', parallelTracking: true })
+            .then(() => this.render());
+        }));
   }
 
   private renderAwaySection(root: HTMLElement): void {

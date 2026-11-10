@@ -8,9 +8,6 @@
 
 import { PluginSettingTab, Setting, type App, type Plugin } from 'obsidian';
 
-import { CountdownPlanModal } from './CountdownPlanModal';
-
-import { clampCycles, clampMinutes, normalizeIntervals, normalizeMode } from '../core/countdown';
 import { t } from '../core/i18n';
 import { metricById, normalizeSelection, optionsForSlot } from '../core/statusMetrics';
 import type { PluginSettings } from '../core/types';
@@ -75,19 +72,6 @@ export class ReadTimeSettingTab extends PluginSettingTab {
             this.display();
           }),
       );
-
-    new Setting(containerEl)
-      .setName(t('timingMode'))
-      .setDesc(t('timingModeDesc'))
-      .addDropdown(dropdown => dropdown
-        .addOption('parallel', t('timingModeParallel'))
-        .addOption('single', t('timingModeSingle'))
-        .setValue(settings.singleThreadTracking === true ? 'single' : 'parallel')
-        .onChange(async (value) => {
-          //  下拉菜单选择模式；parallelTracking 一并扶正，旧配置不会把选项卡住
-          //  A mode dropdown; parallelTracking is re-armed so an old config cannot pin the choice.
-          await this.deps.save({ singleThreadTracking: value === 'single', parallelTracking: true });
-        }));
 
     new Setting(containerEl)
       .setName(t('settingManualTimer'))
@@ -193,59 +177,10 @@ export class ReadTimeSettingTab extends PluginSettingTab {
           }),
       );
 
-    const mode = normalizeMode(settings.countdownMode);
-    new Setting(containerEl)
-      .setName(t('countdownModeSetting'))
-      .setDesc(t('countdownModeSettingDesc'))
-      .addDropdown((dropdown) =>
-        dropdown
-          .addOption('down', t('countdownModeDown'))
-          .addOption('pomodoro', t('countdownModePomodoro'))
-          .addOption('interval', t('countdownModeInterval'))
-          .setValue(mode)
-          .onChange(async (value) => {
-            await this.deps.save({ countdownMode: normalizeMode(value) });
-            this.display();
-          }),
-      );
-
-    if (mode === 'down') {
-      this.minutesRow(containerEl, t('countdownMinutes'), 'countdownMinutes', settings.countdownMinutes, 25);
-    } else if (mode === 'pomodoro') {
-      this.minutesRow(containerEl, t('countdownFocusMinutes'), 'countdownFocusMinutes', settings.countdownFocusMinutes, 25);
-      this.minutesRow(containerEl, t('countdownBreakMinutes'), 'countdownBreakMinutes', settings.countdownBreakMinutes, 5);
-
-      new Setting(containerEl)
-        .setName(t('countdownRepeat'))
-        .setDesc(t('countdownRepeatDesc'))
-        .addToggle((toggle) =>
-          toggle.setValue(settings.countdownRepeat === true).onChange(async (value) => {
-            await this.deps.save({ countdownRepeat: value });
-            this.display();
-          }),
-        );
-
-      if (settings.countdownRepeat === true) {
-        this.cyclesRow(containerEl, settings.countdownCycles);
-      }
-
-    } else {
-      //  分段编辑交给弹窗：设置页里铺一长串输入行既占高度，也和侧栏的编辑入口分成两套
-      //  Phase editing lives in the modal: a long stack of rows here both costs height and would
-      //  become a second editor beside the panel's.
-      new Setting(containerEl)
-        .setName(t('countdownIntervalList'))
-        .setDesc(t('countdownFlowDesc').replace('{n}', String(normalizeIntervals(settings.countdownIntervals).length)))
-        .addButton(button => button
-          .setButtonText(t('editPlan'))
-          .setCta()
-          .onClick(() => new CountdownPlanModal(this.app, {
-            settings,
-            save: this.deps.save,
-            onSaved: () => this.display(),
-          }).open()));
-    }
-
+    //  模式、时长与分段都在倒计时面板里改（类型切换 + 「本次方案」旁的编辑入口）；
+    //  设置页只留全局开关与收尾备注，避免同一个值有两套编辑入口。
+    //  Mode, lengths and phases are edited in the countdown panel (mode switch plus the plan editor
+    //  beside "This plan"); settings keeps only the global toggle and the finish-note prompt.
     new Setting(containerEl)
       .setName(t('countdownPromptNote'))
       .setDesc(t('countdownPromptNoteDesc'))
@@ -428,42 +363,6 @@ export class ReadTimeSettingTab extends PluginSettingTab {
         `新库从空开始，只记录从此以后的使用。旧文件原样保留，需要时请自行处置。\n` +
         `The database starts empty and records only what happens from now on; the old file is left exactly as it is.`,
     });
-  }
-
-  //  ==========================================================================
-  // countdown helpers / 倒计时的几行设置
-  //  ==========================================================================
-
-  /** 一个分钟数输入行 / one minutes field. */
-  private minutesRow(
-    container: HTMLElement,
-    name: string,
-    key: 'countdownMinutes' | 'countdownFocusMinutes' | 'countdownBreakMinutes',
-    value: number,
-    fallback: number,
-  ): void {
-    new Setting(container).setName(name).addText((text) =>
-      text
-        .setValue(String(clampMinutes(value, fallback)))
-        .onChange(async (raw) => {
-          const parsed = Number.parseInt(raw, 10);
-          const patch: Partial<PluginSettings> = {};
-          patch[key] = Number.isFinite(parsed) ? clampMinutes(parsed, fallback) : fallback;
-          await this.deps.save(patch);
-        }),
-    );
-  }
-
-  /** 重复轮数 / the cycle count. */
-  private cyclesRow(container: HTMLElement, cycles: number): void {
-    new Setting(container).setName(t('countdownCycles')).addText((text) =>
-      text.setValue(String(clampCycles(cycles))).onChange(async (raw) => {
-        const parsed = Number.parseInt(raw, 10);
-        await this.deps.save({
-          countdownCycles: Number.isFinite(parsed) ? clampCycles(parsed) : 4,
-        });
-      }),
-    );
   }
 
 }
