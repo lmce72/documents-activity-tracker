@@ -2114,8 +2114,15 @@ export class ActivitySidebarView extends ItemView {
     const flow = root.createDiv({ cls: 'rtt-cd-flow' });
     const kinds = new Set(plan.phases.map(phase => phase.kind));
     if (kinds.size > 0) {
+      //  图例同时给出这一类在整套方案里的总时长 / the legend also totals each kind across the plan
+      const totals = new Map<string, number>();
+      for (const phase of plan.phases) totals.set(phase.kind, (totals.get(phase.kind) ?? 0) + phase.seconds);
       const legend = root.createDiv({ cls: 'rtt-cd-legend' });
-      for (const kind of kinds) legend.createSpan({ cls: `rtt-cd-key rtt-cd-key-${kind}`, text: t(phaseLabelKey(kind)) });
+      for (const kind of kinds) {
+        const key = legend.createSpan({ cls: `rtt-cd-key rtt-cd-key-${kind}` });
+        key.createSpan({ text: t(phaseLabelKey(kind)) });
+        key.createSpan({ cls: 'rtt-cd-key-time', text: formatDurationWithSeconds(totals.get(kind) ?? 0) });
+      }
     }
     this.countdownFlow = {
       container: flow,

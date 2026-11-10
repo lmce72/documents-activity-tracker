@@ -403,6 +403,7 @@
 }
 
 .rtt-cd-key { display: inline-flex; align-items: center; gap: 4px; }
+.rtt-cd-key-time { color: var(--text-faint); font-variant-numeric: tabular-nums; }
 
 .rtt-cd-key::before {
     content: '';
