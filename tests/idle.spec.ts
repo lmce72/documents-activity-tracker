@@ -37,6 +37,7 @@ function setup() {
     settings: () => ({ ...DEFAULT_SETTINGS, minReadSeconds: 0, autoStartMode: 'always' }),
     getActivePath: () => FILE,
     getOpenPaths: () => [FILE],
+    getSplitTargets: () => [FILE],
   });
   return { clock, store, history, service };
 }
@@ -149,6 +150,7 @@ describe('空闲收尾 / closing the stretch', () => {
       }),
       getActivePath: () => FILE,
       getOpenPaths: () => [FILE],
+    getSplitTargets: () => [FILE],
     });
 
     await service.startCurrent();
@@ -236,6 +238,7 @@ describe('心跳断层 / a frozen gap in the heartbeat', () => {
       }),
       getActivePath: () => FILE,
       getOpenPaths: () => [FILE],
+    getSplitTargets: () => [FILE],
     });
     return { clock, store, history, service };
   }

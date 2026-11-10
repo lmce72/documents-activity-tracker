@@ -30,7 +30,7 @@ function setup(overrides: Partial<PluginSettings> = {}) {
 
   //  这些用例钉的是单目标切换语义；并行模式另有用例单独覆盖。
   //  These cases pin single-target switching; parallel mode has its own cases.
-  const settings: PluginSettings = { ...DEFAULT_SETTINGS, parallelTracking: false, ...overrides };
+  const settings: PluginSettings = { ...DEFAULT_SETTINGS, parallelTracking: false, singleThreadTracking: false, ...overrides };
 
   let activePath: string | null = null;
   let openPaths: string[] = [];
@@ -43,6 +43,7 @@ function setup(overrides: Partial<PluginSettings> = {}) {
     settings: () => settings,
     getActivePath: () => activePath,
     getOpenPaths: () => openPaths,
+    getSplitTargets: () => openPaths,
   });
 
   let idCounter = 0;

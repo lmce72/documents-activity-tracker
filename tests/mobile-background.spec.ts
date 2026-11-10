@@ -17,7 +17,7 @@ function setup(mobile = true, serviceClass: typeof TimerService = TimerService) 
   const store = new TimerStore(deps, createInitialState(deps));
   const history = new MemoryHistory();
   const service = new serviceClass({ store, history, clock, log, isMobile: mobile,
-    getActivePath: () => path, getOpenPaths: () => [path],
+    getActivePath: () => path, getOpenPaths: () => [path], getSplitTargets: () => [path],
     settings: () => ({ ...DEFAULT_SETTINGS, autoStartMode: 'always', idleTimeoutEnabled: false, minReadSeconds: 60 }),
   });
   const account = () => dayAccount({ events: history.getEvents(), manual: [], countdown: [],

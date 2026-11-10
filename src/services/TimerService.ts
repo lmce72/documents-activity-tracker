@@ -50,6 +50,8 @@ export interface TimerServiceDeps {
   getActiveTitle?: () => string | null;
   /** markdown paths still open in some leaf */
   getOpenPaths: () => string[];
+  /** 每个分屏当前的活动标签目标 / the active target of each split */
+  getSplitTargets: () => string[];
 }
 
 /** why a session closed. */
@@ -526,34 +528,15 @@ export class TimerService {
       const toPath =
         candidate && isTrackableTarget(candidate, settings) ? candidate : null;
 
-      if (fromPath === toPath) return;
-
-      //  并行模式：换目标只移动焦点，上一段继续计时；新目标按自动开始规则开跑或恢复。
-      //  不写 save / switch，也不关闭任何别的会话。
-      //  Parallel mode: a focus change only moves the spotlight. The previous round keeps running,
-      //  and the new target starts or resumes under the auto-start rules. No save, no switch, and
-      //  no other session is closed.
+      //  并行模式：每个分屏各自有一个活动标签，换标签（哪怕全局焦点文件没变）也要对账。
+      //  Parallel mode: each split has its own active tab, so reconcile even when the globally
+      //  focused file did not change.
       if (this.parallelTracking()) {
-        await this.flushPendingWrites();
-        if (!this.isCurrentLifecycle(revision)) return;
-        this.deps.store.dispatch({ type: ActionTypes.FOCUS_FILE, payload: { filePath: toPath } });
-        if (toPath) {
-          const target = this.deps.store.getState().files.get(toPath);
-          const autoStart = this.shouldAutoStart(toPath, settings);
-          if (target?.status === STATUS.PAUSED) {
-            if (autoStart) await this.togglePausePath(toPath);
-          } else if (!target || target.status === STATUS.IDLE) {
-            if (autoStart) {
-              this.deps.store.dispatch({
-                type: ActionTypes.SWITCH_FILE,
-                payload: { fromPath: null, toPath, autoStart: true, parallel: true },
-              });
-            }
-          }
-        }
-        await this.flushPendingWrites();
+        await this.syncParallelTargets();
         return;
       }
+
+      if (fromPath === toPath) return;
 
       await this.flushPendingWrites();
       if (!this.isCurrentLifecycle(revision)) return;
@@ -817,6 +800,63 @@ export class TimerService {
    * change can follow. "Always" must not wait for the next event, so the workspace's active file is
    * used once as a fallback; `autoStartMode` still decides whether a round actually starts.
    */
+  /**
+   * 让会话与「每个分屏的活动标签」对齐 / reconcile sessions with each split's active tab.
+   *
+   * 并行不是「所有打开过的目标都一直计时」，而是左右侧栏与主区域各自跟随自己的活动标签：
+   * 某一栏换了标签，那一栏里被换下的目标就收尾，新目标开始；三栏可以同时在跑。
+   *
+   * Parallel does not mean every opened target keeps running: each of the left dock, right dock and
+   * main area follows its own active tab. Switching a tab ends that split's previous target and
+   * starts the new one; all splits may run at once.
+   */
+  private async syncParallelTargets(fallbackPath: string | null = null): Promise<void> {
+    const settings = this.deps.settings();
+    if (!isDocumentRecordingEnabled(settings) || !this.parallelTracking()) return;
+    const revision = this.lifecycleRevision;
+    try {
+      await this.flushPendingWrites();
+      if (!this.isCurrentLifecycle(revision)) return;
+
+      const resolved = this.deps.getActivePath();
+      const targets = new Set(this.deps.getSplitTargets());
+      if (resolved && isTrackableTarget(resolved, settings)) targets.add(resolved);
+      if (fallbackPath && isTrackableTarget(fallbackPath, settings)) targets.add(fallbackPath);
+      const activeBefore = this.deps.store.getState().activeFilePath;
+
+      //  换下的目标收尾 / finish targets that are no longer active in any split
+      for (const [path, file] of this.deps.store.getState().files) {
+        if (file.status !== STATUS.TRACKING && file.status !== STATUS.PAUSED) continue;
+        if (targets.has(path)) continue;
+        this.dispatchSave(path, 'auto-save');
+      }
+      await this.flushPendingWrites();
+      if (!this.isCurrentLifecycle(revision)) return;
+
+      //  新活动目标开始或恢复 / start or resume the new active targets
+      for (const path of targets) {
+        const file = this.deps.store.getState().files.get(path);
+        if (file?.status === STATUS.TRACKING) continue;
+        if (!this.shouldAutoStart(path, settings)) continue;
+        if (file?.status === STATUS.PAUSED) {
+          await this.togglePausePath(path);
+          continue;
+        }
+        this.deps.store.dispatch({
+          type: ActionTypes.SWITCH_FILE,
+          payload: { fromPath: null, toPath: path, autoStart: true, parallel: true },
+        });
+      }
+
+      //  SWITCH_FILE 会把焦点移到最后一个目标；放回真正的全局活动目标
+      //  SWITCH_FILE moves the spotlight; put it back on the globally active target.
+      this.deps.store.dispatch({ type: ActionTypes.FOCUS_FILE, payload: { filePath: resolved ?? activeBefore } });
+      await this.flushPendingWrites();
+    } catch (error) {
+      this.deps.log.warn('[RTT][service] 并行目标对账失败 / parallel target sync failed:', error);
+    }
+  }
+
   async autoStartStartup(fallbackPath: string | null): Promise<void> {
     if (this.mobileBackground) return;
     const settings = this.deps.settings();
@@ -826,40 +866,10 @@ export class TimerService {
       await this.onActivePathChange();
       if (!this.isCurrentLifecycle(revision)) return;
 
-      //  并行模式启动：工作区里已经打开的每个可读目标都要有会话。只启动"当前焦点"那一个，
-      //  会造成「整机重启时记录了两个、只重载插件时只记录一个」的不一致。
-      //  Parallel startup starts a session for every readable target already open. Starting only the
-      //  focused one made a full app restart record two targets while a plugin-only reload recorded one.
+      //  并行模式启动：只按每个分屏的**活动标签**建会话，而不是所有打开过的叶子。
+      //  Parallel startup follows each split's **active tab**, never every open leaf.
       if (this.parallelTracking()) {
-        const state = this.deps.store.getState();
-        const activeBefore = state.activeFilePath;
-        const resolved = this.deps.getActivePath();
-        const open = new Set(this.deps.getOpenPaths());
-        if (resolved && isTrackableTarget(resolved, settings)) open.add(resolved);
-        if (fallbackPath && isTrackableTarget(fallbackPath, settings)) open.add(fallbackPath);
-        let started = false;
-        for (const path of open) {
-          if (!isTrackableTarget(path, settings)) continue;
-          const file = this.deps.store.getState().files.get(path);
-          if (file?.status === STATUS.TRACKING) continue;
-          if (!this.shouldAutoStart(path, settings)) continue;
-          if (file?.status === STATUS.PAUSED) {
-            await this.togglePausePath(path);
-            started = true;
-            continue;
-          }
-          this.deps.store.dispatch({
-            type: ActionTypes.SWITCH_FILE,
-            payload: { fromPath: null, toPath: path, autoStart: true, parallel: true },
-          });
-          started = true;
-        }
-        if (started) {
-          //  SWITCH_FILE 会把焦点移到最后一个目标，启动完再放回真正的前台目标
-          //  SWITCH_FILE moves the spotlight to each target; put it back on the real one afterwards.
-          this.deps.store.dispatch({ type: ActionTypes.FOCUS_FILE, payload: { filePath: activeBefore ?? resolved } });
-          await this.flushPendingWrites();
-        }
+        await this.syncParallelTargets(fallbackPath);
         return;
       }
 

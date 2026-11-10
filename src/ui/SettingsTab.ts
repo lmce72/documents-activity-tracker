@@ -77,14 +77,16 @@ export class ReadTimeSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName(t('singleThreadTracking'))
-      .setDesc(t('singleThreadTrackingDesc'))
-      .addToggle(toggle => toggle
-        .setValue(settings.singleThreadTracking === true)
+      .setName(t('timingMode'))
+      .setDesc(t('timingModeDesc'))
+      .addDropdown(dropdown => dropdown
+        .addOption('parallel', t('timingModeParallel'))
+        .addOption('single', t('timingModeSingle'))
+        .setValue(settings.singleThreadTracking === true ? 'single' : 'parallel')
         .onChange(async (value) => {
-          //  关掉单线程即回到并行；parallelTracking 一并扶正，旧配置不会把开关卡在单线程
-          //  Off means parallel; parallelTracking is re-armed so an old config cannot pin single mode.
-          await this.deps.save({ singleThreadTracking: value, parallelTracking: true });
+          //  下拉菜单选择模式；parallelTracking 一并扶正，旧配置不会把选项卡住
+          //  A mode dropdown; parallelTracking is re-armed so an old config cannot pin the choice.
+          await this.deps.save({ singleThreadTracking: value === 'single', parallelTracking: true });
         }));
 
     new Setting(containerEl)

@@ -47,6 +47,16 @@ export interface BindingDeps {
 export interface Binding {
   /** the active markdown file path */
   getActivePath(): string | null;
+  /**
+   * 每个分屏当前的活动标签目标 / the active target of each split.
+   *
+   * 左栏、右栏与主区域各有自己的活动标签；只看全局焦点会漏掉「左侧 navigator + 中间主页」这种
+   * 同时在用的组合。返回去重后的目标列表（文档路径或 `view:` 键）。
+   * The left dock, right dock and main area each have an active tab; looking only at the global
+   * focus misses combinations such as "navigator on the left plus the home note in the middle".
+   * Returns deduplicated targets (file paths or `view:` keys).
+   */
+  getSplitTargets(): string[];
   getActiveTitle(): string | null;
   /** markdown paths currently open */
   getOpenPaths(): string[];
@@ -92,6 +102,24 @@ export function installBindings(deps: BindingDeps): Binding {
       recentViewType: recent?.getViewType() ?? null,
       recentMarkdownPath: recent instanceof MarkdownView ? recent.file?.path ?? null : null,
     });
+  };
+
+  const targetOfLeaf = (leaf: import('obsidian').WorkspaceLeaf | null): string | null => {
+    const view = leaf?.view;
+    if (!view) return null;
+    if (view instanceof MarkdownView) return view.file?.path ?? null;
+    const type = view.getViewType();
+    if (!type || ownViewTypes.has(type) || NON_READING_VIEW_TYPES.includes(type)) return null;
+    return pluginViewKey(type);
+  };
+
+  const getSplitTargets = (): string[] => {
+    const targets = new Set<string>();
+    for (const root of [app.workspace.leftSplit, app.workspace.rightSplit, app.workspace.rootSplit]) {
+      const target = targetOfLeaf(app.workspace.getMostRecentLeaf(root));
+      if (target) targets.add(target);
+    }
+    return [...targets];
   };
 
   const getActiveTitle = (): string | null => {
@@ -140,6 +168,9 @@ export function installBindings(deps: BindingDeps): Binding {
   //  Layout changes (tab closed, pane moved) matter too: orphan sessions close here
   registered.push(
     app.workspace.on('layout-change', () => {
+      //  侧栏换标签、拖拽分屏都会改「各分屏的活动标签」，对齐函数要跟着跑一次
+      //  Switching a sidebar tab or dragging a split changes each split's active target.
+      void service.onActivePathChange();
       void service.closeOrphanSessions();
     }),
   );
@@ -378,6 +409,7 @@ export function installBindings(deps: BindingDeps): Binding {
     getActivePath,
     getActiveTitle,
     getOpenPaths,
+    getSplitTargets,
     destroy(): void {
       destroyed = true;
       window.clearInterval(timer);

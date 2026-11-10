@@ -27,7 +27,8 @@ export const DEFAULT_SETTINGS: PluginSettings = {
   //  并行记录默认开：换目标不再丢掉上一段，多个目标各自计时
   //  Parallel tracking is on by default: switching target no longer drops the previous round.
   parallelTracking: true,
-  singleThreadTracking: false,
+  //  过程模式（单线程）为默认：只计时当前聚焦的视图 / process mode is the default
+  singleThreadTracking: true,
   useIconize: true,
   dataFilePath: '',
   todayTotalDisplay: 'idle',

@@ -67,7 +67,7 @@ it('same-view article changes persist their full titles, retry failures and reta
   let title = '文章 A：完整标题';
   const service = new TimerService({ store, history, clock, log,
     settings: () => ({ ...DEFAULT_SETTINGS, autoStartMode: 'always', minReadSeconds: 0, idleTimeoutEnabled: false }),
-    getActivePath: () => view, getActiveTitle: () => title, getOpenPaths: () => [view] });
+    getActivePath: () => view, getActiveTitle: () => title, getOpenPaths: () => [view], getSplitTargets: () => [view] });
   await service.onActivePathChange();
   for (let i = 0; i < 10; i++) { clock.advanceSeconds(1); await service.tick(); }
   expect(getAllTodaySeconds([], store.getState().files.values(), '2026-10-19', false, false)).toBe(0);

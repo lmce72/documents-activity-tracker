@@ -20,7 +20,7 @@ function setup() {
   const { deps } = testDeps(clock, log);
   const store = new TimerStore(deps, createInitialState(deps));
   const history = new MemoryHistory();
-  const service = new TimerService({ store, history, clock, log, settings: () => ({...DEFAULT_SETTINGS, minReadSeconds: 0, autoStartMode: 'always'}), getActivePath: () => FILE, getOpenPaths: () => [FILE] });
+  const service = new TimerService({ store, history, clock, log, settings: () => ({...DEFAULT_SETTINGS, minReadSeconds: 0, autoStartMode: 'always'}), getActivePath: () => FILE, getOpenPaths: () => [FILE], getSplitTargets: () => [FILE] });
   return { clock, store, history, service, advance: async (seconds: number) => { for(let i=0;i<seconds;i++) { clock.advanceSeconds(1); await service.tick(); } } };
 }
 const events: TimelineEvent[] = [

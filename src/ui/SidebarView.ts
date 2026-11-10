@@ -985,10 +985,12 @@ export class ActivitySidebarView extends ItemView {
     //  上：此刻的数字（四宫格 + 当前状态）；下：这一天的形状与排名
     //  Top: the numbers for now (grid + current session); bottom: the day's shape and ranking
     this.renderDocumentStats(left, records, settings);
+    //  文档账本（文档 + 插件视图）的并行会话都归在同一个「正在进行」标题下
+    //  Every document-ledger session — documents and plugin views — sits under one "running now".
+    const liveHeading = renderSectionHeading(left, 'activity', t('activeTasks'));
+    this.renderAllTimersTools(liveHeading);
     this.renderCurrentSession(left, filePath, records);
-    //  并行会话统一在总看板的「正在进行」里列出，文档面板不再重复一个分区
-    //  Parallel sessions live in the overview's "running now" list; the document panel does not
-    //  repeat a section for them.
+    this.renderActiveTasks(left, true, filePath, false);
     this.renderAwaySection(left);
     this.renderDocumentHeatmap(right, records);
     this.renderTodayList(right, records);
@@ -2438,7 +2440,7 @@ export class ActivitySidebarView extends ItemView {
    * readout, that ledger's own controls, and a jump-to-panel button. Several document targets simply
    * produce several rows.
    */
-  private renderActiveTasks(root: HTMLElement, documentLedgerOnly = false, excludePath: string | null = null): void {
+  private renderActiveTasks(root: HTMLElement, documentLedgerOnly = false, excludePath: string | null = null, showHeading = true): void {
     const state = this.deps.store.getState();
     const settings = this.deps.settings();
     const displayMode = settings.timeDisplayMode;
@@ -2572,19 +2574,11 @@ export class ActivitySidebarView extends ItemView {
 
     if (tasks.length === 0) return;
 
-    const heading = renderSectionHeading(root, 'activity', documentLedgerOnly ? t('parallelSessions') : t('activeTasks'));
-    const tools = root.createDiv({ cls: 'rtt-live-all-actions' });
-    this.iconButton(tools, 'trash-2', t('discardAll'), () => {
-      void this.discardAllTimers();
-    }, { ghost: true, danger: true });
-    this.iconButton(tools, 'pause', t('pauseAll'), () => {
-      void this.deps.service.pauseAll().then(() => this.render());
-    }, { ghost: true });
-    this.iconButton(tools, 'save', t('saveAll'), () => {
-      void this.saveAllTimers();
-    }, { ghost: true });
-    //  标题右侧放全局按钮，避免再占一行 / global controls ride the heading, not another row
-    heading.appendChild(tools);
+    if (showHeading) {
+      const heading = renderSectionHeading(root, 'activity', t('activeTasks'));
+      //  标题右侧放全局按钮，避免再占一行 / global controls ride the heading, not another row
+      this.renderAllTimersTools(heading);
+    }
 
     const list = root.createDiv({ cls: 'rtt-live-tasks' });
     for (const task of tasks) {
@@ -2636,6 +2630,20 @@ export class ActivitySidebarView extends ItemView {
       task.controls(actions);
       this.iconButton(actions, 'arrow-right', t('jumpToPanel'), () => this.setPanel(task.jump), { ghost: true });
     }
+  }
+
+  /** 全部丢弃 / 暂停 / 保存 的全局按钮 / the global discard, pause and save controls. */
+  private renderAllTimersTools(parent: HTMLElement): void {
+    const tools = parent.createDiv({ cls: 'rtt-live-all-actions' });
+    this.iconButton(tools, 'trash-2', t('discardAll'), () => {
+      void this.discardAllTimers();
+    }, { ghost: true, danger: true });
+    this.iconButton(tools, 'pause', t('pauseAll'), () => {
+      void this.deps.service.pauseAll().then(() => this.render());
+    }, { ghost: true });
+    this.iconButton(tools, 'save', t('saveAll'), () => {
+      void this.saveAllTimers();
+    }, { ghost: true });
   }
 
   /** 丢弃所有计时 / discard every running timer across the three ledgers. */
