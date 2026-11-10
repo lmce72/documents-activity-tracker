@@ -190,6 +190,10 @@ export const I18N = {
     manualFlagDiff: '时间差',
     manualFlagRecorded: '累计时长',
     manualFlagRow: '标记 {n}',
+    manualFlagUnnamed: '未命名',
+    manualFlagName: '标记名称',
+    manualFlagRenameHint: '双击修改名称',
+    manualRemoveFlag: '移除标记',
     manualFlagAt: '第 {n}',
     manualShowMilliseconds: '秒表显示毫秒',
     manualShowMillisecondsDesc: '只影响读数，记录始终按毫秒保存；打开后刷新加快到 0.1 秒。',
@@ -263,6 +267,7 @@ export const I18N = {
 
     // 倒计时 / countdown ────────────────────────────────────
     panelCountdown: '倒计时',
+    openPluginSettings: '插件设置',
     countdownTimerOff: '倒计时已关闭',
     countdownTimerOffDesc: '在设置中开启后即可使用倒计时。',
     countdownStart: '开始倒计时',
@@ -564,6 +569,10 @@ export const I18N = {
     manualFlagDiff: 'Time difference',
     manualFlagRecorded: 'Recorded time',
     manualFlagRow: 'Flag {n}',
+    manualFlagUnnamed: 'Unnamed',
+    manualFlagName: 'Flag name',
+    manualFlagRenameHint: 'Double-click to rename',
+    manualRemoveFlag: 'Remove flag',
     manualFlagAt: 'At {n}',
     manualShowMilliseconds: 'Show milliseconds on the stopwatch',
     manualShowMillisecondsDesc: 'Affects the readout only — records always keep milliseconds. Turning it on refreshes the clock ten times a second.',
@@ -638,6 +647,7 @@ export const I18N = {
 
     // countdown ────────────────────────────────────────────
     panelCountdown: 'Countdown',
+    openPluginSettings: 'Plugin settings',
     countdownTimerOff: 'Countdown is off',
     countdownTimerOffDesc: 'Turn it on in settings to use the countdown.',
     countdownStart: 'Start countdown',

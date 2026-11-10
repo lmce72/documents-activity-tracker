@@ -470,6 +470,30 @@ export function createTimerReducer(deps: ReducerDeps) {
         };
       }
 
+      //  打错的标记就地删掉，计时与其它标记都不动 / drop a mistaken mark in place, leaving the run alone
+      case ActionTypes.MANUAL_UNFLAG: {
+        if (state.manual.status === MANUAL_STATUS.IDLE) return state;
+        const index = action.payload.index;
+        if (!Number.isInteger(index) || index < 0 || index >= state.manual.flags.length) return state;
+        return {
+          ...state,
+          manual: { ...state.manual, flags: state.manual.flags.filter((_, position) => position !== index) },
+        };
+      }
+
+      case ActionTypes.MANUAL_RENAME_FLAG: {
+        if (state.manual.status === MANUAL_STATUS.IDLE) return state;
+        const { index, label } = action.payload;
+        if (!Number.isInteger(index) || index < 0 || index >= state.manual.flags.length) return state;
+        return {
+          ...state,
+          manual: {
+            ...state.manual,
+            flags: state.manual.flags.map((flag, position) => position === index ? { ...flag, label: label.trim() } : flag),
+          },
+        };
+      }
+
       //  ----------------------------------------------------------------------
       // countdown
       //
@@ -596,6 +620,29 @@ export function createTimerReducer(deps: ReducerDeps) {
                 phase: Math.max(1, Math.round(phase)),
               },
             ],
+          },
+        };
+      }
+
+      case ActionTypes.COUNTDOWN_UNFLAG: {
+        if (state.countdown.status === MANUAL_STATUS.IDLE) return state;
+        const index = action.payload.index;
+        if (!Number.isInteger(index) || index < 0 || index >= state.countdown.flags.length) return state;
+        return {
+          ...state,
+          countdown: { ...state.countdown, flags: state.countdown.flags.filter((_, position) => position !== index) },
+        };
+      }
+
+      case ActionTypes.COUNTDOWN_RENAME_FLAG: {
+        if (state.countdown.status === MANUAL_STATUS.IDLE) return state;
+        const { index, label } = action.payload;
+        if (!Number.isInteger(index) || index < 0 || index >= state.countdown.flags.length) return state;
+        return {
+          ...state,
+          countdown: {
+            ...state.countdown,
+            flags: state.countdown.flags.map((flag, position) => position === index ? { ...flag, label: label.trim() } : flag),
           },
         };
       }

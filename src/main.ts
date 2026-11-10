@@ -248,6 +248,7 @@ export default class ReadTimeTrackerPlugin extends Plugin {
           promptNote: (onDone) => new ManualNoteModal(this.app, onDone).open(),
           openRecords: (filePath) => this.openRecords(filePath),
           saveSetting: (patch) => this.updateSettings(patch),
+          pluginId: this.manifest.id,
         }),
     );
 

@@ -29,7 +29,7 @@ import { activityRuns } from '../core/activityRuns';
  * All styling reuses existing classes; no new CSS.
  */
 
-import { DropdownComponent, ItemView, Setting, setIcon, setTooltip, type WorkspaceLeaf } from 'obsidian';
+import { DropdownComponent, ItemView, Notice, Setting, setIcon, setTooltip, type WorkspaceLeaf } from 'obsidian';
 
 import { STATUS } from '../core/constants';
 import {
@@ -52,7 +52,6 @@ import type { Logger } from '../core/logger';
 import {
   buildManualDayFlags,
   buildManualDayRows,
-  flagIntervals,
   manualDayTotalSeconds,
   manualSessionsOfDay,
   shiftDay,
@@ -227,6 +226,8 @@ export interface SidebarDeps {
   openRecords: (filePath: string | null) => void;
   /** persist a settings patch and apply it at once */
   saveSetting: (patch: Partial<PluginSettings>) => Promise<void>;
+  /** this plugin's manifest id, for opening the settings tab */
+  pluginId: string;
 }
 
 export class ActivitySidebarView extends ItemView {
@@ -844,12 +845,24 @@ export class ActivitySidebarView extends ItemView {
    * action row collapses into an overflow menu.
    */
   private renderPanelTabs(root: HTMLElement): void {
-    const picker = root.createDiv({ cls: 'rtt-mobile-panel-picker' });
+    //  菜单左侧：计时器入口 + 插件设置；两者都是透明底的图标按钮
+    //  Left of the menu: a timer entry and plugin settings, both transparent icon buttons.
+    const head = root.createDiv({ cls: 'rtt-panel-head' });
+    const tools = head.createDiv({ cls: 'rtt-panel-tools' });
+    const state = this.deps.store.getState();
+    const manualRunning = state.manual.status !== 'idle';
+    const countdownRunning = state.countdown.status !== 'idle';
+    const timerPanel: Panel = !manualRunning && countdownRunning ? 'countdown' : 'manual';
+    const timer = this.iconButton(tools, countdownRunning && !manualRunning ? 'hourglass' : 'timer', t('panelManual'), () => this.setPanel(timerPanel), { ghost: true });
+    timer.toggleClass('is-live', manualRunning || countdownRunning);
+    this.iconButton(tools, 'settings', t('openPluginSettings'), () => this.openPluginSettings(), { ghost: true });
+
+    const picker = head.createDiv({ cls: 'rtt-mobile-panel-picker' });
     const choices: Record<string, string> = { document: t('panelDocument'), manual: t('panelManual'), countdown: t('panelCountdown'), overview: t('panelOverview') };
     new DropdownComponent(picker).addOptions(choices).setValue(this.panel).onChange(value => {
       if (value === 'document' || value === 'manual' || value === 'countdown' || value === 'overview') this.setPanel(value);
     }).selectEl.setAttribute('aria-label', t('viewSelect'));
-    const bar = root.createDiv({ cls: 'rtt-panel-tabs' });
+    const bar = head.createDiv({ cls: 'rtt-panel-tabs' });
     bar.setAttribute('role', 'tablist');
 
     const addTab = (panel: Panel, icon: string, label: string): void => {
@@ -873,6 +886,20 @@ export class ActivitySidebarView extends ItemView {
       addTab('countdown', 'hourglass', t('panelCountdown'));
     }
     addTab('overview', 'gauge', t('panelOverview'));
+  }
+
+  /** 打开本插件的设置页 / open this plugin's settings tab. */
+  private openPluginSettings(): void {
+    try {
+      const setting = (this.app as unknown as {
+        setting?: { open(): void; openTabById(id: string): void };
+      }).setting;
+      if (!setting) return;
+      setting.open();
+      setting.openTabById(this.deps.pluginId);
+    } catch (error) {
+      this.deps.log.warn('[RTT][sidebar] 打开设置失败 / open settings failed:', error);
+    }
   }
 
   /** The statistic cards. */
@@ -1737,25 +1764,14 @@ export class ActivitySidebarView extends ItemView {
       return;
     }
 
-    //  三列：标记（带图标）/ 时间差（距上一轮）/ 累计时长（这一轮跑了多久）
-    //  Three columns: the mark (with its icon), the gap since the previous one, and how long the
-    //  round had been running when it was placed.
-    const intervals = flagIntervals(flags);
-    const table = root.createEl('table', { cls: 'rtt-flag-table' });
-    const head = table.createEl('thead').createEl('tr');
-    for (const label of [t('manualFlagCol'), t('manualFlagDiff'), t('manualFlagRecorded')]) {
-      head.createEl('th', { text: label });
-    }
-
-    const body = table.createEl('tbody');
-    for (const [index, mark] of flags.entries()) {
-      const row = body.createEl('tr');
-      const cell = row.createEl('td', { cls: 'rtt-flag-cell' });
-      setIcon(cell.createSpan({ cls: 'rtt-flag-cell-icon' }), 'flag');
-      cell.createSpan({ text: t('manualFlagRow').replace('{n}', String(index + 1)) });
-      row.createEl('td', { text: formatDurationWithSeconds(intervals[index] ?? 0) });
-      row.createEl('td', { text: formatDurationWithSeconds(mark.atSeconds) });
-    }
+    //  与面板里的表共用同一份实现：运行中可改名、可即时移除
+    //  Shares the panel's table implementation: rename in place, remove without stopping.
+    renderManualFlagsTable(
+      root,
+      flags,
+      index => { if (this.deps.manual.removeFlag(index)) this.render(); },
+      (index, label) => { if (this.deps.manual.renameFlag(index, label)) this.render(); },
+    );
   }
 
   /**
@@ -1793,7 +1809,12 @@ export class ActivitySidebarView extends ItemView {
 
     renderSectionHeading(root, 'flag', t('manualFlagsTitle'));
 
-    renderManualFlagsTable(root, flags);
+    renderManualFlagsTable(
+      root,
+      flags,
+      index => { if (this.deps.manual.removeFlag(index)) this.render(); },
+      (index, label) => { if (this.deps.manual.renameFlag(index, label)) this.render(); },
+    );
   }
 
   /**
@@ -2132,7 +2153,12 @@ export class ActivitySidebarView extends ItemView {
     const state = this.deps.store.getState();
     if (state.countdown.status === 'idle' && state.countdown.flags.length === 0) return;
     renderSectionHeading(root, 'flag', t('manualFlagsTitle'));
-    renderManualFlagsTable(root, state.countdown.flags);
+    renderManualFlagsTable(
+      root,
+      state.countdown.flags,
+      index => { if (this.deps.countdown.removeFlag(index)) this.render(); },
+      (index, label) => { if (this.deps.countdown.renameFlag(index, label)) this.render(); },
+    );
   }
 
   /**
@@ -2369,7 +2395,7 @@ export class ActivitySidebarView extends ItemView {
         timeRange: session.startTime.slice(11, 19) + ' – ' + session.endTime.slice(11, 19),
         lines: [formatDurationParts(session.durationSeconds)],
         onEdit: () => this.editRecord(draftForSession(kind, session, this.deps.history.getRevision())),
-        renderDetail: container => renderManualSessionDetail(container, session) };
+        renderDetail: container => renderManualSessionDetail(container, session, (index, label) => this.renameSavedFlag(session, kind, index, label)) };
       items.push({ at: process.startAbs, node });
     }
     renderTimelineList(parent, items.sort((left, right) => left.at - right.at).map(item => item.node), state);
@@ -2378,7 +2404,30 @@ export class ActivitySidebarView extends ItemView {
   private renderEditableSession(parent: HTMLElement, session: ManualSession, kind: 'manual' | 'countdown'): void {
     const toolbar = parent.createDiv({ cls: 'rtt-process-toolbar' });
     this.iconButton(toolbar, 'pencil', t('editRecord'), () => this.editRecord(draftForSession(kind, session, this.deps.history.getRevision())), { ghost: true });
-    renderManualSessionDetail(parent, session);
+    renderManualSessionDetail(parent, session, (index, label) => this.renameSavedFlag(session, kind, index, label));
+  }
+
+  /**
+   * 修改已保存一轮里的标记名称 / rename a mark on a recorded round.
+   *
+   * 走记录编辑的版本化更正，而不是直接改源行：这样与冲突检测、同步合并保持同一套语义。
+   * Goes through the versioned correction ledger rather than editing the source row, keeping
+   * conflict detection and sync merging on the same semantics.
+   */
+  private renameSavedFlag(session: ManualSession, kind: 'manual' | 'countdown', index: number, label: string): void {
+    try {
+      const draft = draftForSession(kind, session, this.deps.history.getRevision());
+      const flag = draft.flags[index];
+      if (!flag) return;
+      const next = label.trim();
+      if (next === flag.label) return;
+      flag.label = next;
+      void new RecordEditingService(this.deps.history).save(draft)
+        .then(() => this.refresh())
+        .catch((error: unknown) => { new Notice(error instanceof Error ? error.message : String(error)); });
+    } catch (error) {
+      this.deps.log.warn('[RTT][sidebar] 修改标记名称失败 / rename mark failed:', error);
+    }
   }
 
   private renderOverviewList(root: HTMLElement, tracks: readonly OverviewTrack[]): void {

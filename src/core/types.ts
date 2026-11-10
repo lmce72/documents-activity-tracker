@@ -723,6 +723,15 @@ export type TimerAction =
       payload: { atSeconds: number; atTime: string; label: string };
     }
   | {
+      type: Extract<ActionType, 'MANUAL_UNFLAG'>;
+      /** 要移除的标记在数组中的位置 / index of the mark to drop */
+      payload: { index: number };
+    }
+  | {
+      type: Extract<ActionType, 'MANUAL_RENAME_FLAG'>;
+      payload: { index: number; label: string };
+    }
+  | {
       type: Extract<ActionType, 'COUNTDOWN_START'>;
       /** 方案在这里冻结 / the plan is frozen here */
       payload: { plan: CountdownPlan };
@@ -769,6 +778,14 @@ export type TimerAction =
   | {
       type: Extract<ActionType, 'COUNTDOWN_FLAG'>;
       payload: { atSeconds: number; atTime: string; label: string; phase: number };
+    }
+  | {
+      type: Extract<ActionType, 'COUNTDOWN_UNFLAG'>;
+      payload: { index: number };
+    }
+  | {
+      type: Extract<ActionType, 'COUNTDOWN_RENAME_FLAG'>;
+      payload: { index: number; label: string };
     };
 
 //  ============================================================================

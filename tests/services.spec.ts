@@ -595,6 +595,31 @@ describe('ManualTimerService — 手动计时 / manual timer', () => {
     await ctx.manual.stop('x');
     expect(ctx.history.flushCount).toBeGreaterThan(before);
   });
+
+  it('运行中可即时移除某一枚标记，计时不停', () => {
+    const ctx = setup();
+    ctx.manual.start();
+    ctx.clock.advanceSeconds(10);
+    ctx.manual.flag('第一枚');
+    ctx.clock.advanceSeconds(10);
+    ctx.manual.flag('第二枚');
+    expect(ctx.manual.flags()).toHaveLength(2);
+
+    expect(ctx.manual.removeFlag(0)).toBe(true);
+    expect(ctx.manual.flags()).toHaveLength(1);
+    expect(ctx.manual.flags()[0]?.label).toBe('第二枚');
+    expect(ctx.store.getState().manual.status).toBe(MANUAL_STATUS.RUNNING);
+    expect(ctx.manual.elapsedSeconds()).toBe(20);
+  });
+
+  it('越界或空闲时移除标记不改变状态', () => {
+    const ctx = setup();
+    expect(ctx.manual.removeFlag(0)).toBe(false);
+    ctx.manual.start();
+    ctx.manual.flag('只有一枚');
+    expect(ctx.manual.removeFlag(3)).toBe(false);
+    expect(ctx.manual.flags()).toHaveLength(1);
+  });
 });
 
 it('discarded short sessions stop extrapolating in derived records', async () => {

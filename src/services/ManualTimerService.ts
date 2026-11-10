@@ -96,6 +96,31 @@ export class ManualTimerService {
     return [...this.deps.store.getState().manual.flags];
   }
 
+  /**
+   * 即时移除一枚标记 / drop one mark without stopping.
+   *
+   * 只删这一枚，计时、其它标记与会话状态都不动 —— 打错标记不该逼用户重开一轮。
+   * Only this one is removed; the clock, other marks and the session are untouched.
+   *
+   * whether a mark was removed
+   */
+  removeFlag(index: number): boolean {
+    const flags = this.deps.store.getState().manual.flags;
+    if (this.deps.store.getState().manual.status === MANUAL_STATUS.IDLE) return false;
+    if (!Number.isInteger(index) || index < 0 || index >= flags.length) return false;
+    this.deps.store.dispatch({ type: ActionTypes.MANUAL_UNFLAG, payload: { index } });
+    return true;
+  }
+
+  /** 运行中修改标记名称 / rename a live mark. */
+  renameFlag(index: number, label: string): boolean {
+    const flags = this.deps.store.getState().manual.flags;
+    if (this.deps.store.getState().manual.status === MANUAL_STATUS.IDLE) return false;
+    if (!Number.isInteger(index) || index < 0 || index >= flags.length) return false;
+    this.deps.store.dispatch({ type: ActionTypes.MANUAL_RENAME_FLAG, payload: { index, label } });
+    return true;
+  }
+
   isActive(): boolean {
     return this.deps.store.getState().manual.status !== MANUAL_STATUS.IDLE;
   }

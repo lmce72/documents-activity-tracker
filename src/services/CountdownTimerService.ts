@@ -184,6 +184,24 @@ export class CountdownTimerService {
     return [...this.deps.store.getState().countdown.flags];
   }
 
+  /** 即时移除一枚标记 / drop one mark without stopping. */
+  removeFlag(index: number): boolean {
+    const state = this.deps.store.getState();
+    if (state.countdown.status === MANUAL_STATUS.IDLE) return false;
+    if (!Number.isInteger(index) || index < 0 || index >= state.countdown.flags.length) return false;
+    this.deps.store.dispatch({ type: ActionTypes.COUNTDOWN_UNFLAG, payload: { index } });
+    return true;
+  }
+
+  /** 运行中修改标记名称 / rename a live mark. */
+  renameFlag(index: number, label: string): boolean {
+    const state = this.deps.store.getState();
+    if (state.countdown.status === MANUAL_STATUS.IDLE) return false;
+    if (!Number.isInteger(index) || index < 0 || index >= state.countdown.flags.length) return false;
+    this.deps.store.dispatch({ type: ActionTypes.COUNTDOWN_RENAME_FLAG, payload: { index, label } });
+    return true;
+  }
+
   /**
    * Stop and persist.
    *

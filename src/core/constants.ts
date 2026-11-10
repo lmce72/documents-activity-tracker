@@ -55,6 +55,10 @@ export const ActionTypes = {
   MANUAL_STOP: 'MANUAL_STOP',
   /** place a mark during manual timing */
   MANUAL_FLAG: 'MANUAL_FLAG',
+  /** 运行中即时移除一枚标记 / remove one live mark without stopping */
+  MANUAL_UNFLAG: 'MANUAL_UNFLAG',
+  /** 运行中修改标记名称 / rename one live mark */
+  MANUAL_RENAME_FLAG: 'MANUAL_RENAME_FLAG',
   /** 恢复一份崩溃/重载前没保存的计时 / bring back an unsaved run from the live snapshot */
   MANUAL_RESTORE: 'MANUAL_RESTORE',
 
@@ -64,6 +68,8 @@ export const ActionTypes = {
   COUNTDOWN_RESUME: 'COUNTDOWN_RESUME',
   COUNTDOWN_STOP: 'COUNTDOWN_STOP',
   COUNTDOWN_FLAG: 'COUNTDOWN_FLAG',
+  COUNTDOWN_UNFLAG: 'COUNTDOWN_UNFLAG',
+  COUNTDOWN_RENAME_FLAG: 'COUNTDOWN_RENAME_FLAG',
   COUNTDOWN_SKIP: 'COUNTDOWN_SKIP',
   COUNTDOWN_RESTORE: 'COUNTDOWN_RESTORE',
 } as const;

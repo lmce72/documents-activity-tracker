@@ -383,6 +383,15 @@
 .rtt-flag-table td:not(:first-child) { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .rtt-flag-cell { display: flex; align-items: center; gap: 6px; }
 
+/* 双击标记名即可改名 / double-click the mark's name to rename it */
+.rtt-flag-label.is-editable { cursor: text; }
+.rtt-flag-label.is-editable:hover { color: var(--text-normal); text-decoration: underline dotted; text-underline-offset: 2px; }
+.rtt-flag-label.is-empty { color: var(--text-faint); }
+.rtt-flag-name-input { min-width: 9em; max-width: 100%; height: var(--input-height); padding: 0 var(--size-4-1); font-size: var(--font-ui-smaller); }
+.rtt-flag-actions-col { width: 1%; }
+.rtt-flag-actions { width: 1%; text-align: right; white-space: nowrap; }
+.rtt-flag-actions .rtt-icon-btn { width: 22px; height: 22px; }
+
 .rtt-manual-record-header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .rtt-manual-record-name { flex: 1 1 auto; min-width: 0; color: var(--text-normal); }
 .rtt-manual-record-header button { flex: 0 0 auto; }
@@ -2053,6 +2062,54 @@ body.is-mobile .workspace-leaf-content[data-type="documents-activity-tracker-sid
     grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+/* 菜单行：左侧透明图标按钮 + 右侧面板菜单 / menu row: transparent icons, then the panel menu */
+.rtt-panel-head {
+    position: sticky;
+    top: 0;
+    z-index: 3;
+    display: flex;
+    align-items: stretch;
+    gap: 6px;
+    margin-bottom: 12px;
+    background: var(--background-primary);
+}
+
+.rtt-panel-head > .rtt-panel-tabs {
+    /* 吸顶移到整行上，菜单本身不再单独吸顶 / the row is pinned, not the menu inside it */
+    position: static;
+    top: auto;
+    z-index: auto;
+    flex: 1 1 auto;
+    min-width: 0;
+    margin-bottom: 0;
+}
+
+.rtt-panel-tools {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    flex: 0 0 auto;
+    padding-block: 3px;
+}
+
+/* 正在计时：图标角上一枚小点，不必打开面板也知道计时还在走
+   A running timer gets a dot on the icon, visible without opening the panel. */
+.rtt-panel-tools .rtt-icon-btn.is-live {
+    position: relative;
+    color: var(--interactive-accent);
+}
+
+.rtt-panel-tools .rtt-icon-btn.is-live::after {
+    content: '';
+    position: absolute;
+    top: 3px;
+    right: 3px;
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--interactive-accent);
+}
+
 .view-content.is-wide .rtt-panel-tabs {
     grid-template-columns: repeat(4, minmax(0, 1fr));
 }
@@ -2427,6 +2484,7 @@ body:not(.is-mobile) .view-content.is-overview.is-wide .rtt-stats-bar.is-dense >
 .rtt-mobile-panel-picker, .rtt-mobile-source-picker { display: none; }
 .is-mobile .rtt-panel-tabs, .is-mobile .rtt-overview-chart > .rtt-hm-legend { display: none; }
 .is-mobile .rtt-mobile-panel-picker, .is-mobile .rtt-mobile-source-picker { display: block; margin-bottom: var(--size-4-2); }
+.is-mobile .rtt-panel-head > .rtt-mobile-panel-picker { flex: 1 1 auto; min-width: 0; margin-bottom: 0; }
 .is-mobile .rtt-mobile-panel-picker select, .is-mobile .rtt-mobile-source-picker select { width: 100%; max-width: 100%; }
 .is-mobile .view-content.is-wide .rtt-panel-cols { grid-template-columns: minmax(0, 1fr); }
 .is-mobile .rtt-vtl-actions button { min-width: var(--size-4-8); min-height: var(--size-4-8); }
