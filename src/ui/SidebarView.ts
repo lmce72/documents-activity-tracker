@@ -2112,12 +2112,21 @@ export class ActivitySidebarView extends ItemView {
     const finishLabel = range.createSpan({ cls: 'rtt-cd-range-finish' });
     this.paintCountdownRange(nowLabel, finishLabel, nowMs, built.finishMs, showSeconds);
     const flow = root.createDiv({ cls: 'rtt-cd-flow' });
-    const kinds = new Set(plan.phases.map(phase => phase.kind));
-    if (kinds.size > 0) {
-      //  图例同时给出这一类在整套方案里的总时长 / the legend also totals each kind across the plan
+    const legend = plan.phases.length > 0 ? root.createDiv({ cls: 'rtt-cd-legend' }) : null;
+    if (legend && plan.mode === 'interval') {
+      //  不规则周期逐段列名：顺序、颜色、时长都与时间轴上的块一一对应
+      //  Irregular phases are listed one by one: order, colour and duration match their block.
+      plan.phases.forEach((phase, index) => {
+        const key = legend.createSpan({ cls: 'rtt-cd-key' });
+        key.setCssProps({ '--rtt-key-color': this.countdownPhaseColor(index, this.countdownColorSeed(plan)) });
+        key.createSpan({ text: t('countdownSegmentN').replace('{n}', String(index + 1)) });
+        key.createSpan({ cls: 'rtt-cd-key-time', text: formatDurationWithSeconds(phase.seconds) });
+      });
+    } else if (legend) {
+      //  番茄钟/单段按类别汇总 / pomodoro and single-phase plans total by kind
+      const kinds = new Set(plan.phases.map(phase => phase.kind));
       const totals = new Map<string, number>();
       for (const phase of plan.phases) totals.set(phase.kind, (totals.get(phase.kind) ?? 0) + phase.seconds);
-      const legend = root.createDiv({ cls: 'rtt-cd-legend' });
       for (const kind of kinds) {
         const key = legend.createSpan({ cls: `rtt-cd-key rtt-cd-key-${kind}` });
         key.createSpan({ text: t(phaseLabelKey(kind)) });
@@ -2182,14 +2191,51 @@ export class ActivitySidebarView extends ItemView {
       //  只留阶段名：条太窄，完整时长已经写在摘要里 / name only: bars are narrow and the summary has durations
       lines.push(`    p${index}["${item.label.split(' · ')[0]}"]:${spans[index]}`);
     });
-    lines.push('    classDef rttFocus fill:var(--interactive-accent),stroke:var(--interactive-accent)');
-    lines.push('    classDef rttBreak fill:var(--color-green),stroke:var(--color-green)');
-    lines.push('    classDef rttSegment fill:var(--color-blue),stroke:var(--color-blue)');
-    schedule.forEach((item, index) => {
-      const cls = item.kind === 'focus' ? 'rttFocus' : item.kind === 'break' ? 'rttBreak' : 'rttSegment';
-      lines.push(`    class p${index} ${cls}`);
-    });
+    if (plan.mode === 'interval') {
+      //  每一段一个颜色，按段号取色：重绘时颜色不跳，相邻段也尽量不同
+      //  One colour per segment, keyed by its index: stable across redraws and varied between neighbours.
+      schedule.forEach((item, index) => {
+        const color = this.countdownPhaseColor(item.phaseIndex, this.countdownColorSeed(plan));
+        lines.push(`    classDef rttPhase${index} fill:${color},stroke:${color}`);
+        lines.push(`    class p${index} rttPhase${index}`);
+      });
+    } else {
+      lines.push('    classDef rttFocus fill:var(--interactive-accent),stroke:var(--interactive-accent)');
+      lines.push('    classDef rttBreak fill:var(--color-green),stroke:var(--color-green)');
+      lines.push('    classDef rttSegment fill:var(--color-blue),stroke:var(--color-blue)');
+      schedule.forEach((item, index) => {
+        const cls = item.kind === 'focus' ? 'rttFocus' : item.kind === 'break' ? 'rttBreak' : 'rttSegment';
+        lines.push(`    class p${index} ${cls}`);
+      });
+    }
     return { source: lines.join('\n'), finishMs };
+  }
+
+  /**
+   * 不规则分段的颜色 / the colour for one irregular segment.
+   *
+   * 用主题色板而不是写死十六进制，明暗主题都不用另配一套。乘 5 错开，相邻段不会拿到同一个颜色。
+   * Theme colours rather than hard-coded hex, so light and dark need no separate palette. The ×5 step
+   * keeps neighbouring segments from sharing a colour.
+   */
+  /** 由方案本身算出的色板起点：同一方案每次重绘颜色一致，不同方案顺序不同。
+   *  Seed taken from the plan itself: stable for one plan, different across plans. */
+  private countdownColorSeed(plan: CountdownPlan): number {
+    return plan.phases.reduce((hash, phase) => (hash * 31 + phase.seconds) % 997, 7);
+  }
+
+  private countdownPhaseColor(index: number, seed: number): string {
+    const palette = [
+      'var(--color-red)',
+      'var(--color-orange)',
+      'var(--color-yellow)',
+      'var(--color-green)',
+      'var(--color-cyan)',
+      'var(--color-blue)',
+      'var(--color-purple)',
+      'var(--color-pink)',
+    ];
+    return palette[(index * 5 + seed) % palette.length] ?? 'var(--interactive-accent)';
   }
 
   /** 从「现在」开始的剩余排程 / the remaining schedule starting at the present. */

@@ -410,12 +410,12 @@
     width: 8px;
     height: 8px;
     border-radius: 2px;
-    background: var(--text-faint);
+    background: var(--rtt-key-color, var(--text-faint));
 }
 
-.rtt-cd-key-focus::before { background: var(--interactive-accent); }
-.rtt-cd-key-break::before { background: var(--color-green); }
-.rtt-cd-key-segment::before { background: var(--color-blue); }
+.rtt-cd-key-focus { --rtt-key-color: var(--interactive-accent); }
+.rtt-cd-key-break { --rtt-key-color: var(--color-green); }
+.rtt-cd-key-segment { --rtt-key-color: var(--color-blue); }
 
 /* 小节标题右侧的动作 / the action at the end of a section heading */
 .rtt-section-heading .rtt-section-action { margin-left: auto; }
