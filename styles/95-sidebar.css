@@ -425,6 +425,45 @@
 
 /* 小节标题右侧的动作 / the action at the end of a section heading */
 .rtt-section-heading .rtt-section-action { margin-left: auto; }
+.rtt-live-all-actions { display: flex; gap: 2px; margin-left: auto; }
+
+/* 总看板：三种计时合并后的运行中列表 / the merged running-task list */
+.rtt-live-tasks { display: flex; flex-direction: column; gap: var(--size-4-1); }
+
+.rtt-live-task {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--size-4-2);
+    padding: var(--size-4-1) var(--size-4-2);
+    border-radius: var(--radius-s);
+    background: var(--background-secondary);
+}
+
+.rtt-live-task-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 22px;
+    height: 22px;
+    color: var(--text-muted);
+}
+
+.rtt-live-task-icon svg { width: 16px; height: 16px; }
+.rtt-live-task-icon.is-document { color: var(--interactive-accent); }
+.rtt-live-task-icon.is-view { color: var(--color-blue); }
+.rtt-live-task-icon.is-manual { color: var(--color-green); }
+.rtt-live-task-icon.is-countdown { color: var(--color-orange); }
+
+.rtt-live-task-body { flex: 1 1 auto; min-width: 0; }
+.rtt-live-task-head { display: flex; align-items: baseline; gap: var(--size-4-1); }
+.rtt-live-task-time { font-size: var(--font-ui-small); font-weight: var(--font-semibold); color: var(--text-normal); font-variant-numeric: tabular-nums; }
+.rtt-live-task-kind { color: var(--text-muted); font-size: var(--font-ui-smaller); }
+.rtt-live-task-name { color: var(--text-normal); font-size: var(--font-ui-smaller); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rtt-live-task-meta { color: var(--text-faint); font-size: var(--font-ui-smaller); }
+.rtt-live-task-actions { display: flex; flex: 0 0 auto; gap: 1px; }
+.rtt-live-task-actions .rtt-icon-btn { width: 22px; height: 22px; }
+body.is-mobile .rtt-live-task-actions .rtt-icon-btn { width: 28px; height: 28px; }
 
 /* 流程编辑弹窗 / the plan editor */
 .rtt-plan-editor { width: min(90vw, 34rem); }
@@ -1564,6 +1603,7 @@ button.rtt-cal-today.is-disabled {
  * wherever it is shown.
  */
 .rtt-live-card {
+    position: relative;
     display: flex;
     align-items: flex-start;
     gap: 10px;
@@ -1571,6 +1611,18 @@ button.rtt-cal-today.is-disabled {
     border-radius: var(--radius-m);
     background: var(--background-secondary);
 }
+
+/* 卡片右上角的按钮组 / the control cluster in the card's top-right corner */
+.rtt-live-actions {
+    position: absolute;
+    top: var(--size-4-1);
+    right: var(--size-4-1);
+    display: flex;
+    gap: 1px;
+}
+
+.rtt-live-actions .rtt-icon-btn { width: 22px; height: 22px; }
+.rtt-live-card .rtt-live-body { padding-right: calc(3 * 22px + var(--size-4-1)); }
 
 /* Empty cards stack their icon and text without overlap / 空卡片纵向排列，避免窄栏重叠。 */
 .rtt-live-card.is-empty {

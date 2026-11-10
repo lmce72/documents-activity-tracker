@@ -28,7 +28,9 @@ function setup(overrides: Partial<PluginSettings> = {}) {
   const store = new TimerStore(deps, createInitialState(deps));
   const history = new MemoryHistory();
 
-  const settings: PluginSettings = { ...DEFAULT_SETTINGS, ...overrides };
+  //  这些用例钉的是单目标切换语义；并行模式另有用例单独覆盖。
+  //  These cases pin single-target switching; parallel mode has its own cases.
+  const settings: PluginSettings = { ...DEFAULT_SETTINGS, parallelTracking: false, ...overrides };
 
   let activePath: string | null = null;
   let openPaths: string[] = [];
@@ -649,4 +651,40 @@ it('start resolves a just-focused plugin view rather than the previous note', as
  expect(ctx.store.getState().activeFilePath).toBe('view:rss-dashboard-view');
  expect(ctx.store.getState().files.get('view:rss-dashboard-view')?.status).toBe('tracking');
  expect(ctx.store.getState().files.get(FILE)?.activeSeconds).toBe(0);
+});
+
+describe('TimerService — 并行记录 / parallel tracking', () => {
+  it('换目标不结束上一段，两个目标同时累计', async () => {
+    const ctx = setup({ parallelTracking: true, autoStartMode: 'always', minReadSeconds: 0, idleTimeoutEnabled: false });
+    await ctx.open(FILE);
+    await ctx.advance(2);
+
+    ctx.setActive(OTHER);
+    ctx.setOpen([FILE, OTHER]);
+    await ctx.service.onActivePathChange();
+    await ctx.advance(3);
+
+    const state = ctx.store.getState();
+    expect(state.files.get(FILE)?.status).toBe(STATUS.TRACKING);
+    expect(state.files.get(OTHER)?.status).toBe(STATUS.TRACKING);
+    expect(state.files.get(FILE)?.activeSeconds).toBe(5);
+    expect(state.files.get(OTHER)?.activeSeconds).toBe(3);
+    //  并行开始事件带标记，推导不会把上一段截断
+    expect(ctx.events().filter(event => event.type === 'start').every(event =>
+      event.type === 'start' && (event.time === '2026-09-15 10:00:00' || event.parallel === true))).toBe(true);
+  });
+
+  it('全部保存把两个目标各自落盘', async () => {
+    const ctx = setup({ parallelTracking: true, autoStartMode: 'always', minReadSeconds: 0, idleTimeoutEnabled: false });
+    await ctx.open(FILE);
+    ctx.setActive(OTHER);
+    ctx.setOpen([FILE, OTHER]);
+    await ctx.service.onActivePathChange();
+    await ctx.advance(2);
+
+    await ctx.service.saveAll('save');
+    expect(ctx.store.getState().files.get(FILE)?.status).toBe(STATUS.IDLE);
+    expect(ctx.store.getState().files.get(OTHER)?.status).toBe(STATUS.IDLE);
+    expect(ctx.history.getEvents().filter(event => event.type === 'save')).toHaveLength(2);
+  });
 });

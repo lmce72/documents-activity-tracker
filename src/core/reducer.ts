@@ -337,6 +337,13 @@ export function createTimerReducer(deps: ReducerDeps) {
         });
         return { ...state, files };
       }
+      //  并行模式换目标：只改「谁在最前」，其它会话原样继续
+      //  Parallel focus change: only the highlighted target moves; other sessions keep running.
+      case ActionTypes.FOCUS_FILE: {
+        if (state.activeFilePath === action.payload.filePath) return state;
+        return { ...state, activeFilePath: action.payload.filePath };
+      }
+
       case ActionTypes.UNBIND_FILE: {
         const fromPath = state.activeFilePath;
         if (fromPath === null) return state;
@@ -773,6 +780,7 @@ export function createTimerReducer(deps: ReducerDeps) {
             filePath: toPath,
             time: startTimeStr,
             state: 'tracking',
+            ...(action.payload.parallel === true ? { parallel: true } : {}),
           });
         }
 
@@ -927,6 +935,9 @@ export function createTimerReducer(deps: ReducerDeps) {
               filePath,
               time: startTime,
               state: 'tracking',
+              //  跨日续开：多个并行目标都会续，彼此不得互相截断
+              //  Rollover restarts every running target; they must not supersede each other.
+              parallel: true,
             });
           }
           changed = true;

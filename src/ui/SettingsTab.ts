@@ -77,6 +77,15 @@ export class ReadTimeSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
+      .setName(t('parallelTracking'))
+      .setDesc(t('parallelTrackingDesc'))
+      .addToggle(toggle => toggle
+        .setValue(settings.parallelTracking !== false)
+        .onChange(async (value) => {
+          await this.deps.save({ parallelTracking: value });
+        }));
+
+    new Setting(containerEl)
       .setName(t('settingManualTimer'))
       .setDesc(t('settingManualTimerDesc'))
       .addToggle((toggle) =>

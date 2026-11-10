@@ -213,59 +213,64 @@ export function buildFileRecords(
     (fileSessions[session.filePath] ??= []).push(session);
   };
 
-  let currentSession: OpenSession | null = null;
+  //  每个目标各自一条进行中的会话 / one open session per target.
+  //
+  // 多个目标可以同时计时：一条 `start` 只结束**同一目标**的上一段，不能把另一条并行会话也关掉。
+  // 旧实现只有一个全局 `currentSession`，于是第二个目标的 start 会把第一个目标的会话截断。
+  // Several targets may run at once: a `start` only closes the previous session **of that same
+  // target**. The old single `currentSession` made one target's start cut another's session short.
+  const currentSessions = new Map<string, OpenSession>();
 
   for (const event of timeline) {
-    const filePath =
-      event.type === 'switch' ? event.to : (event as { file?: string }).file;
-    if (!filePath) continue;
-
     if (event.type === 'start') {
-      // A new session begins, so whatever was running ended at this instant. Recording
-      // *when* it ended is what keeps a superseded session from being mistaken for a live
-      // one and extrapolated to `now` (see computeSessionDurations).
-      if (currentSession) closeSession(currentSession, event.time);
-      currentSession = { filePath: event.file, events: [event], endedAt: null };
+      if (event.parallel === true) {
+        // 并行开始：只结束同一目标的上一段，其它目标继续
+        //  A parallel start closes only the same target's previous session.
+        const previous = currentSessions.get(event.file);
+        if (previous) closeSession(previous, event.time);
+      } else {
+        // 旧事件流里的一次 start 代表「换目标了」，它取代所有仍在进行的会话
+        // In legacy streams a start meant "the target changed" and superseded every open session.
+        for (const [key, session] of currentSessions) {
+          closeSession(session, event.time);
+          currentSessions.delete(key);
+        }
+      }
+      currentSessions.set(event.file, { filePath: event.file, events: [event], endedAt: null });
       continue;
     }
 
-    if (!currentSession) continue;
-
-    if (
-      (event.type !== 'switch' && event.file === currentSession.filePath) ||
-      (event.type === 'switch' && event.to === currentSession.filePath)
-    ) {
-      currentSession.events.push(event);
+    if (event.type === 'switch') {
+      // A switch AWAY from a running target ends that target's session. The service normally
+      // writes an auto-save first, but that save is skipped below `minReadSeconds`, leaving the
+      // switch as the only evidence the session ended.
+      const session = currentSessions.get(event.from);
+      if (!session) continue;
+      session.events.push(event);
+      if (event.to !== event.from) {
+        closeSession(session, event.time);
+        currentSessions.delete(event.from);
+      }
+      continue;
     }
 
-    // A switch AWAY from the running file ends that session.
-    //
-    // The service normally writes an auto-save first, but that save is skipped when the
-    // session falls below `minReadSeconds`, leaving the switch as the only evidence that
-    // the session ended. Without this, such a session stays "unclosed" for the rest of the
-    // day and its tail is extrapolated to `now` — measured on real data: two sessions whose
-    // combined span was under two seconds were reported as 12.6 hours.
-    const switchedAway =
-      event.type === 'switch' &&
-      event.from === currentSession.filePath &&
-      event.to !== currentSession.filePath;
+    const filePath = (event as { file?: string }).file;
+    if (!filePath) continue;
+    const session = currentSessions.get(filePath);
+    if (!session) continue;
+    session.events.push(event);
 
-    if (isSaveLike(event) || event.type === 'discard' || switchedAway) {
-      const belongsToCurrent =
-        event.type === 'switch' ? switchedAway : event.file === currentSession.filePath;
-      if (belongsToCurrent) {
-        // discard drops the session wholesale, so it never needs an end bound.
-        if (event.type === 'discard') currentSession = null;
-        else {
-          closeSession(currentSession, event.time);
-          currentSession = null;
-        }
-      }
+    if (isSaveLike(event)) {
+      closeSession(session, event.time);
+      currentSessions.delete(filePath);
+    } else if (event.type === 'discard') {
+      // discard drops the session wholesale, so it never needs an end bound.
+      currentSessions.delete(filePath);
     }
   }
 
-  // Only this last session is genuinely still running, and only it may be extrapolated.
-  if (currentSession) closeSession(currentSession, null);
+  // Whatever is still open is genuinely running and may be extrapolated in the live view.
+  for (const session of currentSessions.values()) closeSession(session, null);
 
   for (const [filePath, sessions] of Object.entries(fileSessions)) {
     const readTimeLine: SessionStateMap[] = [];

@@ -11,7 +11,7 @@
 
 import { Platform, MarkdownView, type App, type EventRef, type Plugin } from 'obsidian';
 
-import { isPluginViewKey, resolveActiveTarget } from '../core/activePath';
+import { NON_READING_VIEW_TYPES, pluginViewKey, resolveActiveTarget } from '../core/activePath';
 
 import { MobileActivity, type MobileActivitySignal } from '../core/mobileActivity';
 
@@ -105,17 +105,15 @@ export function installBindings(deps: BindingDeps): Binding {
     const paths: string[] = [];
     app.workspace.iterateAllLeaves((leaf) => {
       const view = leaf.view;
-      if (view instanceof MarkdownView && view.file) paths.push(view.file.path);
+      if (view instanceof MarkdownView && view.file) { paths.push(view.file.path); return; }
+      //  插件视图没有文件，但它所在的叶子是「这个目标还开着」的证据。并行记录下每一个打开的
+      // 可阅读视图都要算，而不是只算当前活动的那个。
+      //  A plugin view has no file, but its leaf is the evidence that the target is still open. With
+      //  parallel tracking every open readable view counts, not only the active one.
+      const type = view.getViewType();
+      if (!type || ownViewTypes.has(type) || NON_READING_VIEW_TYPES.includes(type)) return;
+      paths.push(pluginViewKey(type));
     });
-
-    // A plugin view has no file, so it can never appear in the walk above. Without adding it
-    // here it looks like a tab that has been closed, and `closeOrphanSessions` auto-saves and
-    // unbinds it the instant it starts — measured: the canvas session was killed within the
-    // same second it began. Once the view loses focus the key stops being returned, so
-    // closing the leaf still ends the session.
-    const active = getActivePath();
-    if (active !== null && isPluginViewKey(active)) paths.push(active);
-
     return paths;
   };
 

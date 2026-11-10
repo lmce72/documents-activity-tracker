@@ -198,6 +198,8 @@ export interface LastSeen {
   filePath: string;
   /** local full timestamp */
   at: string;
+  /** 并行目标各自的心跳 / one heartbeat per parallel target */
+  files?: Array<{ filePath: string; at: string }>;
 }
 
 /** 读心跳；坏数据当作没有 / read it; anything unreadable counts as absent. */
@@ -210,7 +212,11 @@ export function readLastSeen(storage?: SnapshotStorage | null): LastSeen | null 
     const parsed: unknown = JSON.parse(raw);
     if (!isObject(parsed)) return null;
     if (typeof parsed.filePath !== 'string' || typeof parsed.at !== 'string') return null;
-    return { filePath: parsed.filePath, at: parsed.at };
+    const files = Array.isArray(parsed.files)
+      ? parsed.files.filter((item): item is { filePath: string; at: string } =>
+        isObject(item) && typeof item.filePath === 'string' && typeof item.at === 'string')
+      : undefined;
+    return { filePath: parsed.filePath, at: parsed.at, ...(files && files.length > 0 ? { files } : {}) };
   } catch (error) {
     console.warn('[RTT][snapshot] 心跳读取失败 / last-seen read failed:', error);
     return null;
@@ -248,8 +254,9 @@ export function recoveryEnd(
   filePath: string,
   nowFull: string,
 ): string {
-  if (!lastSeen || lastSeen.filePath !== filePath) return nowFull;
-  if (lastSeen.at <= lastEventTime) return nowFull;
-  if (lastSeen.at > nowFull) return nowFull;
-  return lastSeen.at;
+  if (!lastSeen) return nowFull;
+  const entry = lastSeen.files?.find(item => item.filePath === filePath)
+    ?? (lastSeen.filePath === filePath ? lastSeen : null);
+  if (!entry || entry.at <= lastEventTime || entry.at > nowFull) return nowFull;
+  return entry.at;
 }

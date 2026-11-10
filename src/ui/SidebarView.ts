@@ -145,6 +145,9 @@ const TOP_LIST_ITEMS = 3;
 /** Panels. */
 type Panel = 'document' | 'manual' | 'countdown' | 'overview';
 
+/** 运行中任务的来源 / which ledger a running task belongs to. */
+type LiveTaskKind = 'document' | 'view' | 'manual' | 'countdown';
+
 
 /** the numbers updated in place every second. */
 type LiveKey =
@@ -337,6 +340,9 @@ export class ActivitySidebarView extends ItemView {
 
   /** nodes updated in place every second */
   private liveNodes: LiveNodes = {};
+
+  /** 总看板运行中列表中每秒刷新的读数 / per-task readouts refreshed every second */
+  private readonly liveTaskTimes = new Map<string, { element: HTMLElement; kind: LiveTaskKind; key: string }>();
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -791,6 +797,7 @@ export class ActivitySidebarView extends ItemView {
       root.empty();
       root.toggleClass('is-overview', this.panel === 'overview');
       this.liveNodes = {};
+      this.liveTaskTimes.clear();
       this.signature = this.computeSignature();
 
       //  每次重绘都按当前宽度定一次，不单靠观察者：观察者的首次回调可能赶在布局之前（宽度读到 0），
@@ -1239,7 +1246,9 @@ export class ActivitySidebarView extends ItemView {
       formatReadTimeParts(record?.readTimeToday ?? 0, mode),
     );
 
-    const bar = section.createDiv({ cls: 'rtt-timeline-nav' });
+    //  按钮组收进卡片右上角：与读数分开，不再占一行高度
+    //  The controls move into the card's top-right corner instead of taking a row below it.
+    const bar = card.createDiv({ cls: 'rtt-live-actions' });
 
     //  Three states, three buttons: IDLE must offer "start", because autoStartMode defaults
     //  to manual and without it the user can never begin.
@@ -2413,6 +2422,164 @@ export class ActivitySidebarView extends ItemView {
    * stretch of "reading with the stopwatch running" twice. This panel takes the **union**,
    * counting jointly covered time once, and still lists each ledger's total and the overlap.
    */
+  /**
+   * 正在进行的任务 / the running tasks, merged across the three ledgers.
+   *
+   * 文档、插件视图、手动计时与倒计时共用一张卡片：类型、读数、本类型自己的按钮，再加一个
+   * 「前往面板」。文档目标可以有多个，列表就有多行。
+   * Document tracking, plugin views, the manual timer and the countdown share one card shape: type,
+   * readout, that ledger's own controls, and a jump-to-panel button. Several document targets simply
+   * produce several rows.
+   */
+  private renderActiveTasks(root: HTMLElement): void {
+    const state = this.deps.store.getState();
+    const settings = this.deps.settings();
+    const displayMode = settings.timeDisplayMode;
+    const now = this.deps.clock.now();
+    interface Task {
+      id: string;
+      kind: LiveTaskKind;
+      icon: string;
+      kindLabel: string;
+      name: string;
+      meta: string;
+      seconds: number;
+      key: string;
+      jump: Panel;
+      controls: (bar: HTMLElement) => void;
+    }
+    const tasks: Task[] = [];
+
+    for (const [path, file] of state.files) {
+      if (file.status !== STATUS.TRACKING && file.status !== STATUS.PAUSED) continue;
+      const isView = isPluginViewKey(path);
+      const paused = file.status === STATUS.PAUSED;
+      tasks.push({
+        id: 'doc:' + path,
+        kind: isView ? 'view' : 'document',
+        icon: isView ? 'app-window' : 'file-text',
+        kindLabel: t(isView ? 'ovKindView' : 'ovKindDocument'),
+        name: recordName(settings, path, isView ? pluginViewLabel(path) : path.split('/').pop() ?? path),
+        meta: t('statusRound').replace('{n}', String(getTodaySessionCount(this.cachedEvents(), path))),
+        seconds: file.activeSeconds,
+        key: path,
+        jump: 'document',
+        controls: bar => {
+          this.iconButton(bar, paused ? 'play' : 'pause', paused ? t('btnResume') : t('btnPause'), () => {
+            void this.deps.service.togglePausePath(path).then(() => this.render());
+          }, { ghost: true });
+          this.iconButton(bar, 'save', t('btnSave'), () => {
+            void this.deps.service.savePath(path).then(() => this.render());
+          }, { ghost: true });
+          this.iconButton(bar, 'x', t('btnDiscard'), () => {
+            void this.deps.service.discardPath(path).then(() => this.render());
+          }, { ghost: true, danger: true });
+        },
+      });
+    }
+
+    if (state.manual.status !== 'idle') {
+      const paused = state.manual.status === 'paused';
+      tasks.push({
+        id: 'manual',
+        kind: 'manual',
+        icon: 'timer',
+        kindLabel: t('panelManual'),
+        name: t('panelManual'),
+        meta: t(paused ? 'manualPaused' : 'manualRunning'),
+        seconds: selectManualElapsedSeconds(state, now),
+        key: '',
+        jump: 'manual',
+        controls: bar => {
+          this.iconButton(bar, paused ? 'play' : 'pause', paused ? t('manualResume') : t('manualPause'), () => {
+            if (paused) this.deps.manual.resume(); else this.deps.manual.pause();
+            this.render();
+          }, { ghost: true });
+          this.iconButton(bar, 'flag', t('manualFlag'), () => {
+            if (this.deps.manual.flag()) this.render();
+          }, { ghost: true });
+          this.iconButton(bar, 'square', t('manualStop'), () => {
+            this.deps.promptNote(note => {
+              if (note === null) return;
+              void this.deps.manual.stop(note).then(() => this.render());
+            });
+          }, { ghost: true });
+          this.iconButton(bar, 'x', t('manualDiscard'), () => {
+            this.deps.manual.discard();
+            this.render();
+          }, { ghost: true, danger: true });
+        },
+      });
+    }
+
+    const countdown = state.countdown;
+    if (countdown.status !== 'idle' && countdown.plan) {
+      const paused = countdown.status === 'paused';
+      const position = locatePhase(countdown.plan, selectCountdownElapsedSeconds(state, now) + (countdown.skippedSeconds ?? 0));
+      tasks.push({
+        id: 'countdown',
+        kind: 'countdown',
+        icon: 'hourglass',
+        kindLabel: t('panelCountdown'),
+        name: t(modeLabelKey(countdown.plan.mode)),
+        meta: paused ? t('manualPaused') : t('manualRunning'),
+        seconds: position.remaining,
+        key: '',
+        jump: 'countdown',
+        controls: bar => {
+          this.iconButton(bar, paused ? 'play' : 'pause', paused ? t('manualResume') : t('manualPause'), () => {
+            if (paused) this.deps.countdown.resume(); else this.deps.countdown.pause();
+            this.render();
+          }, { ghost: true });
+          this.iconButton(bar, 'skip-forward', t('countdownSkip'), () => {
+            if (this.deps.countdown.skipPhase()) this.render();
+          }, { ghost: true });
+          this.iconButton(bar, 'square', t('manualStop'), () => {
+            this.deps.promptNote(note => {
+              if (note === null) return;
+              void this.deps.countdown.stop(note).then(() => this.render());
+            });
+          }, { ghost: true });
+          this.iconButton(bar, 'x', t('manualDiscard'), () => {
+            this.deps.countdown.discard();
+            this.render();
+          }, { ghost: true, danger: true });
+        },
+      });
+    }
+
+    if (tasks.length === 0) return;
+
+    const heading = renderSectionHeading(root, 'activity', t('activeTasks'));
+    const tools = root.createDiv({ cls: 'rtt-live-all-actions' });
+    this.iconButton(tools, 'pause', t('pauseAll'), () => {
+      void this.deps.service.pauseAll().then(() => this.render());
+    }, { ghost: true });
+    this.iconButton(tools, 'save', t('saveAll'), () => {
+      void this.deps.service.saveAll('save').then(() => this.render());
+    }, { ghost: true });
+    //  标题右侧放全局按钮，避免再占一行 / global controls ride the heading, not another row
+    heading.appendChild(tools);
+
+    const list = root.createDiv({ cls: 'rtt-live-tasks' });
+    for (const task of tasks) {
+      const item = list.createDiv({ cls: 'rtt-live-task' });
+      const icon = item.createDiv({ cls: `rtt-live-task-icon is-${task.kind}` });
+      setIcon(icon, task.icon);
+      const body = item.createDiv({ cls: 'rtt-live-task-body' });
+      const head = body.createDiv({ cls: 'rtt-live-task-head' });
+      const time = head.createDiv({ cls: 'rtt-live-task-time' });
+      setReadTime(time, task.seconds, displayMode);
+      this.liveTaskTimes.set(task.id, { element: time, kind: task.kind, key: task.key });
+      head.createSpan({ cls: 'rtt-live-task-kind', text: task.kindLabel });
+      body.createDiv({ cls: 'rtt-live-task-name', text: task.name });
+      body.createDiv({ cls: 'rtt-live-task-meta', text: task.meta });
+      const actions = item.createDiv({ cls: 'rtt-live-task-actions' });
+      task.controls(actions);
+      this.iconButton(actions, 'arrow-right', t('jumpToPanel'), () => this.setPanel(task.jump), { ghost: true });
+    }
+  }
+
   private renderOverviewPanel(ovLeft: HTMLElement, ovRight: HTMLElement): void {
     const settings = this.deps.settings();
     if (!settings.documentTrackingEnabled && !settings.manualTimerEnabled && settings.countdownTimerEnabled === false) {
@@ -2429,6 +2596,10 @@ export class ActivitySidebarView extends ItemView {
     const today = dayAccount(input);
     const week = weekAccount(input);
     const weekIntervals = accountIntervals(input);
+
+    //  最先显示正在进行的任务：三种计时合并成一张列表，各自带本计时器的操作
+    //  Running tasks come first: the three ledgers share one list, each with its own controls.
+    this.renderActiveTasks(ovLeft);
 
     //  上：合计；下：日导航 + 热力图 + 明细 —— 导航必须跟着它描述的那张图走
     //  Top: the totals; bottom: day nav, heatmap and detail — the nav has to travel with the chart it
@@ -3337,6 +3508,24 @@ export class ActivitySidebarView extends ItemView {
             : 0,
           mode,
         );
+      }
+
+      //  总看板运行中列表：每个任务各自的读数 / the overview's running list, one readout per task
+      if (this.liveTaskTimes.size > 0) {
+        const now = this.deps.clock.now();
+        for (const entry of this.liveTaskTimes.values()) {
+          if (entry.kind === 'manual') {
+            setReadTime(entry.element, selectManualElapsedSeconds(state, now), mode);
+          } else if (entry.kind === 'countdown') {
+            const plan = state.countdown.plan;
+            const position = plan
+              ? locatePhase(plan, selectCountdownElapsedSeconds(state, now) + (state.countdown.skippedSeconds ?? 0))
+              : null;
+            setReadTime(entry.element, position?.remaining ?? 0, mode);
+          } else {
+            setReadTime(entry.element, state.files.get(entry.key)?.activeSeconds ?? 0, mode);
+          }
+        }
       }
 
       //  统计格：一份账本，五条通道 / the grid: one account, five channels

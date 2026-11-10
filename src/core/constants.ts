@@ -48,6 +48,8 @@ export const ActionTypes = {
    * activeFilePath to null, the other did nothing and left the timer bound to a closed file.
    */
   UNBIND_FILE: 'UNBIND_FILE',
+  /** 只移动焦点，不动任何会话 / move focus without touching any session */
+  FOCUS_FILE: 'FOCUS_FILE',
 
   MANUAL_START: 'MANUAL_START',
   MANUAL_PAUSE: 'MANUAL_PAUSE',

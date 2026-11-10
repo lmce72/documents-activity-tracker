@@ -24,6 +24,9 @@ export const DEFAULT_SETTINGS: PluginSettings = {
   minReadSeconds: 20,
   timeDisplayMode: 'compact',
   autoStartMode: 'manual',
+  //  并行记录默认开：换目标不再丢掉上一段，多个目标各自计时
+  //  Parallel tracking is on by default: switching target no longer drops the previous round.
+  parallelTracking: true,
   useIconize: true,
   dataFilePath: '',
   todayTotalDisplay: 'idle',

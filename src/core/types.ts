@@ -44,6 +44,15 @@ export interface PluginSettings {
   timeDisplayMode: string;
   /** 'always' | 'start-only' | 'return-only' | 'manual' */
   autoStartMode: string;
+  /**
+   * 并行记录多个文档目标 / track several document targets at once.
+   *
+   * 开启后换目标不再结束上一段：各目标各自计时、各自保存，侧栏列出全部进行中的会话。
+   * 只在桌面端生效 —— 移动端的后台/锁屏边界依赖单一活动会话。
+   * On, changing target no longer ends the previous round: each target keeps its own session, and
+   * the sidebar lists every running one. Desktop only — mobile lifecycle handling assumes one.
+   */
+  parallelTracking: boolean;
   useIconize: boolean;
   dataFilePath: string;
   /**
@@ -571,6 +580,8 @@ export interface TimelineStartWrite {
   filePath: string;
   time: string;
   state: string;
+  /** 并行开始：不清掉其它目标正在进行的会话 / a parallel start does not supersede other sessions. */
+  parallel?: boolean;
 }
 
 /** A session was discarded. */
@@ -682,7 +693,7 @@ export type TimerAction =
   | { type: Extract<ActionType, 'TOGGLE_PAUSE'>; payload: TogglePausePayload }
   | {
       type: Extract<ActionType, 'SWITCH_FILE'>;
-      payload: { fromPath: string | null; toPath: string; autoStart: boolean };
+      payload: { fromPath: string | null; toPath: string; autoStart: boolean; parallel?: boolean };
     }
   | {
       type: Extract<ActionType, 'SAVE_SESSION'>;
@@ -722,6 +733,10 @@ export type TimerAction =
     }
   | { type: Extract<ActionType, 'SET_SPLIT_READING'>; payload: { filePath: string; enabled: boolean } }
   | { type: Extract<ActionType, 'UNBIND_FILE'> }
+  | {
+      type: Extract<ActionType, 'FOCUS_FILE'>;
+      payload: { filePath: string | null };
+    }
   | { type: Extract<ActionType, 'MANUAL_START'> }
   | { type: Extract<ActionType, 'MANUAL_PAUSE'> }
   | { type: Extract<ActionType, 'MANUAL_RESUME'> }
@@ -854,6 +869,12 @@ export interface FileTimelineEvent {
   duration?: number;
   /** in-window seconds on save events */
   activeSeconds?: number;
+
+  /**
+   * 并行开始：只结束同一目标的上一段，不关掉其它正在进行的目标。
+   * Parallel start: close only the same target's previous session, never other running targets.
+   */
+  parallel?: boolean;
 
   unfocusedSeconds?: number;
   /** focused-but-idle seconds on save events / 保存事件上的空闲秒数 */

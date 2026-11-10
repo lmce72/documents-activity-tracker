@@ -25,7 +25,7 @@ import { eventFileRefs } from '../core/migration';
 import { classifyUnfocusedInterval, listUnfocusedIntervals } from '../core/unfocused';
 import { buildFileRecords } from '../core/timeline';
 import { formatLocalFull, parseSessionStartTime } from '../core/time';
-import { readLastSeen, recoveryEnd, writeLastSeen } from '../data/liveTimerSnapshot';
+import { readLastSeen, writeLastSeen } from '../data/liveTimerSnapshot';
 import type {
   PluginSettings,
   SessionWrite,
@@ -83,6 +83,19 @@ export class TimerService {
 
   private isCurrentLifecycle(revision: number): boolean {
     return revision === this.lifecycleRevision && !this.mobileBackground;
+  }
+
+  /**
+   * 是否并行记录多个目标 / whether several targets may run at once.
+   *
+   * 只在桌面端启用：移动端的后台/锁屏收尾是按「唯一活动会话」设计的，并行会让心跳与恢复失去
+   * 一个明确的锚点。设置默认开，移动端读取时视为关。
+   * Desktop only: mobile background handling is built around one active session, and parallel
+   * runs would leave the heartbeat and recovery without a clear anchor. On by default, ignored on
+   * mobile.
+   */
+  private parallelTracking(): boolean {
+    return !this.deps.isMobile && this.deps.settings().parallelTracking === true;
   }
 
   /** Close the reading round before the WebView can freeze; background has no live tail. */
@@ -143,41 +156,36 @@ export class TimerService {
       const events = this.deps.history.getEvents();
       if (events.length === 0) return;
 
-      const last = events[events.length - 1]!;
-      if (last.type === 'save' || last.type === 'auto-save' || last.type === 'discard') return;
-
-      const filePath = eventFileRefs(last)[0];
-      if (!filePath) return;
+      //  并行模式下可能有多个目标同时没闭合：按目标各取最后一条事件，逐个收尾
+      //  Parallel mode can leave several targets open: take the last event per target and close
+      //  each at its own last-seen instant.
+      const lastByFile = new Map<string, TimelineEvent>();
+      for (const event of events) {
+        for (const filePath of eventFileRefs(event)) lastByFile.set(filePath, event);
+      }
+      const unfinished = [...lastByFile].filter(([, event]) =>
+        event.type !== 'save' && event.type !== 'auto-save' && event.type !== 'discard');
+      if (unfinished.length === 0) return;
 
       await this.deps.history.flushNow();
-
-      //  进程被杀时不会有任何事件，唯一的证据是最后一次心跳：按它收尾，否则整段后台时间会被算成专注
-      //  A killed process leaves no events; the last heartbeat is the only evidence. Closing at it keeps
-      //  the background stretch out of the session instead of crediting it as focus.
-      const recoveredEnd = recoveryEnd(
-        last.time,
-        readLastSeen(),
-        filePath,
-        this.deps.clock.nowFull(),
-      );
-
-      // Without local heartbeat evidence, mobile recovery must not invent time until launch.
-      const endTime = this.deps.isMobile && recoveredEnd === this.deps.clock.nowFull()
-        ? last.time : recoveredEnd;
-      this.deps.history.appendEvents([
-        {
-          time: endTime,
-          type: 'auto-save',
-          file: filePath,
-          state: 'saved',
-        },
-      ]);
+      const lastSeen = readLastSeen();
+      const nowFull = this.deps.clock.nowFull();
+      const closed: TimelineEvent[] = [];
+      for (const [filePath, last] of unfinished) {
+        const seenAt = lastSeen?.files?.find(item => item.filePath === filePath)?.at
+          ?? (lastSeen?.filePath === filePath ? lastSeen.at : undefined);
+        //  没有心跳证据就按最后一条事件收尾，绝不外推到 now
+        //  Without heartbeat evidence close at the last event; never extrapolate to now.
+        const endTime = seenAt && seenAt > last.time && seenAt <= nowFull ? seenAt : last.time;
+        closed.push({ time: endTime, type: 'auto-save', file: filePath, state: 'saved' });
+      }
+      this.deps.history.appendEvents(closed);
       writeLastSeen(null);
       await this.deps.history.flushNow();
 
       this.deps.log.info(
-        '[RTT][service] 已闭合上次遗留的未完成会话 / closed leftover session:',
-        filePath,
+        '[RTT][service] 已闭合上次遗留的未完成会话 / closed leftover sessions:',
+        unfinished.length,
       );
     } catch (error) {
       this.deps.log.warn('[RTT][service] 恢复未完成会话失败 / recovery failed:', error);
@@ -211,8 +219,13 @@ export class TimerService {
       await this.closeOrphanSessions();
       if (!this.isCurrentLifecycle(revision)) return;
 
-      const filePath = this.deps.store.getState().activeFilePath;
-      if (filePath) {
+      //  并行模式下每个进行中的目标都要走一秒，否则后台会话的读数会停住
+      //  In parallel mode every running target ticks; otherwise background sessions freeze.
+      const tickState = this.deps.store.getState();
+      const tickPaths = this.parallelTracking()
+        ? [...tickState.files].filter(([, file]) => file.status === STATUS.TRACKING).map(([path]) => path)
+        : tickState.activeFilePath ? [tickState.activeFilePath] : [];
+      for (const filePath of tickPaths) {
         this.deps.store.dispatch({ type: ActionTypes.TICK, payload: { filePath } });
       }
 
@@ -241,15 +254,23 @@ export class TimerService {
   private writeHeartbeat(): void {
     try {
       const state = this.deps.store.getState();
-      const filePath = state.activeFilePath;
-      const file = filePath ? state.files.get(filePath) : undefined;
-      if (!filePath || !file) return;
-      if (file.status !== STATUS.TRACKING && file.status !== STATUS.PAUSED) return;
+      //  并行时每个进行中的目标都记一条心跳，恢复时各自按自己的最后时刻收尾
+      //  Every running target gets a heartbeat in parallel mode, so recovery can close each at its
+      //  own last-seen instant.
+      const paths = this.parallelTracking()
+        ? [...state.files].filter(([, file]) => file.status === STATUS.TRACKING || file.status === STATUS.PAUSED).map(([path]) => path)
+        : state.activeFilePath ? [state.activeFilePath] : [];
+      if (paths.length === 0) return;
 
       const now = this.deps.clock.now();
       if (now - this.lastHeartbeatAt < 5000) return;
       this.lastHeartbeatAt = now;
-      writeLastSeen({ filePath, at: this.deps.clock.nowFull() });
+      const at = this.deps.clock.nowFull();
+      writeLastSeen({
+        filePath: paths[0]!,
+        at,
+        files: paths.map(filePath => ({ filePath, at })),
+      });
     } catch (error) {
       this.deps.log.warn('[RTT][service] 心跳写入失败 / heartbeat write failed:', error);
     }
@@ -276,11 +297,18 @@ export class TimerService {
    * the two ledgers cannot disagree.
    */
   private async closeFrozenGap(): Promise<void> {
+    const state = this.deps.store.getState();
+    const paths = this.parallelTracking()
+      ? [...state.files].filter(([, file]) => file.status === STATUS.TRACKING).map(([path]) => path)
+      : state.activeFilePath ? [state.activeFilePath] : [];
+    for (const filePath of paths) await this.closeFrozenGapFor(filePath);
+  }
+
+  private async closeFrozenGapFor(filePath: string): Promise<void> {
     const revision = this.lifecycleRevision;
     const state = this.deps.store.getState();
-    const filePath = state.activeFilePath;
-    const file = filePath ? state.files.get(filePath) : undefined;
-    if (!filePath || !file || file.status !== STATUS.TRACKING) return;
+    const file = state.files.get(filePath);
+    if (!file || file.status !== STATUS.TRACKING) return;
 
     const last = file.lastTickTimestamp;
     if (last === null) return;
@@ -416,11 +444,15 @@ export class TimerService {
     if (entering === this.idleOpen) return;
 
     const state = this.deps.store.getState();
-    const filePath = state.activeFilePath;
-    const file = filePath ? state.files.get(filePath) : undefined;
+    const paths = this.parallelTracking()
+      ? [...state.files].filter(([, file]) => file.status === STATUS.TRACKING).map(([path]) => path)
+      : state.activeFilePath ? [state.activeFilePath] : [];
 
-    //  只有进行中的会话才有边界可写 / only a session in progress has a boundary worth writing
-    if (filePath && file && file.status === STATUS.TRACKING) {
+    //  只有进行中的会话才有边界可写；并行时每个进行中的目标各写一条
+    //  Only a session in progress has a boundary, and in parallel every running target gets one.
+    for (const filePath of paths) {
+      const file = state.files.get(filePath);
+      if (!file || file.status !== STATUS.TRACKING) continue;
       this.appendEvent({
         time: this.deps.clock.nowFull(),
         type: entering ? 'idle' : 'idle-end',
@@ -492,6 +524,33 @@ export class TimerService {
         candidate && isTrackableTarget(candidate, settings) ? candidate : null;
 
       if (fromPath === toPath) return;
+
+      //  并行模式：换目标只移动焦点，上一段继续计时；新目标按自动开始规则开跑或恢复。
+      //  不写 save / switch，也不关闭任何别的会话。
+      //  Parallel mode: a focus change only moves the spotlight. The previous round keeps running,
+      //  and the new target starts or resumes under the auto-start rules. No save, no switch, and
+      //  no other session is closed.
+      if (this.parallelTracking()) {
+        await this.flushPendingWrites();
+        if (!this.isCurrentLifecycle(revision)) return;
+        this.deps.store.dispatch({ type: ActionTypes.FOCUS_FILE, payload: { filePath: toPath } });
+        if (toPath) {
+          const target = this.deps.store.getState().files.get(toPath);
+          const autoStart = this.shouldAutoStart(toPath, settings);
+          if (target?.status === STATUS.PAUSED) {
+            if (autoStart) await this.togglePausePath(toPath);
+          } else if (!target || target.status === STATUS.IDLE) {
+            if (autoStart) {
+              this.deps.store.dispatch({
+                type: ActionTypes.SWITCH_FILE,
+                payload: { fromPath: null, toPath, autoStart: true, parallel: true },
+              });
+            }
+          }
+        }
+        await this.flushPendingWrites();
+        return;
+      }
 
       await this.flushPendingWrites();
       if (!this.isCurrentLifecycle(revision)) return;
@@ -582,8 +641,11 @@ export class TimerService {
 
       this.deps.store.dispatch({ type: ActionTypes.SET_WINDOW_FOCUS, payload: { focused } });
 
-      const filePath = before.activeFilePath;
-      if (filePath) {
+      //  并行模式下每个进行中的会话都要写边界 / every running session gets its own boundary
+      const focusPaths = this.parallelTracking()
+        ? [...before.files].filter(([, file]) => file.status === STATUS.TRACKING || file.status === STATUS.PAUSED).map(([path]) => path)
+        : before.activeFilePath ? [before.activeFilePath] : [];
+      for (const filePath of focusPaths) {
         const file = this.deps.store.getState().files.get(filePath);
 
         //  Only a session in progress has a boundary worth recording
@@ -800,6 +862,51 @@ export class TimerService {
     }
   }
 
+  /** 保存指定目标 / save one named target. */
+  async savePath(filePath: string, kind: SaveKind = 'save'): Promise<void> {
+    try {
+      this.dispatchSave(filePath, kind);
+      await this.flushPendingWrites();
+    } catch (error) {
+      this.deps.log.warn('[RTT][service] 保存指定会话失败 / save target failed:', error);
+    }
+  }
+
+  /** 丢弃指定目标 / discard one named target. */
+  async discardPath(filePath: string): Promise<void> {
+    try {
+      this.deps.store.dispatch({ type: ActionTypes.DISCARD_SESSION, payload: { filePath } });
+      await this.flushPendingWrites();
+    } catch (error) {
+      this.deps.log.warn('[RTT][service] 丢弃指定会话失败 / discard target failed:', error);
+    }
+  }
+
+  /** 全部进行中的目标 / every running or paused target. */
+  private activePaths(): string[] {
+    return [...this.deps.store.getState().files]
+      .filter(([, file]) => file.status === STATUS.TRACKING || file.status === STATUS.PAUSED)
+      .map(([path]) => path);
+  }
+
+  /** 全部保存 / save every running round. */
+  async saveAll(kind: SaveKind = 'save'): Promise<void> {
+    try {
+      for (const filePath of this.activePaths()) this.dispatchSave(filePath, kind);
+      await this.flushPendingWrites();
+    } catch (error) {
+      this.deps.log.warn('[RTT][service] 全部保存失败 / save all failed:', error);
+    }
+  }
+
+  /** 全部暂停 / pause every running round. */
+  async pauseAll(): Promise<void> {
+    const paths = [...this.deps.store.getState().files]
+      .filter(([, file]) => file.status === STATUS.TRACKING)
+      .map(([path]) => path);
+    for (const filePath of paths) await this.togglePausePath(filePath);
+  }
+
   /** Discard the current session. */
   async discardCurrent(): Promise<void> {
     this.idleOpen = false;
@@ -819,10 +926,13 @@ export class TimerService {
   }
 
   async togglePause(): Promise<void> {
-    try {
-      const filePath = this.deps.store.getState().activeFilePath;
-      if (!filePath) return;
+    const filePath = this.deps.store.getState().activeFilePath;
+    if (filePath) await this.togglePausePath(filePath);
+  }
 
+  /** 暂停/恢复指定目标 / pause or resume one named target. */
+  async togglePausePath(filePath: string): Promise<void> {
+    try {
       const before = this.deps.store.getState().files.get(filePath);
       if (!before || (before.status !== STATUS.TRACKING && before.status !== STATUS.PAUSED)) {
         return;
@@ -970,6 +1080,7 @@ export class TimerService {
           type: 'start',
           file: write.filePath,
           state: write.state,
+          ...(write.parallel === true ? { parallel: true } : {}),
         });
         continue;
       }
