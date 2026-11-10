@@ -374,6 +374,36 @@
     height: auto;
 }
 
+/* 甘特条按阶段上色：Pele 默认全部用强调色，这里按任务 id 贴上的类区分
+   Gantt bars coloured by phase; Pele paints them all in the accent colour, so the classes applied
+   to each task id carry the distinction. */
+.rtt-cd-flow .pele-task.rtt-gantt-focus rect {
+    fill: color-mix(in srgb, var(--interactive-accent) 32%, transparent);
+    stroke: var(--interactive-accent);
+}
+
+.rtt-cd-flow .pele-task.rtt-gantt-break rect {
+    fill: color-mix(in srgb, var(--color-green) 30%, transparent);
+    stroke: var(--color-green);
+}
+
+.rtt-cd-flow .pele-task.rtt-gantt-segment rect {
+    fill: color-mix(in srgb, var(--color-blue) 30%, transparent);
+    stroke: var(--color-blue);
+}
+
+.rtt-cd-flow .pele-task text { fill: var(--text-normal); }
+.rtt-cd-flow .pele-task.rtt-gantt-eta path { fill: var(--text-muted); stroke: var(--text-muted); }
+
+/* 小节标题右侧的动作 / the action at the end of a section heading */
+.rtt-section-heading .rtt-section-action { margin-left: auto; }
+
+/* 流程编辑弹窗 / the plan editor */
+.rtt-plan-editor { width: min(90vw, 34rem); }
+.rtt-plan-editor .modal-content { display: flex; flex-direction: column; gap: var(--size-4-2); }
+.rtt-plan-phases { display: flex; flex-direction: column; gap: var(--size-4-1); }
+.rtt-plan-phases .setting-item { padding-block: var(--size-4-1); }
+
 /* ── 标记 / marks ──────────────────────────────────────────────────────── */
 
 .rtt-flag-table-wrap { overflow-x: auto; }

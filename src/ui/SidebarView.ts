@@ -10,6 +10,7 @@ import { AwayIdleModal } from './AwayIdleModal';
 import { renderHint } from './hintCallout';
 import { renderSectionHeading } from './sectionHeading';
 import { loadPele, type PeleMounted, type PeleMountOptions } from './pele';
+import { CountdownPlanModal } from './CountdownPlanModal';
 import { activityRuns } from '../core/activityRuns';
 /**
  * Sidebar view
@@ -118,6 +119,7 @@ import {
   countdownConfigFrom,
   locatePhase,
   modeLabelKey,
+  normalizeMode,
   phaseLabelKey,
   planTotalSeconds,
   type CountdownPosition,
@@ -1879,6 +1881,7 @@ export class ActivitySidebarView extends ItemView {
     this.countdownPreview = buildCountdownPlan(countdownConfigFrom(this.deps.settings()));
 
     this.renderRecoveryCard(left, 'countdown');
+    this.renderCountdownModeSwitch(left);
     this.renderCountdownControls(left);
     this.renderCountdownStats(left);
     this.renderCountdownToggles(left);
@@ -1897,6 +1900,8 @@ export class ActivitySidebarView extends ItemView {
     phase: number | null;
     /** 生成图表时的分钟刻度：运行中每分钟重画一次，起点才一直是「现在」 */
     minute: number;
+    /** 每根甘特条对应的阶段类型，用来上色 / phase kind per bar, used for colouring */
+    kinds: Array<'focus' | 'break' | 'segment'>;
     options: PeleMountOptions;
   } | null = null;
 
@@ -2005,6 +2010,33 @@ export class ActivitySidebarView extends ItemView {
     }
   }
 
+  /** 界面内切换倒计时类型 / switch the countdown mode from the panel. */
+  private renderCountdownModeSwitch(root: HTMLElement): void {
+    const settings = this.deps.settings();
+    const active = this.deps.store.getState().countdown.status !== 'idle';
+    new Setting(root)
+      .setName(t('countdownModeSetting'))
+      .setDesc(active ? t('countdownModeSwitchNextRun') : t('countdownModeSettingDesc'))
+      .addDropdown(dropdown => dropdown
+        .addOption('down', t('countdownModeDown'))
+        .addOption('pomodoro', t('countdownModePomodoro'))
+        .addOption('interval', t('countdownModeInterval'))
+        .setValue(normalizeMode(settings.countdownMode))
+        .setDisabled(active)
+        .onChange(value => {
+          void this.deps.saveSetting({ countdownMode: normalizeMode(value) }).then(() => this.render());
+        }));
+  }
+
+  /** 直接打开流程编辑器 / open the plan editor directly. */
+  private openPlanEditor(): void {
+    new CountdownPlanModal(this.app, {
+      settings: this.deps.settings(),
+      save: patch => this.deps.saveSetting(patch),
+      onSaved: () => this.render(),
+    }).open();
+  }
+
   /** 倒计时的显示开关 / the countdown's display switch. */
   private renderCountdownToggles(root: HTMLElement): void {
     const settings = this.deps.settings();
@@ -2043,7 +2075,10 @@ export class ActivitySidebarView extends ItemView {
     const state = this.deps.store.getState();
     const plan = state.countdown.plan ?? this.countdownPreview;
 
-    renderSectionHeading(root, 'list-checks', t('countdownPlanTitle'));
+    const heading = renderSectionHeading(root, 'list-checks', t('countdownPlanTitle'));
+    //  直通入口：不必绕去设置页，标题右侧就能编辑流程
+    //  Direct entry: edit the plan from the heading without detouring through settings.
+    this.iconButton(heading, 'pencil', t('editPlan'), () => this.openPlanEditor(), { ghost: true }).addClass('rtt-section-action');
 
     if (!plan || plan.phases.length === 0) {
       root.createDiv({ cls: 'rtt-list-empty', text: t('countdownPlanEmpty') });
@@ -2070,18 +2105,19 @@ export class ActivitySidebarView extends ItemView {
       ? null
       : locatePhase(plan, selectCountdownElapsedSeconds(state, nowMs) + (state.countdown.skippedSeconds ?? 0));
     const flow = root.createDiv({ cls: 'rtt-cd-flow' });
-    const source = this.countdownFlowSource(plan, position, nowMs);
+    const built = this.countdownFlowSource(plan, position, nowMs);
     this.countdownFlow = {
       container: flow,
       mounted: null,
-      source,
+      source: built.source,
       phase: position && !position.completed ? position.index : null,
       minute: Math.floor(nowMs / 60000),
+      kinds: built.kinds,
       //  字号与内边距压小，甘特图在窄侧栏里仍按容器宽度缩放
       //  Smaller type and padding; the Gantt still scales to the narrow container.
       options: { zoom: false, fontSize: 12, padding: 4 },
     };
-    void this.mountCountdownFlow(flow, source);
+    void this.mountCountdownFlow(flow, built.source);
   }
 
   /**
@@ -2094,7 +2130,11 @@ export class ActivitySidebarView extends ItemView {
    * and pauses are excluded. The question is "when will this end if I keep going", not "how long
    * was I paused".
    */
-  private countdownFlowSource(plan: CountdownPlan, position: CountdownPosition | null, nowMs: number): string {
+  private countdownFlowSource(
+    plan: CountdownPlan,
+    position: CountdownPosition | null,
+    nowMs: number,
+  ): { source: string; kinds: Array<'focus' | 'break' | 'segment'> } {
     const showSeconds = this.deps.settings().countdownShowSeconds !== false;
     const schedule = this.countdownSchedule(plan, position, nowMs);
     const remainingSeconds = position
@@ -2120,7 +2160,7 @@ export class ActivitySidebarView extends ItemView {
     });
     const milestone = position?.completed ? t('countdownCompleted') : t('countdownEtaLabel');
     lines.push(`    ${milestone} :milestone, m0, ${stamp(finishMs)}, 0s`);
-    return lines.join('\n');
+    return { source: lines.join('\n'), kinds: schedule.map(item => item.kind) };
   }
 
   /** 从「现在」开始的剩余排程 / the remaining schedule starting at the present. */
@@ -2128,8 +2168,20 @@ export class ActivitySidebarView extends ItemView {
     plan: CountdownPlan,
     position: CountdownPosition | null,
     nowMs: number,
-  ): Array<{ label: string; phaseIndex: number; startMs: number; seconds: number }> {
-    const out: Array<{ label: string; phaseIndex: number; startMs: number; seconds: number }> = [];
+  ): Array<{
+    label: string;
+    phaseIndex: number;
+    kind: 'focus' | 'break' | 'segment';
+    startMs: number;
+    seconds: number;
+  }> {
+    const out: Array<{
+      label: string;
+      phaseIndex: number;
+      kind: 'focus' | 'break' | 'segment';
+      startMs: number;
+      seconds: number;
+    }> = [];
     const phases = plan.phases;
     let cursor = nowMs;
     const push = (index: number, seconds: number): void => {
@@ -2142,25 +2194,17 @@ export class ActivitySidebarView extends ItemView {
       const label = position && index === position.index && !position.completed
         ? `${name} · ${t('countdownRemainingLabel').replace('{time}', duration)}`
         : `${name} · ${duration}`;
-      out.push({ label, phaseIndex: index, startMs: cursor, seconds });
+      out.push({ label, phaseIndex: index, kind: phase.kind, startMs: cursor, seconds });
       cursor += seconds * 1000;
     };
 
     if (position?.completed) return out;
-    if (!position) {
-      //  空闲预览：番茄钟只排一圈（轮数写在标题上），其余模式排完整方案
-      //  Idle preview: one pomodoro cycle (the count lives in the title), everything else in full.
-      const count = plan.mode === 'pomodoro' ? Math.min(phases.length, 2) : phases.length;
-      for (let index = 0; index < count; index++) push(index, phases[index]!.seconds);
-      return out;
-    }
-    //  运行中：停在「本轮结束」，后面的轮次由标题里的预计完成时刻表达
-    //  Running: stop at the end of this cycle; later cycles are represented by the finish milestone.
-    const end = plan.mode === 'pomodoro'
-      ? Math.min(phases.length, position.index + (2 - (position.index % 2)))
-      : phases.length;
-    for (let index = position.index; index < end; index++) {
-      push(index, index === position.index ? position.remaining : phases[index]!.seconds);
+    //  空闲排完整方案；运行中从当前段排到结束 —— 后续轮次同样要有色块
+    //  Idle lays out the whole plan; running lays out from the current phase to the end — later
+    //  cycles keep their bars too.
+    const start = position ? position.index : 0;
+    for (let index = start; index < phases.length; index++) {
+      push(index, position && index === position.index ? position.remaining : phases[index]!.seconds);
     }
     return out;
   }
@@ -2172,9 +2216,27 @@ export class ActivitySidebarView extends ItemView {
     if (!pele || !flow || flow.container !== container || !container.isConnected) return;
     try {
       flow.mounted = pele.mount(container, flow.source || source, flow.options);
+      this.paintGanttKinds(flow.container, flow.kinds);
     } catch (error) {
       this.deps.log.warn('[RTT][sidebar] 方案流程图渲染失败 / plan flow render failed:', error);
     }
+  }
+
+  /**
+   * 给甘特条按阶段类型上色 / colour the Gantt bars by phase kind.
+   *
+   * Pele 的甘特图把所有条画成同一种强调色，只给了 active/done 这类状态类；色块的区别要在这里补：
+   * 任务 id 是 `t0…`，按排程顺序对应回阶段类型。重绘会换掉整个 SVG，所以每次挂载/更新后都重贴。
+   *
+   * Pele paints every Gantt bar in the accent colour and only exposes state classes such as
+   * active/done. The per-phase colour is added here: task ids are `t0…`, matching the schedule
+   * order. A redraw replaces the SVG, so the classes are reapplied after every mount and update.
+   */
+  private paintGanttKinds(container: HTMLElement, kinds: readonly ('focus' | 'break' | 'segment')[]): void {
+    kinds.forEach((kind, index) => {
+      container.querySelector<HTMLElement>(`.pele-task[data-id="t${index}"]`)?.addClass(`rtt-gantt-${kind}`);
+    });
+    container.querySelector<HTMLElement>('.pele-task[data-id="m0"]')?.addClass('rtt-gantt-eta');
   }
 
   /**
@@ -2199,8 +2261,11 @@ export class ActivitySidebarView extends ItemView {
     if (flow.phase === phase && flow.minute === minute) return;
     flow.phase = phase;
     flow.minute = minute;
-    flow.source = this.countdownFlowSource(plan, position, nowMs);
+    const built = this.countdownFlowSource(plan, position, nowMs);
+    flow.source = built.source;
+    flow.kinds = built.kinds;
     flow.mounted?.update(flow.source);
+    if (flow.mounted) this.paintGanttKinds(flow.container, flow.kinds);
   }
 
   /** 这一天的倒计时记录 / that day's countdown runs. */

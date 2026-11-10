@@ -8,6 +8,8 @@
 
 import { PluginSettingTab, Setting, type App, type Plugin } from 'obsidian';
 
+import { CountdownPlanModal } from './CountdownPlanModal';
+
 import { clampCycles, clampMinutes, normalizeIntervals, normalizeMode } from '../core/countdown';
 import { t } from '../core/i18n';
 import { metricById, normalizeSelection, optionsForSlot } from '../core/statusMetrics';
@@ -215,7 +217,20 @@ export class ReadTimeSettingTab extends PluginSettingTab {
       }
 
     } else {
-      this.intervalRows(containerEl, settings.countdownIntervals);
+      //  分段编辑交给弹窗：设置页里铺一长串输入行既占高度，也和侧栏的编辑入口分成两套
+      //  Phase editing lives in the modal: a long stack of rows here both costs height and would
+      //  become a second editor beside the panel's.
+      new Setting(containerEl)
+        .setName(t('countdownIntervalList'))
+        .setDesc(t('countdownFlowDesc').replace('{n}', String(normalizeIntervals(settings.countdownIntervals).length)))
+        .addButton(button => button
+          .setButtonText(t('editPlan'))
+          .setCta()
+          .onClick(() => new CountdownPlanModal(this.app, {
+            settings,
+            save: this.deps.save,
+            onSaved: () => this.display(),
+          }).open()));
     }
 
     new Setting(containerEl)
@@ -438,65 +453,4 @@ export class ReadTimeSettingTab extends PluginSettingTab {
     );
   }
 
-  /**
-   * 不规则周期的分段列表 / the irregular phase list.
-   *
-   * 每行一个分钟数，右侧是"复制这一段"和"删除这一段"。复制就是用户说的"单周期复用"：把同一段
-   * 再排一份在后面，而不是让运行时去循环。
-   *
-   * One minutes field per row, with "duplicate" and "delete" on the right. Duplicating is the
-   * "reuse a single phase" affordance: lay the same phase down again rather than looping at runtime.
-   */
-  private intervalRows(container: HTMLElement, values: readonly number[]): void {
-    const intervals = normalizeIntervals(values);
-    const write = async (next: number[]): Promise<void> => {
-      await this.deps.save({ countdownIntervals: next });
-      this.display();
-    };
-
-    intervals.forEach((minutes, index) => {
-      new Setting(container)
-        .setName(t('countdownSegmentN').replace('{n}', String(index + 1)))
-        .addText((text) =>
-          text.setValue(String(minutes)).onChange(async (raw) => {
-            const parsed = Number.parseInt(raw, 10);
-            const next = [...intervals];
-            next[index] = Number.isFinite(parsed) ? clampMinutes(parsed, 1) : minutes;
-            await this.deps.save({ countdownIntervals: next });
-          }),
-        )
-        .addExtraButton((button) =>
-          button
-            .setIcon('copy')
-            .setTooltip(t('countdownIntervalCopy'))
-            .onClick(() => {
-              const next = [...intervals];
-              next.splice(index + 1, 0, intervals[index] ?? 5);
-              void write(next);
-            }),
-        )
-        .addExtraButton((button) =>
-          button
-            .setIcon('trash-2')
-            .setTooltip(t('countdownIntervalDelete'))
-            .setDisabled(intervals.length <= 1)
-            .onClick(() => {
-              const next = [...intervals];
-              next.splice(index, 1);
-              void write(next);
-            }),
-        );
-    });
-
-    new Setting(container)
-      .setName(t('countdownIntervalList'))
-      .setDesc(t('countdownIntervalListDesc'))
-      .addButton((button) =>
-        button.setButtonText(t('countdownIntervalAdd')).onClick(() => {
-          const next = [...intervals, intervals[intervals.length - 1] ?? 5];
-          void write(next);
-        }),
-      );
-
-  }
 }
