@@ -826,17 +826,96 @@ describe('TimerService — 操作面板时的自动暂停 / tool focus pauses', 
     await ctx.advance(2);
 
     ctx.setOwnFocus(true);
+    ctx.setActive(null);
     await ctx.service.onActivePathChange();
     expect(ctx.store.getState().files.get(FILE)?.status).toBe(STATUS.PAUSED);
+    expect(ctx.service.isWaitingForFocus(FILE)).toBe(true);
     const pausedAt = ctx.store.getState().files.get(FILE)?.activeSeconds ?? 0;
     await ctx.advance(2);
     expect(ctx.store.getState().files.get(FILE)?.activeSeconds).toBe(pausedAt);
 
     ctx.setOwnFocus(false);
+    ctx.setActive(FILE);
     await ctx.service.onActivePathChange();
     expect(ctx.store.getState().files.get(FILE)?.status).toBe(STATUS.TRACKING);
+    expect(ctx.service.isWaitingForFocus(FILE)).toBe(false);
     await ctx.advance(2);
     expect(ctx.store.getState().files.get(FILE)?.activeSeconds).toBe(pausedAt + 2);
+  });
+
+  for (const ending of ['discard', 'save', 'not-started'] as const) {
+    it(`${ending}: 从面板开始后等待文档聚焦，不累计面板停留时间`, async () => {
+      const ctx = setup({ autoStartMode: ending === 'not-started' ? 'manual' : 'always', minReadSeconds: 0, idleTimeoutEnabled: false });
+      await ctx.open(FILE);
+      await ctx.advance(2);
+      ctx.setOwnFocus(true);
+      ctx.setActive(null);
+      await ctx.service.onActivePathChange();
+      if (ending === 'discard') await ctx.service.discardCurrent();
+      if (ending === 'save') await ctx.service.saveCurrent();
+      expect(ctx.store.getState().files.get(FILE)?.status).toBe(STATUS.IDLE);
+      expect(ctx.service.isWaitingForFocus(FILE)).toBe(false);
+
+      // 使用真实绑定语义：面板聚焦时 getActivePath 为 null / mirror the real panel binding.
+      await ctx.service.startCurrent();
+      const file = ctx.store.getState().files.get(FILE)!;
+      expect(file.status).toBe(STATUS.PAUSED);
+      expect(file.discardedByUser).toBe(false);
+      expect(file.savedByUser).not.toBe(true);
+      expect(ctx.service.isWaitingForFocus(FILE)).toBe(true);
+      const starts = ctx.types().filter(type => type === 'start').length;
+      await ctx.service.startCurrent();
+      expect(ctx.types().filter(type => type === 'start')).toHaveLength(starts);
+      await ctx.advance(5);
+      expect(ctx.store.getState().files.get(FILE)?.activeSeconds).toBe(0);
+
+      ctx.setOwnFocus(false);
+      ctx.setActive(FILE);
+      await ctx.service.onActivePathChange();
+      expect(ctx.store.getState().files.get(FILE)?.status).toBe(STATUS.TRACKING);
+      expect(ctx.service.isWaitingForFocus(FILE)).toBe(false);
+      await ctx.advance(2);
+      expect(ctx.store.getState().files.get(FILE)?.activeSeconds).toBe(2);
+      expect(ctx.store.getState().files.get(FILE)?.pausedSeconds).toBe(5);
+      expect(ctx.types().slice(-3)).toEqual(['start', 'pause', 'resume']);
+      expect(ctx.logger.warnings).toHaveLength(0);
+    });
+  }
+
+  it('丢弃后只回到文档不自动重启，离开到其它文档不误续上一轮', async () => {
+    const ctx = setup({ autoStartMode: 'always', minReadSeconds: 0, idleTimeoutEnabled: false });
+    await ctx.open(FILE);
+    ctx.setOwnFocus(true);
+    ctx.setActive(null);
+    await ctx.service.onActivePathChange();
+    await ctx.service.discardCurrent();
+    ctx.setOwnFocus(false);
+    ctx.setActive(FILE);
+    await ctx.service.onActivePathChange();
+    expect(ctx.store.getState().files.get(FILE)?.status).toBe(STATUS.IDLE);
+
+    ctx.setOwnFocus(true);
+    ctx.setActive(null);
+    await ctx.service.startCurrent();
+    ctx.setOwnFocus(false);
+    await ctx.open(OTHER);
+    expect(ctx.service.isWaitingForFocus(FILE)).toBe(false);
+    expect(ctx.store.getState().files.get(FILE)?.status).toBe(STATUS.IDLE);
+    expect(ctx.store.getState().files.get(OTHER)?.status).toBe(STATUS.TRACKING);
+    expect(ctx.types()).not.toContain('resume');
+  });
+
+  it('没有绑定文档或焦点在导航面板时不猜测目标', async () => {
+    const ctx = setup();
+    ctx.setOwnFocus(true);
+    await ctx.service.startCurrent();
+    expect(ctx.store.getState().files.size).toBe(0);
+    ctx.setOwnFocus(false);
+    await ctx.open(FILE);
+    ctx.setActive(null);
+    await ctx.service.startCurrent();
+    expect(ctx.store.getState().files.get(FILE)?.status).toBe(STATUS.IDLE);
+    expect(ctx.types()).toEqual([]);
   });
 });
 

@@ -98,6 +98,19 @@ export class TimerService {
   /** 因操作追踪面板而自动暂停的目标 / the target auto-paused while the tracker itself is focused */
   private toolPausedPath: string | null = null;
 
+  /** 面板暂停的目标等待内容重新聚焦 / tool-paused targets wait for content focus. */
+  isWaitingForFocus(filePath: string): boolean {
+    return this.toolPausedPath === filePath
+      && this.deps.store.getState().files.get(filePath)?.status === STATUS.PAUSED;
+  }
+
+  /** 共用面板暂停入口，先标记再通知 UI / mark before notifying UI through the shared pause path. */
+  private async pauseForTool(filePath: string): Promise<void> {
+    if (this.deps.store.getState().files.get(filePath)?.status !== STATUS.TRACKING) return;
+    this.toolPausedPath = filePath;
+    await this.togglePausePath(filePath);
+  }
+
   private isCurrentLifecycle(revision: number): boolean {
     return revision === this.lifecycleRevision && !this.mobileBackground;
   }
@@ -573,8 +586,7 @@ export class TimerService {
         const active = state.activeFilePath;
         const file = active ? state.files.get(active) : undefined;
         if (active && file?.status === STATUS.TRACKING) {
-          await this.togglePausePath(active);
-          this.toolPausedPath = active;
+          await this.pauseForTool(active);
         }
         return;
       }
@@ -862,7 +874,10 @@ export class TimerService {
       if (!this.isCurrentLifecycle(revision)) return;
 
       const state = this.deps.store.getState();
-      const target = this.deps.getActivePath();
+      // 面板没有阅读目标，但可以重启卡片已绑定的文档；等待回到内容后才累计。
+      // The panel has no reading target; restart its bound document and wait for content focus.
+      const toolFocused = !this.parallelTracking() && this.deps.isOwnViewFocused?.() === true;
+      const target = toolFocused ? state.activeFilePath : this.deps.getActivePath();
       if (!target || !isTrackableTarget(target, settings)) return;
 
       //  立刻记一次：刚开跑就被杀时也有一条心跳可依
@@ -876,6 +891,7 @@ export class TimerService {
         type: ActionTypes.SWITCH_FILE,
         payload: { fromPath: state.activeFilePath, toPath: target, autoStart: true },
       });
+      if (toolFocused) await this.pauseForTool(target);
       await this.flushPendingWrites();
       this.writeHeartbeat(true);
     } catch (error) {

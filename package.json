@@ -1,6 +1,6 @@
 {
   "name": "documents-activity-tracker",
-  "version": "1.8.1",
+  "version": "1.8.2",
   "private": true,
   "type": "module",
   "description": "Obsidian plugin that tracks reading time per document.",

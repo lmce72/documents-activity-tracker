@@ -776,6 +776,7 @@ export class ActivitySidebarView extends ItemView {
       this.rangeStart ?? '',
       this.rangeEnd ?? '',
       state.files.get(state.activeFilePath ?? '')?.status ?? '-',
+      this.deps.service.isWaitingForFocus(state.activeFilePath ?? ''),
 
       //  图例的开关决定图里有哪些段，属于结构；不进签名就点了没反应
       //  The legend's toggles decide which segments the chart has — structure, so without them in
@@ -1279,6 +1280,11 @@ export class ActivitySidebarView extends ItemView {
       todayTotal,
       formatReadTimeParts(record?.readTimeToday ?? 0, mode),
     );
+
+    // 提示属于真实暂停状态，内容聚焦后随卡片一起更新 / the hint follows the actual tool-pause state.
+    if (this.deps.service.isWaitingForFocus(filePath)) {
+      body.createDiv({ cls: 'rtt-live-line rtt-live-label', text: t('focusDocumentToStart') });
+    }
 
     //  按钮组收进卡片右上角：与读数分开，不再占一行高度
     //  The controls move into the card's top-right corner instead of taking a row below it.
