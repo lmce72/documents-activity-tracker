@@ -34,6 +34,8 @@ import {
 } from './data/liveTimerSnapshot';
 import { selectCountdownElapsedSeconds, selectManualElapsedSeconds } from './core/selectors';
 import { ActionTypes, MANUAL_STATUS } from './core/constants';
+import { isPluginViewKey } from './core/activePath';
+import { withEntryIgnored } from './core/ignoreTargets';
 import { TimerStore } from './services/TimerStore';
 import { TimerService } from './services/TimerService';
 import { ManualTimerService } from './services/ManualTimerService';
@@ -199,6 +201,7 @@ export default class ReadTimeTrackerPlugin extends Plugin {
       getOpenPaths: () => this.binding?.getOpenPaths() ?? [],
       getSplitTargets: () => this.binding?.getSplitTargets() ?? [],
       isOwnViewFocused: () => this.binding?.isOwnViewFocused() ?? false,
+      rememberViewTarget: (target) => this.recordKnownViewTarget(target),
     });
 
     this.manualService = new ManualTimerService({
@@ -262,6 +265,7 @@ export default class ReadTimeTrackerPlugin extends Plugin {
           promptNote: (onDone, options) => new ManualNoteModal(this.app, onDone, options).open(),
           openRecords: (filePath) => this.openRecords(filePath),
           saveSetting: (patch) => this.updateSettings(patch),
+          excludeTarget: (entry) => this.excludeTarget(entry),
           pluginId: this.manifest.id,
         }),
     );
@@ -322,6 +326,7 @@ export default class ReadTimeTrackerPlugin extends Plugin {
       new ReadTimeSettingTab(this.app, this, {
         settings: () => this.settings,
         save: (patch) => this.updateSettings(patch),
+        setIgnoredTargets: (next) => this.setIgnoredTargets(next),
         databasePath: () => this.sqlite?.path ?? dbPath,
         legacyPath: () => this.legacyPath(),
       }),
@@ -629,6 +634,89 @@ export default class ReadTimeTrackerPlugin extends Plugin {
     //  immediately" comes from. So the binding is re-aligned and the sidebar refreshed unconditionally
     //  here (onActivePathChange early-returns when from === to, so calling it again is safe).
     await this.timerService.onSettingsChange();
+    this.refreshSidebar();
+  }
+
+  /**
+   * 记下见过的插件视图 / remember a plugin view target that became active.
+   *
+   * 只做持久化，**不走** `applySettings`：那条路会触发 `onSettingsChange` → `settleOtherTargets()`
+   * 把其它暂停/计时中的目标自动保存，仅仅因为看见一个新视图就改动了用户的时间账本；而且从路径
+   * 变化链里 await 它会互等。写入放进 `settingsUpdates` 队列，并在执行时重读当前设置，避免两个
+   * 新视图并发写入互相覆盖。
+   *
+   * Persistence only — deliberately **not** `applySettings`: that path runs `onSettingsChange` →
+   * `settleOtherTargets()`, auto-saving other paused/running targets merely because a new view was
+   * seen, and awaiting it from the path-change chain would interlock. The write joins the
+   * `settingsUpdates` queue and re-reads the live settings when it runs, so two new views cannot
+   * overwrite each other.
+   */
+  private recordKnownViewTarget(target: string): void {
+    if (this.unloading || !isPluginViewKey(target)) return;
+    if (this.settings.knownViewTargets?.includes(target)) return;
+
+    const update = this.settingsUpdates.then(async () => {
+      if (this.unloading || this.settings.knownViewTargets?.includes(target)) return;
+      this.settings = {
+        ...this.settings,
+        knownViewTargets: [...(this.settings.knownViewTargets ?? []), target],
+      };
+      await this.saveData(this.settings);
+      if (this.settings.perDeviceSettings !== true) {
+        try {
+          await writeSharedSettings(
+            this.app.vault.adapter,
+            SHARED_SETTINGS_PATH,
+            this.settings as unknown as Record<string, unknown>,
+          );
+        } catch (error) {
+          this.log.warn('[RTT] 共享设置写入失败 / failed to write shared settings:', error);
+        }
+      }
+    });
+    this.settingsUpdates = update.catch((error: unknown) => {
+      this.log.warn('[RTT] 记录插件视图失败 / failed to remember plugin view:', error);
+    });
+  }
+
+  /**
+   * 排除一个目标 / exclude one target from future timing.
+   *
+   * 先丢弃所有被条目覆盖的进行中目标（并行模式下同目录可能同时有多条），再写忽略列表。顺序不能反：
+   * 设置变更会触发会话对账，对账会把「不再活动」的会话自动保存 —— 那时它们必须已经是 IDLE。
+   *
+   * Discard every running target the entry covers first (parallel mode may have several under the
+   * same folder), then write the ignore list. The order is load-bearing: a settings change triggers
+   * reconciliation, which auto-saves sessions that are "no longer active" — they must already be
+   * IDLE by then.
+   */
+  private async excludeTarget(entry: string): Promise<void> {
+    const value = entry.trim();
+    if (value.length === 0) return;
+    try {
+      await this.timerService.discardCoveredTargets(value);
+      if (isPluginViewKey(value)) this.recordKnownViewTarget(value);
+      await this.updateSettings({
+        ignoredTargets: withEntryIgnored(this.settings.ignoredTargets ?? [], value, true),
+      });
+      this.refreshSidebar();
+    } catch (error) {
+      this.log.warn('[RTT] 排除目标失败 / exclude target failed:', error);
+    }
+  }
+
+  /**
+   * 设置页整表写入忽略列表 / replace the ignore list from the settings tab.
+   *
+   * 被移除的条目要先解除自动开始压制，再写设置：写入会触发对账，对账时才轮得到这些目标重新开表。
+   * Entries that left the list are re-armed before the write, because the write triggers the
+   * reconciliation in which those targets get their chance to start again.
+   */
+  private async setIgnoredTargets(next: string[]): Promise<void> {
+    const before = this.settings.ignoredTargets ?? [];
+    const removed = before.filter((entry) => !next.includes(entry));
+    for (const entry of removed) this.timerService.rearmCoveredTargets(entry);
+    await this.updateSettings({ ignoredTargets: next });
     this.refreshSidebar();
   }
 

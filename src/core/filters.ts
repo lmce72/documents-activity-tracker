@@ -7,6 +7,7 @@
  */
 
 import { isPluginViewKey } from './activePath';
+import { isTargetIgnored } from './ignoreTargets';
 import type { PluginSettings } from './types';
 
 /** Filter mode. */
@@ -32,11 +33,16 @@ export function isMarkdownPath(filePath: string): boolean {
 /**
  * Whether a tracking target should be recorded.
  *
- * A plugin view (`view:<type>`) is a reading surface with no path, so the folder rules do
- * not apply to it — it is always recorded. Everything else must be a markdown note that the
- * filter rules accept.
+ * 忽略列表最先判：它是用户对某个具体目标做过的显式决定，优先于黑/白名单，也覆盖没有路径的插件
+ * 视图。过滤规则只回答「这类目标要不要记」，回答不了「这个视图我看过了，不想记」。
+ *
+ * The explicit ignore list is checked first: it is a concrete decision the user made about this
+ * one target, so it outranks the black/white rules and also covers plugin views, which have no
+ * path for the rules to match. The rules answer "should this class be recorded"; they cannot
+ * answer "I have seen this view and do not want it recorded".
  */
 export function isTrackableTarget(target: string, settings: PluginSettings): boolean {
+  if (isTargetIgnored(target, settings)) return false;
   if (isPluginViewKey(target)) return true;
   return shouldTrackFile(target, settings);
 }

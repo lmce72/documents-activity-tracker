@@ -100,6 +100,7 @@ import { createSecondPie } from './secondPie';
 import { docState, stateIcon } from './StatusBar';
 import { renderManualFlagsTable, renderManualSessionDetail } from './manualSessionDetail';
 import { ConfirmModal } from './ConfirmModal';
+import { showIgnoreMenu } from './ignoreMenu';
 import { appendDurationParts, setClockTime, setClockTimeMs, setReadTime } from './durationText';
 import {
   buildFileRecords,
@@ -234,6 +235,14 @@ export interface SidebarDeps {
   openRecords: (filePath: string | null) => void;
   /** persist a settings patch and apply it at once */
   saveSetting: (patch: Partial<PluginSettings>) => Promise<void>;
+  /**
+   * 把某个目标加入忽略列表 / add one target to the ignore list.
+   *
+   * 装配层负责先丢弃被该条目覆盖的进行中会话，再写设置；视图负责菜单选择。
+   * The assembly layer discards the running sessions the entry covers before writing settings;
+   * the view only contributes the menu choice.
+   */
+  excludeTarget: (entry: string) => Promise<void>;
   /** this plugin's manifest id, for opening the settings tab */
   pluginId: string;
 }
@@ -1211,6 +1220,9 @@ export class ActivitySidebarView extends ItemView {
     const name = recordName(this.deps.settings(), filePath, record?.fileName ?? filePath);
     const status = file?.status ?? STATUS.IDLE;
     const running = status === STATUS.TRACKING || status === STATUS.PAUSED;
+    //  运行中才有四个动作：暂停、保存、丢弃、排除；空闲时只有「开始」。
+    //  Only a running round has the four actions: pause, save, discard, exclude; idle has "start".
+    if (running) card.setCssProps({ '--rtt-live-action-count': '4' });
 
     // line 1 — 本轮有效阅读时长 / this round's reading time, or "not started" ──
     //  两种状态共用同一套三行版式，只有第一行的内容不同：以前未计时会把文件名顶到第一行、第二行写
@@ -1327,6 +1339,18 @@ export class ActivitySidebarView extends ItemView {
       },
       { danger: true },
     );
+
+    //  与「正在进行」列表同一套排除菜单：当前这一篇也可以就地排除到某一级目录
+    //  The same exclude menu as the running list: this note can be excluded at any folder level.
+    this.iconButton(bar, 'eye-off', t('btnExclude'), (event) => {
+      showIgnoreMenu({
+        target: filePath,
+        event,
+        exclude: (entry) => {
+          void this.deps.excludeTarget(entry).then(() => this.render());
+        },
+      });
+    });
   }
 
   /**
@@ -1448,7 +1472,7 @@ export class ActivitySidebarView extends ItemView {
     parent: HTMLElement,
     icon: string,
     label: string,
-    onClick: () => void,
+    onClick: (event: MouseEvent) => void,
     options: { ghost?: boolean; stopPropagation?: boolean; danger?: boolean; primary?: boolean } = {},
   ): HTMLButtonElement {
     const cls = ['clickable-icon', 'rtt-icon-btn'];
@@ -1465,7 +1489,7 @@ export class ActivitySidebarView extends ItemView {
 
     btn.addEventListener('click', (event) => {
       if (options.stopPropagation) event.stopPropagation();
-      onClick();
+      onClick(event);
     });
 
     return btn;
@@ -2613,6 +2637,17 @@ export class ActivitySidebarView extends ItemView {
           this.iconButton(bar, 'x', t('btnDiscard'), () => {
             void this.deps.service.discardPath(path).then(() => this.render());
           }, { ghost: true, danger: true });
+          //  排除：菜单里选笔记本身或某一级目录，选中后丢弃当前轮并今后不再计时
+          //  Exclude: pick the note or an ancestor folder; the round is discarded and never timed again
+          this.iconButton(bar, 'eye-off', t('btnExclude'), (event) => {
+            showIgnoreMenu({
+              target: path,
+              event,
+              exclude: (entry) => {
+                void this.deps.excludeTarget(entry).then(() => this.render());
+              },
+            });
+          }, { ghost: true });
         },
       });
     }
@@ -2702,9 +2737,9 @@ export class ActivitySidebarView extends ItemView {
       //  与文档计时卡同一套版式：状态圆钮、大字读数、名字行、明细行、右上角按钮组
       //  Same card as document timing: status circle, big readout, name line, detail line, controls.
       const item = list.createDiv({ cls: 'rtt-live-card' });
-      //  文档 3 个动作 + 跳转；手动/倒计时 4 个动作 + 跳转
-      //  Document has three actions plus jump; manual and countdown have four plus jump.
-      item.setCssProps({ '--rtt-live-action-count': task.kind === 'document' || task.kind === 'view' ? '4' : '5' });
+      //  文档 4 个动作 + 跳转；手动/倒计时 4 个动作 + 跳转 —— 两侧现在同为 5 个
+      //  Document has four actions plus jump; manual and countdown four plus jump — five either way
+      item.setCssProps({ '--rtt-live-action-count': '5' });
       const badge = item.createDiv({ cls: `rtt-live-icon is-${task.status}` });
       let pie: ((seconds: number) => void) | undefined;
       if (task.status === 'running') {

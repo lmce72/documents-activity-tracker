@@ -52,6 +52,15 @@ export const ActionTypes = {
   UNBIND_FILE: 'UNBIND_FILE',
   /** 只移动焦点，不动任何会话 / move focus without touching any session */
   FOCUS_FILE: 'FOCUS_FILE',
+  /**
+   * 解除「用户丢弃」对自动开始的压制 / clear the auto-start suppression left by a discard.
+   *
+   * 把目标从忽略列表移走时使用：丢弃写入的 `discardedByUser` 会持久化到快照，不解除的话，
+   * 自动模式下即使不再忽略，这个目标也不会再自己开始。
+   * Used when a target leaves the ignore list: a discard persists `discardedByUser` in the live
+   * snapshot, and without clearing it the target would not auto-start again even once un-ignored.
+   */
+  REARM_SESSION: 'REARM_SESSION',
 
   MANUAL_START: 'MANUAL_START',
   MANUAL_PAUSE: 'MANUAL_PAUSE',

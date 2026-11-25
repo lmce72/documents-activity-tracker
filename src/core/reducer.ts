@@ -874,6 +874,18 @@ export function createTimerReducer(deps: ReducerDeps) {
       }
 
       //  ----------------------------------------------------------------------
+      case ActionTypes.REARM_SESSION: {
+        const { filePath } = action.payload;
+        const file = state.files.get(filePath);
+        //  只解除压制，不碰任何计时数据；不认识的目标静默略过。
+        //  Clear the suppression only; no timing data is touched, and unknown targets are ignored.
+        if (!file || file.discardedByUser !== true) return state;
+        const newFiles = new Map(state.files);
+        newFiles.set(filePath, { ...file, discardedByUser: false });
+        return { ...state, files: newFiles };
+      }
+
+      //  ----------------------------------------------------------------------
 
       //  ----------------------------------------------------------------------
       case ActionTypes.DAY_ROLLOVER: {

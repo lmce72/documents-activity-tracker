@@ -203,6 +203,31 @@ function documentIntervalsFor(records: Record<string, FileRecord>): OverviewInte
   return built;
 }
 
+/**
+ * 找到最后一条仍在进行的会话的最后时刻 / the latest timestamp of a still-open session.
+ *
+ * `readTimeLine` 不保证按时间排序：记录编辑会把改过的会话追加到末尾。直接取数组最后一项会把
+ * 一条几天前的已保存会话当成活尾巴的起点，于是当前暂停/计时被从那一刻拉到现在，今天凭空多出
+ * 十几个小时。只挑未以 `saved` 收尾的会话，再取其中最大的时间。
+ *
+ * `readTimeLine` is not guaranteed to be chronological: applying a record edit appends the edited
+ * session to the end. Taking the last array element as the live tail's start turns a days-old closed
+ * session into the anchor, stretching the current pause/focus from then to now and inventing hours.
+ * Only sessions whose final state is not `saved` are candidates; take the largest timestamp among them.
+ */
+function latestOpenSessionKey(record: FileRecord): string | undefined {
+  let latest: string | undefined;
+  for (const session of record.readTimeLine) {
+    let sessionLast: string | undefined;
+    for (const time of Object.keys(session)) {
+      if (sessionLast === undefined || time > sessionLast) sessionLast = time;
+    }
+    if (sessionLast === undefined || session[sessionLast] === 'saved') continue;
+    if (latest === undefined || sessionLast > latest) latest = sessionLast;
+  }
+  return latest;
+}
+
 function collectIntervals(input: AccountInput): OverviewInterval[] {
   const records = buildRecords(input);
 
@@ -221,8 +246,7 @@ function collectIntervals(input: AccountInput): OverviewInterval[] {
     : [];
   for (const live of lives) {
     const record = records[live.filePath];
-    const lastMap = record?.readTimeLine[record.readTimeLine.length - 1];
-    const lastKey = lastMap ? Object.keys(lastMap).sort().pop() : undefined;
+    const lastKey = record ? latestOpenSessionKey(record) : undefined;
     const startAbs = lastKey ? toAbsoluteMinutes(lastKey) : null;
     const endAbs = toAbsoluteMinutes(formatLocalFull(new Date(input.nowMs)));
     if (startAbs === null || endAbs === null || endAbs <= startAbs) continue;

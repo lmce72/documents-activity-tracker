@@ -16,6 +16,7 @@
 import { ActionTypes, STATUS, TICK_GAP_LIMIT_MS, UNFOCUSED_GAP_LIMIT_MS } from '../core/constants';
 import { isTrackableTarget } from '../core/filters';
 import { isPluginViewKey } from '../core/activePath';
+import { isCoveredByEntry } from '../core/ignoreTargets';
 import type { Logger } from '../core/logger';
 import {
   clampIdleTimeoutSeconds,
@@ -54,6 +55,16 @@ export interface TimerServiceDeps {
   getSplitTargets: () => string[];
   /** 焦点是否在插件自己的视图上 / whether the plugin's own view has focus */
   isOwnViewFocused?: () => boolean;
+  /**
+   * 记下见过的插件视图 / remember a plugin view target that became active.
+   *
+   * 视图没有路径，无法写进过滤规则；设置页要靠这份清单提供快速排除。回调必须尽快返回且不被
+   * await —— 它只做持久化，不参与会话对账，等了反而会与路径变化链互锁。
+   * Views have no path, so the settings tab needs a remembered list to offer quick exclusion. The
+   * callback must return quickly and never be awaited: it only persists, takes no part in session
+   * reconciliation, and awaiting it would interlock with the path-change chain.
+   */
+  rememberViewTarget?: (target: string) => void;
 }
 
 /** why a session closed. */
@@ -557,6 +568,18 @@ export class TimerService {
     await this.onActivePathChange();
   }
 
+  /**
+   * 把即将生效的插件视图交给装配层记忆 / hand a becoming-active plugin view to the assembly layer.
+   *
+   * 只关心 `view:` 目标；笔记路径不需要清单，过滤规则本来就能表达。回调是 fire-and-forget，
+   * 原因见 {@link TimerServiceDeps.rememberViewTarget}。
+   * Only `view:` targets are reported: note paths need no list because filter rules can express
+   * them. The callback is fire-and-forget; see {@link TimerServiceDeps.rememberViewTarget}.
+   */
+  private rememberTarget(target: string | null): void {
+    if (target && isPluginViewKey(target)) this.deps.rememberViewTarget?.(target);
+  }
+
   /** The body of {@link onActivePathChange}; see there for why it is serialised. */
   private async applyActivePathChange(): Promise<void> {
     if (this.mobileBackground || this.pageHidden) return;
@@ -569,6 +592,7 @@ export class TimerService {
       const candidate = this.deps.getActivePath();
       const toPath =
         candidate && isTrackableTarget(candidate, settings) ? candidate : null;
+      this.rememberTarget(toPath);
 
       //  并行模式：每个分屏各自有一个活动标签，换标签（哪怕全局焦点文件没变）也要对账。
       //  Parallel mode: each split has its own active tab, so reconcile even when the globally
@@ -932,6 +956,7 @@ export class TimerService {
       const targets = new Set(this.deps.getSplitTargets().filter(path => isTrackableTarget(path, settings)));
       if (resolved && isTrackableTarget(resolved, settings)) targets.add(resolved);
       if (fallbackPath && isTrackableTarget(fallbackPath, settings)) targets.add(fallbackPath);
+      for (const path of targets) this.rememberTarget(path);
       const activeBefore = this.deps.store.getState().activeFilePath;
 
       //  换下的目标收尾 / finish targets that are no longer active in any split
@@ -988,6 +1013,7 @@ export class TimerService {
         : state.activeFilePath === null && fallbackPath && isTrackableTarget(fallbackPath, settings)
           ? fallbackPath
           : null;
+      this.rememberTarget(target);
       if (!target) return;
 
       const file = state.files.get(target);
@@ -1038,6 +1064,53 @@ export class TimerService {
       await this.flushPendingWrites();
     } catch (error) {
       this.deps.log.warn('[RTT][service] 丢弃指定会话失败 / discard target failed:', error);
+    }
+  }
+
+  /**
+   * 丢弃所有被某个忽略条目覆盖的进行中目标 / discard every running target an ignore entry covers.
+   *
+   * 排除一个目录时不能只丢当前卡片：并行模式下同目录可能还有别的会话在跑，它们随后会被
+   * `syncParallelTargets` 当作「不再活动」自动保存，等于把本该丢弃的时间记了下来。先在这里全部
+   * 丢弃，后面的设置变更就只会看到 IDLE 目标。
+   *
+   * Excluding a folder must not stop at the one card: in parallel mode other sessions under the
+   * same folder may still be running, and `syncParallelTargets` would then auto-save them as
+   * "no longer active" — recording the very time the user asked to drop. Discard them all here,
+   * so the settings change that follows only sees IDLE targets.
+   */
+  async discardCoveredTargets(entry: string): Promise<void> {
+    try {
+      const paths = [...this.deps.store.getState().files]
+        .filter(([path, file]) =>
+          (file.status === STATUS.TRACKING || file.status === STATUS.PAUSED)
+          && isCoveredByEntry(path, entry))
+        .map(([path]) => path);
+      if (paths.length === 0) return;
+      for (const filePath of paths) {
+        this.deps.store.dispatch({ type: ActionTypes.DISCARD_SESSION, payload: { filePath } });
+      }
+      this.refreshSessionBoundaries();
+      await this.flushPendingWrites();
+    } catch (error) {
+      this.deps.log.warn('[RTT][service] 丢弃被忽略目标的会话失败 / discard covered targets failed:', error);
+    }
+  }
+
+  /**
+   * 解除被忽略目标的自动开始压制 / re-arm auto-start for targets a removed entry covered.
+   *
+   * `DISCARD_SESSION` 的 `discardedByUser` 会进快照；不解除的话，把条目移出忽略列表后，自动模式
+   * 仍然不会给这些目标开表。这里只清标记，不启动、不结算。
+   *
+   * A discard persists `discardedByUser` in the snapshot; without clearing it, removing the entry
+   * from the ignore list would still leave auto-start suppressed. Only the flag moves here — no
+   * session starts and no settlement happens.
+   */
+  rearmCoveredTargets(entry: string): void {
+    for (const [path, file] of this.deps.store.getState().files) {
+      if (file.discardedByUser !== true || !isCoveredByEntry(path, entry)) continue;
+      this.deps.store.dispatch({ type: ActionTypes.REARM_SESSION, payload: { filePath: path } });
     }
   }
 

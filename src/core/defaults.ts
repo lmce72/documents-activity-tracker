@@ -79,6 +79,11 @@ export const DEFAULT_SETTINGS: PluginSettings = {
   //  默认没有任何别名 / no aliases out of the box
   recordAliases: {},
 
+  //  忽略列表与视图清单默认都空：排除是用户看到实际计时后做的判断，不该预先替谁排除。
+  //  Both start empty: exclusion is a judgement made after seeing real timing, never a default.
+  ignoredTargets: [],
+  knownViewTargets: [],
+
   //  倒计时默认开着，但停在最朴素的「倒计时 25 分钟」：番茄钟与不规则周期要用的人自己切。
   //  Countdown is on by default but idle at the plainest mode — a 25-minute countdown; pomodoro and
   //  irregular phases are there for whoever switches to them.

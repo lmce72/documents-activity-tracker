@@ -275,6 +275,35 @@ export interface PluginSettings {
   recordAliases: Record<string, string>;
 
   /**
+   * 显式忽略列表 / the explicit ignore list.
+   *
+   * 由「正在进行」卡片上的排除按钮写入，条目分三种：
+   *   - 笔记精确路径：`Notes/a.md`
+   *   - 目录前缀：`Notes/`（结尾的 `/` 是判据，避免 `Notes` 吞掉 `Notes-archive`）
+   *   - 插件视图键：`view:<type>`（没有路径，只能用合成键表达）
+   *
+   * 忽略列表优先于黑/白名单：它表达的是「这个目标我看过了，就是不想记」，不该被白名单再放回来。
+   * 只影响今后的计时，历史记录原样保留。
+   *
+   * Written by the exclude button on a running card. Entries are an exact note path, a folder
+   * prefix (the trailing `/` is the discriminator), or a synthetic `view:<type>` key. The list
+   * outranks the black/white filter rules and affects future timing only — history is untouched.
+   */
+  ignoredTargets: string[];
+
+  /**
+   * 见过的插件视图 / plugin view targets this device has seen.
+   *
+   * 插件视图没有路径，无法像笔记那样写进过滤规则；要让用户在设置页「再次排除」时有得选，
+   * 就得把见过的视图记下来。只存 `view:<type>` 键，顺序即首次出现的顺序。
+   *
+   * Plugin views have no path, so they cannot be expressed as filter patterns. Keeping every view
+   * ever seen is what lets the settings tab offer them for quick re-exclusion. Only `view:` keys
+   * are stored, in first-seen order.
+   */
+  knownViewTargets: string[];
+
+  /**
    * 设备独立设置 / settings kept per device.
    *
    * 关（默认）：设置写进数据旁边的共享文件，随 vault 同步，各设备用同一套口径。
@@ -749,6 +778,7 @@ export type TimerAction =
       };
     }
   | { type: Extract<ActionType, 'DISCARD_SESSION'>; payload: { filePath: string } }
+  | { type: Extract<ActionType, 'REARM_SESSION'>; payload: { filePath: string } }
   | { type: Extract<ActionType, 'USER_ACTIVITY'> }
   | { type: Extract<ActionType, 'SET_IDLE'> }
   | { type: Extract<ActionType, 'CLEAR_IDLE'> }

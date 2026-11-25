@@ -9,6 +9,8 @@
 import { Notice, PluginSettingTab, Setting, type App, type Plugin } from 'obsidian';
 
 import { t } from '../core/i18n';
+import { isPluginViewKey, pluginViewLabel } from '../core/activePath';
+import { withEntryIgnored } from '../core/ignoreTargets';
 import { metricById, normalizeSelection, optionsForSlot } from '../core/statusMetrics';
 import type { PluginSettings } from '../core/types';
 
@@ -17,6 +19,8 @@ export interface SettingsTabDeps {
   settings: () => PluginSettings;
   /** persist and apply */
   save: (patch: Partial<PluginSettings>) => Promise<void>;
+  /** 整表替换忽略列表；装配层负责解除被移除条目的自动开始压制 / replace the ignore list */
+  setIgnoredTargets: (next: string[]) => Promise<void>;
 
   databasePath: () => string;
   /** the legacy JSON path */
@@ -39,6 +43,21 @@ export class ReadTimeSettingTab extends PluginSettingTab {
     });
   }
 
+  /**
+   * 写入整份忽略列表并重建 / write the whole ignore list and rebuild.
+   *
+   * 整表写入而不是逐条 patch：装配层需要对比新旧两份，才知道哪些条目被移出、该给谁解除自动开始
+   * 压制。重建放在 Promise 之后，滚动位置由 {@link display} 保存。
+   * A whole-list write rather than per-entry patches: the assembly layer diffs old and new to know
+   * which entries left and which targets need their auto-start suppression cleared. The rebuild
+   * follows the promise; {@link display} preserves the scroll position.
+   */
+  private setIgnoredTargets(next: string[]): void {
+    void this.deps.setIgnoredTargets(next).then(() => { this.display(); }).catch((error: unknown) => {
+      new Notice(error instanceof Error ? error.message : 'Could not save tracker settings');
+    });
+  }
+
   override display(): void {
     //  设置页经常整块重建（开关、模式、状态栏槽位改变后都要重排），而 `empty()` 会把滚动位置
     //  一并清零 —— 用户每改一次就被弹回页首。重建前记录本元素及所有可滚动祖先的位置，建完还原。
@@ -54,6 +73,81 @@ export class ReadTimeSettingTab extends PluginSettingTab {
     } finally {
       for (const { element, top } of scrollers) {
         if (element.isConnected) element.scrollTop = top;
+      }
+    }
+  }
+
+  /**
+   * 忽略列表区块 / the ignore-list section.
+   *
+   * 插件视图没有路径，过滤规则表达不了，所以这里保留一份「见过的视图」清单并直接给开关 —— 这就是
+   * 用户「复排除时快速选择」的入口。笔记与目录条目则由侧栏菜单写入，只在这里展示与撤销。
+   *
+   * Plugin views have no path, so filter patterns cannot express them. Keeping every view ever seen
+   * here and offering a toggle is the "quickly exclude it again" entry point. Note and folder
+   * entries are written by the sidebar menu and merely shown (and removed) here.
+   */
+  private renderIgnoreSection(containerEl: HTMLElement, settings: PluginSettings): void {
+    new Setting(containerEl).setName(t('ignoredSection')).setHeading();
+    containerEl.createEl('p', {
+      cls: 'setting-item-description',
+      text: t('ignoredSectionDesc'),
+    });
+
+    const ignored = settings.ignoredTargets ?? [];
+    //  清单 = 见过的视图 ∪ 已忽略的视图键；后者可能在旧配置里直接写过，不能因清单缺失就丢掉。
+    //  The list is known views plus ignored view keys: the latter may predate the known list and
+    //  must not become invisible just because it was never recorded.
+    const views = [...new Set([...(settings.knownViewTargets ?? []), ...ignored.filter(isPluginViewKey)])];
+    const entries = ignored.filter((entry) => !isPluginViewKey(entry));
+
+    if (views.length === 0 && entries.length === 0) {
+      containerEl.createEl('p', {
+        cls: 'setting-item-description',
+        text: t('ignoredNone'),
+      });
+      return;
+    }
+
+    if (views.length > 0) {
+      containerEl.createEl('h4', { text: t('ignoredKnownViews') });
+      containerEl.createEl('p', {
+        cls: 'setting-item-description',
+        text: t('ignoredKnownViewsDesc'),
+      });
+      for (const view of views) {
+        new Setting(containerEl)
+          .setName(pluginViewLabel(view))
+          .setDesc(view)
+          .addToggle((toggle) =>
+            toggle
+              .setValue(!ignored.includes(view))
+              .onChange((value) => {
+                this.setIgnoredTargets(
+                  withEntryIgnored(this.deps.settings().ignoredTargets ?? [], view, !value),
+                );
+              }),
+          );
+      }
+    }
+
+    if (entries.length > 0) {
+      containerEl.createEl('h4', { text: t('ignoredEntries') });
+      for (const entry of entries) {
+        const folder = entry.endsWith('/');
+        new Setting(containerEl)
+          .setName(folder ? entry.replace(/\/+$/, '') : entry)
+          .setDesc(folder ? t('ignoredFolderTag') : t('ignoredNoteTag'))
+          .addExtraButton((button) =>
+            button
+              .setIcon('rotate-ccw')
+              .setTooltip(t('ignoredRemove'))
+              .onClick(() => {
+                this.setIgnoredTargets(
+                  withEntryIgnored(this.deps.settings().ignoredTargets ?? [], entry, false),
+                );
+              }),
+          );
       }
     }
   }
@@ -335,6 +429,8 @@ export class ReadTimeSettingTab extends PluginSettingTab {
             this.save({ filterPatterns: value });
           });
       });
+
+    this.renderIgnoreSection(containerEl, settings);
 
     // storage ─────────────────────────────────────────────────
     new Setting(containerEl)

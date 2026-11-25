@@ -9,7 +9,7 @@ import { describe, expect, it } from 'bun:test';
 
 import { dayAccount, weekAccount } from '../src/core/account';
 import type { AccountPolicy } from '../src/core/account';
-import type { ManualSession, TimelineEvent } from '../src/core/types';
+import type { FileRecord, ManualSession, TimelineEvent } from '../src/core/types';
 
 const D = '2026-09-15';
 const P = (now: number): number => new Date(`${D}T${String(now).padStart(2, '0')}:00:00`).getTime();
@@ -59,6 +59,39 @@ function input(overrides: { away?: AccountPolicy['away']; idle?: AccountPolicy['
 }
 
 describe('dayAccount / 一天的四条通道', () => {
+  it('活动尾巴从最后一条未结束的会话开始，而不是数组最后一项', () => {
+    //  记录编辑会把改过的旧会话追加到 readTimeLine 末尾；活尾巴不能从那条旧会话起算。
+    //  A record edit appends the edited old session to the end; the live tail must not start there.
+    const records: Record<string, FileRecord> = {
+      'Notes/a.md': {
+        fileName: 'a.md',
+        totalReadTime: 0,
+        unfocusedReadTime: 0,
+        readTimeToday: 0,
+        unfocusedReadTimeToday: 0,
+        lastReadAt: '',
+        hasAbnormalSession: false,
+        readTimeLine: [
+          { [`${D} 11:55:00`]: 'tracking' },
+          { [`${D} 10:00:00`]: 'tracking', [`${D} 10:10:00`]: 'saved' },
+          { '2026-09-14 09:00:00': 'tracking', '2026-09-14 10:00:00': 'saved' },
+        ],
+      },
+    };
+    const account = dayAccount({
+      records,
+      manual: [],
+      countdown: [],
+      day: D,
+      nowMs: P(12),
+      policy: { away: 'ignored', idle: 'ignored', pluginViews: true },
+      live: { filePath: 'Notes/a.md', state: 'pausing' },
+    });
+    //  11:55 的暂停段到 12:00 只有 5 分钟；不能从昨天的旧会话拉到现在。
+    //  The pause from 11:55 to 12:00 is five minutes, not a day-long stretch from yesterday.
+    expect(account.paused).toBe(300);
+  });
+
   it('专注与离开按事件类型分', () => {
     const account = dayAccount(input());
     expect(account.focus).toBe(600);

@@ -9,6 +9,7 @@
  *
  */
 
+import { PLUGIN_VIEW_PREFIX } from './activePath';
 import { DEFAULT_SETTINGS } from './defaults';
 import { normalizeSelection } from './statusMetrics';
 import type { AttributionPolicy, PluginSettings } from './types';
@@ -83,6 +84,47 @@ function coerce<K extends keyof PluginSettings>(
 }
 
 /**
+ * 规范化一个忽略条目 / normalize one ignore entry.
+ *
+ * 手工编辑过的共享设置可能塞进非字符串或空白项；运行期的 `.startsWith` 一旦拿到非字符串就会抛错，
+ * 所以脏数据必须在这一层被丢掉。目录条目统一收成恰好一个结尾 `/`，视图键原样保留。
+ *
+ * The shared settings file can be hand-edited, so an entry may be a non-string or blank; the
+ * runtime `.startsWith` would throw on that. Drop such entries here. Folder entries are reduced
+ * to exactly one trailing slash; view keys are kept verbatim.
+ */
+function normalizeIgnoreEntry(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return null;
+  if (trimmed.startsWith(PLUGIN_VIEW_PREFIX)) return trimmed;
+  return trimmed.endsWith('/') ? trimmed.replace(/\/+$/, '') + '/' : trimmed;
+}
+
+/** 只接受真正的视图键 / accept only real view keys. */
+function normalizeViewTarget(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  return trimmed.startsWith(PLUGIN_VIEW_PREFIX) && trimmed.length > PLUGIN_VIEW_PREFIX.length
+    ? trimmed
+    : null;
+}
+
+/** 去空、去重并保持首次出现的顺序 / drop blanks and duplicates, keeping first-seen order. */
+function normalizeStringList(
+  raw: unknown,
+  normalize: (value: unknown) => string | null,
+): string[] {
+  if (!Array.isArray(raw)) return [];
+  const out: string[] = [];
+  for (const value of raw) {
+    const entry = normalize(value);
+    if (entry !== null && !out.includes(entry)) out.push(entry);
+  }
+  return out;
+}
+
+/**
  * Merge on-disk settings over the defaults.
  *
  * Only known keys are taken; unknown ones are dropped, so leftovers from older versions
@@ -99,6 +141,12 @@ export function mergeSettings(loaded: unknown): PluginSettings {
   for (const key of Object.keys(DEFAULT_SETTINGS) as (keyof PluginSettings)[]) {
     target[key] = coerce(key, source[key]);
   }
+
+  //  两个目标列表走各自的净化：通用数组分支只保证「是数组」，不管元素是否可用。
+  //  The two target lists get their own sanitising: the generic array branch only checks that
+  //  the value is an array, not that its entries are usable.
+  merged.ignoredTargets = normalizeStringList(source.ignoredTargets, normalizeIgnoreEntry);
+  merged.knownViewTargets = normalizeStringList(source.knownViewTargets, normalizeViewTarget);
 
   merged.idleTimeout = source.idleTimeoutIsSeconds === true
     ? clampIdleTimeoutSeconds(source.idleTimeout)
